@@ -2,11 +2,8 @@
   "providers": {
     "yizhan": {
       "base_url": "https://vip.yi-zhan.top/v1",
-      "models": [
-        "gpt-5",
-        "gpt-4o",
-        "gpt-4o-mini"
-      ]
+      "model": "gpt-5",
+      "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835"
     },
     "openai": {
       "base_url": "https://api.openai.com/v1",

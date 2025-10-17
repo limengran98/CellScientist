@@ -2,7 +2,7 @@
 
 ## Run
 ```bash
-python cellscientist_phase_1.py config.json
+python python cellscientist_phase_1.py design_analysis_config.json
 ```
 
 ## Files

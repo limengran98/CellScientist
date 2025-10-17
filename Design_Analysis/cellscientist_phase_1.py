@@ -39,7 +39,7 @@ def run_pipeline_basic(cfg_path: str, phase_name: str = 'task_analysis') -> str:
     return executed_path
 
 def main():
-    cfg_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(THIS_DIR, 'config.json')
+    cfg_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(THIS_DIR, 'design_analysis_config.json')
     cfg_path = os.path.abspath(cfg_path)
     with open(cfg_path, 'r', encoding='utf-8') as f:
         cfg = json.load(f)
