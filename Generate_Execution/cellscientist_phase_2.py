@@ -85,7 +85,7 @@ def cmd_generate(cfg: dict, baseline_id: int, with_lit: bool):
     moved, ref_dir = _copy_stage1_to_reference_pool(cfg)
     if moved:
         log("INIT", f"Copied {moved} Stage-1 notebooks into reference_pool (reference only): {ref_dir}")
-    bdir = migrate_reference_ipynb(paths["baseline_source_dir"], root, include_globs=["Baseline_*.ipynb"])
+    bdir = migrate_reference_ipynb(paths["baseline_source_dir"], root, include_globs=["*.ipynb"])
     log("MIGRATE", f"Baselines copied -> {bdir}")
     lit_root, bullets = _run_literature(cfg, enable=with_lit)
     ctx = _prepare_context(cfg, bdir, baseline_id)
@@ -180,7 +180,21 @@ def main():
     ap_r.add_argument("--with-lit", action="store_true")
     ap_r.add_argument("--which", choices=["baseline", "patched", "both"], default="both")
     args = ap.parse_args()
-    cfg = json.loads(open(args.config, "r", encoding="utf-8").read())
+    cfg_text = open(args.config, "r", encoding="utf-8").read()
+    cfg = json.loads(cfg_text)
+    import re
+    def expand_vars(obj, env):
+        if isinstance(obj, dict):
+            return {k: expand_vars(v, env) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [expand_vars(v, env) for v in obj]
+        elif isinstance(obj, str):
+            return re.sub(r"\$\{(\w+)\}", lambda m: env.get(m.group(1), m.group(0)), obj)
+        return obj
+
+    env = dict(os.environ)
+    env.update(cfg) 
+    cfg = expand_vars(cfg, env)
     if args.cmd == "generate":
         cmd_generate(cfg, baseline_id=args.baseline_id, with_lit=args.with_lit)
     elif args.cmd == "execute":

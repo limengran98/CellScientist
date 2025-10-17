@@ -1,0 +1,7 @@
+{
+  "source_dir": "./baseline/${dataset_name}",
+  "include_globs": [
+    "Baseline_*.ipynb"
+  ],
+  "files": []
+}

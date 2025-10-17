@@ -1,0 +1,9 @@
+{
+  "source_dir": "../baseline/BBBC036",
+  "include_globs": [
+    "*.ipynb"
+  ],
+  "files": [
+    "baseline_00.ipynb"
+  ]
+}

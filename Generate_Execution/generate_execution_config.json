@@ -1,0 +1,26 @@
+{
+  "dataset_name": "BBBC036",
+  "paths": {
+    "baseline_source_dir": "../baseline/${dataset_name}",
+    "stage1_analysis_dir": "./results/${dataset_name}/design_analysis/reference",
+    "design_execution_root": "./results/${dataset_name}/generate_execution"
+  },
+  "llm": {
+    "provider": "yizhan"
+  },
+  "experiment": {
+    "primary_metric": "AUROC"
+  },
+  "literature": {
+    "query": "",
+    "n": 12,
+    "llm_summarize": true
+  },
+  "trial": {
+    "tag": "improve-data-model",
+    "seed": 22
+  },
+  "improve": {
+    "primary_metric": "AUROC"
+  }
+}
