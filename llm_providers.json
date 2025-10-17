@@ -1,0 +1,55 @@
+{
+  "providers": {
+    "yizhan": {
+      "base_url": "https://vip.yi-zhan.top/v1",
+      "models": [
+        "gpt-5",
+        "gpt-4o",
+        "gpt-4o-mini"
+      ]
+    },
+    "openai": {
+      "base_url": "https://api.openai.com/v1",
+      "models": [
+        "gpt-4o-mini",
+        "gpt-4o",
+        "gpt-4.1-mini"
+      ]
+    },
+    "anthropic": {
+      "base_url": "https://api.anthropic.com/v1",
+      "models": [
+        "claude-3-opus",
+        "claude-3.5-sonnet"
+      ]
+    },
+    "google": {
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+      "models": [
+        "gemini-1.5-pro",
+        "gemini-1.5-flash"
+      ]
+    },
+    "mistral": {
+      "base_url": "https://api.mistral.ai/v1",
+      "models": [
+        "mistral-large-latest"
+      ]
+    },
+    "groq": {
+      "base_url": "https://api.groq.com/openai/v1",
+      "models": [
+        "llama3-70b-8192",
+        "mixtral-8x7b"
+      ]
+    },
+    "deepseek": {
+      "base_url": "https://api.deepseek.com",
+      "models": [
+        "deepseek-coder",
+        "deepseek-chat"
+      ]
+    }
+  },
+  "default_provider": "yizhan"
+}

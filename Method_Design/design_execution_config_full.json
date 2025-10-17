@@ -1,0 +1,17 @@
+{
+  "paths": {
+    "baseline_source_dir": "/home/zelin_zang/project/AIVC/CellForge-main/cellforge/Method_Design/baselines_source",
+    "stage1_analysis_dir": "/home/zelin_zang/project/AIVC/CellForge-main/cellforge/data/BBBC036/hypergraph_runs/reference",
+    "design_execution_root": "/home/zelin_zang/project/AIVC/CellForge-main/cellforge/data/BBBC036/design_execution"
+  },
+  "llm": {
+    "provider": "openai_compat",
+    "model": "gpt-5",
+    "base_url": "https://vip.yi-zhan.top/v1",
+    "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835"
+  },
+  "experiment": { "primary_metric": "AUROC" },
+  "literature": { "query": "", "n": 12, "llm_summarize": true },
+  "trial": { "tag": "improve-data-model", "seed": 22 },
+  "improve": { "primary_metric": "AUROC" }
+}
