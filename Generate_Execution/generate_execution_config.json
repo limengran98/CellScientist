@@ -2,11 +2,12 @@
   "dataset_name": "BBBC036",
   "paths": {
     "baseline_source_dir": "../baseline/${dataset_name}",
-    "stage1_analysis_dir": "./results/${dataset_name}/design_analysis/reference",
-    "design_execution_root": "./results/${dataset_name}/generate_execution"
+    "stage1_analysis_dir": "../results/${dataset_name}/design_analysis/reference",
+    "design_execution_root": "../results/${dataset_name}/generate_execution"
   },
   "llm": {
-    "provider": "yizhan"
+    "provider": "yizhan",
+    "timeout": 1800
   },
   "experiment": {
     "primary_metric": "AUROC"
@@ -22,5 +23,20 @@
   },
   "improve": {
     "primary_metric": "AUROC"
+  },
+
+  "pipeline_mode": "baseline",
+  "baseline_branch": {
+    "temperature": 0.8,
+    "retries": 2,
+    "max_tokens": 20000
+  },
+  "prompt_branch": {
+    "output_type": "notebook",
+    "prompt_file": "prompts/pipeline_prompt.yaml",
+    "temperature": 0.5,
+    "max_tokens": 20000,
+    "retries": 1,
+    "save_root": "../results/${dataset_name}/generate_execution"
   }
 }

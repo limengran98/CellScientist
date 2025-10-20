@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import warnings
+warnings.filterwarnings("ignore")
+
 import os, sys, json, glob, shutil, argparse, datetime
 import nbformat
 from nbclient import NotebookClient
@@ -9,7 +12,33 @@ from design_execution.trial_manager import create_trial_from_baseline, propose_n
 from design_execution.llm_client import LLMClient
 from design_execution.patch_applier import apply_patch
 from design_execution.report_builder import build_markdown_report
+from design_execution.prompt_pipeline import run_prompt_pipeline
 from design_execution.context_extractor import summarize_folder_ipynb, summarize_notebook
+
+# 你的其他代码...
+
+import os, sys, json, glob, shutil, argparse, datetime, re
+import nbformat
+from nbclient import NotebookClient
+
+from design_execution.baseline_migrator import migrate_reference_ipynb
+from design_execution.literature_manager import (
+    init_scaffold, openalex_search, save_rows_to_csv, csv_to_md, llm_summarize_literature
+)
+from design_execution.trial_manager import create_trial_from_baseline, propose_notebook_improvements
+from design_execution.llm_client import LLMClient
+from design_execution.patch_applier import apply_patch
+from design_execution.report_builder import build_markdown_report
+from design_execution.context_extractor import summarize_folder_ipynb, summarize_notebook
+
+from design_execution.prompt_pipeline import run_prompt_pipeline as _prompt_run
+try:
+    from design_execution.prompt_pipeline import prompt_generate as _prompt_generate
+    from design_execution.prompt_pipeline import prompt_execute as _prompt_execute
+    from design_execution.prompt_pipeline import prompt_analyze as _prompt_analyze
+except Exception:
+    _prompt_generate = _prompt_execute = _prompt_analyze = None
+
 
 def log(stage: str, msg: str) -> None:
     print(f"[{stage}] {msg}", flush=True)
@@ -79,23 +108,35 @@ def _exec_nb(in_nb: str, out_nb: str):
     NotebookClient(nb, timeout=1200, kernel_name="python3", allow_errors=True).execute()
     nbformat.write(nb, out_nb)
 
+# ---------------- Baseline branch ----------------
 def cmd_generate(cfg: dict, baseline_id: int, with_lit: bool):
     paths = cfg["paths"]
     root = paths["design_execution_root"]
+
+    # 复制Stage-1分析到参考池
     moved, ref_dir = _copy_stage1_to_reference_pool(cfg)
     if moved:
         log("INIT", f"Copied {moved} Stage-1 notebooks into reference_pool (reference only): {ref_dir}")
+
+    # 基准笔记本迁移
     bdir = migrate_reference_ipynb(paths["baseline_source_dir"], root, include_globs=["*.ipynb"])
     log("MIGRATE", f"Baselines copied -> {bdir}")
-    lit_root, bullets = _run_literature(cfg, enable=with_lit)
+
+    # 文献检索
+    _lit_root, bullets = _run_literature(cfg, enable=with_lit)
     ctx = _prepare_context(cfg, bdir, baseline_id)
+
     tag = (cfg.get("trial", {}) or {}).get("tag", "improve-data-model")
     seed = (cfg.get("trial", {}) or {}).get("seed", 22)
     tdir = create_trial_from_baseline(root, tag, baseline_id, seed)
     log("TRIAL", f"Trial created -> {tdir}")
+
     llm_conf = cfg.get("llm", {}) or {}
     llm = LLMClient(**llm_conf)
+
+    # 生成 notebook 改进
     patch_path = propose_notebook_improvements(
+        cfg,
         tdir,
         related_work_bullets=bullets,
         seed=seed,
@@ -106,12 +147,23 @@ def cmd_generate(cfg: dict, baseline_id: int, with_lit: bool):
         llm_retries=int(llm_conf.get("retries", 2)),
     )
     log("IMPROVE", f"LLM patch -> {patch_path}")
+
+    # 应用补丁到 notebook (生成文件)
     patched = apply_patch(os.path.join(tdir, "notebook_unexec.ipynb"), patch_path)
     log("PATCH", f"Patched notebook -> {patched}")
-    log("DONE", "Generate phase completed (no execution).")
+
+    log("DONE", "Generate phase completed (no execution).")  # 确保这里只是生成，不执行
+
+    # 仅返回生成的路径
     return {"baseline_dir": bdir, "trial_dir": tdir, "patched_nb": patched}
 
 def cmd_execute(cfg: dict, baseline_id: int, which: str, trial_dir: str = None):
+    """
+    Execute notebooks:
+      - baseline: execute baseline notebook to baseline_XX_exec.ipynb
+      - patched:  apply llm_patch.json to notebook_unexec.ipynb and execute to notebook_unexec_patched_exec.ipynb
+      - both:     do both
+    """
     paths = cfg["paths"]
     root = paths["design_execution_root"]
     bdir = _latest(os.path.join(root, "baselines"))
@@ -120,10 +172,12 @@ def cmd_execute(cfg: dict, baseline_id: int, which: str, trial_dir: str = None):
     baseline_nb = os.path.join(bdir, f"baseline_{baseline_id:02d}.ipynb")
     if not os.path.exists(baseline_nb):
         raise FileNotFoundError(f"baseline not found: {baseline_nb}")
+
     if which in ("baseline", "both"):
         b_exec = baseline_nb.replace(".ipynb", "_exec.ipynb")
         _exec_nb(baseline_nb, b_exec)
         log("EXEC_BASE", f"Baseline executed -> {b_exec}")
+
     if which in ("patched", "both"):
         if not trial_dir:
             tdir = _latest(os.path.join(root, "trials"))
@@ -137,7 +191,9 @@ def cmd_execute(cfg: dict, baseline_id: int, which: str, trial_dir: str = None):
         patched_exec = patched_nb.replace(".ipynb", "_exec.ipynb")
         _exec_nb(patched_nb, patched_exec)
         log("EXEC_TRIAL", f"Patched executed -> {patched_exec}")
+
     log("DONE", f"Execute phase completed ({which}).")
+
 
 def cmd_analyze(cfg: dict, trial_dir: str = None, baseline_id: int = 0):
     paths = cfg["paths"]
@@ -145,7 +201,6 @@ def cmd_analyze(cfg: dict, trial_dir: str = None, baseline_id: int = 0):
     bdir = _latest(os.path.join(root, "baselines"))
     if not bdir:
         raise RuntimeError("No baselines found.")
-    baseline_date = os.path.basename(bdir)
     if not trial_dir:
         tdir = _latest(os.path.join(root, "trials"))
         if not tdir:
@@ -161,40 +216,110 @@ def cmd_analyze(cfg: dict, trial_dir: str = None, baseline_id: int = 0):
     log("DONE", "Analyze phase completed.")
     return rpt
 
+# ---------------- Prompt branch wrappers ----------------
+def cmd_prompt_defined(cfg: dict, prompt_path: str = None, subcmd: str = "run"):
+    """
+    Prompt branch dispatcher.
+    - If prompt_pipeline exposes prompt_generate/execute/analyze, use them.
+    - Otherwise fall back to run_prompt_pipeline (one-click).
+    """
+    prompt_path = prompt_path or cfg.get("prompt_branch", {}).get("prompt_file") or "prompts/pipeline_prompt.yaml"
+    log("PROMPT", f"Using prompt file: {prompt_path}")
+
+    if subcmd == "run":
+        ret = _prompt_run(cfg, prompt_path)
+        try:
+            from design_execution.evaluator import record_metrics
+            record_metrics(ret["trial_dir"], ret.get("metrics", {}))
+        except Exception:
+            pass
+        try:
+            # Optional: write a quick report path if your report builder needs it
+            build_markdown_report(
+                ret["trial_dir"],
+                bdir=cfg["paths"].get("baseline_source_dir", ""),
+                report_dir=os.path.join(cfg["paths"]["design_execution_root"], "reports"),
+                baseline_metrics_path=None
+            )
+        except Exception:
+            pass
+        log("PROMPT", f"Done. Trial dir: {ret['trial_dir']}")
+        return ret
+
+    # 3-phase support if available
+    if subcmd == "generate":
+        if _prompt_generate is None:
+            raise RuntimeError("prompt_generate is not available in prompt_pipeline. Update the module or use 'run'.")
+        return _prompt_generate(cfg, prompt_path)
+    elif subcmd == "execute":
+        if _prompt_execute is None:
+            raise RuntimeError("prompt_execute is not available in prompt_pipeline. Update the module or use 'run'.")
+        return _prompt_execute(cfg)
+    elif subcmd == "analyze":
+        if _prompt_analyze is None:
+            raise RuntimeError("prompt_analyze is not available in prompt_pipeline. Update the module or use 'run'.")
+        return _prompt_analyze(cfg)
+    else:
+        raise ValueError(f"Unknown prompt subcmd: {subcmd}")
+
+# ---------------- CLI ----------------
+def _expand_vars(obj, env):
+    if isinstance(obj, dict):
+        return {k: _expand_vars(v, env) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_expand_vars(v, env) for v in obj]
+    elif isinstance(obj, str):
+        return re.sub(r"\$\{(\w+)\}", lambda m: env.get(m.group(1), m.group(0)), obj)
+    return obj
+
 def main():
     ap = argparse.ArgumentParser(description="CellScientist design_execution phased pipeline")
     ap.add_argument("--config", required=True, help="path to config JSON")
+    ap.add_argument("--pipeline-mode", choices=["baseline", "prompt"], default=None)
+
     sub = ap.add_subparsers(dest="cmd", required=True)
     ap_g = sub.add_parser("generate", help="Phase-1: LLM patch generation only (no execution)")
     ap_g.add_argument("--baseline-id", type=int, default=0)
     ap_g.add_argument("--with-lit", action="store_true", help="enable literature search & synthesis")
+
     ap_e = sub.add_parser("execute", help="Phase-2: execute baseline and/or patched")
     ap_e.add_argument("--baseline-id", type=int, default=0)
     ap_e.add_argument("--which", choices=["baseline", "patched", "both"], default="both")
     ap_e.add_argument("--trial-dir", type=str, default=None)
+
     ap_a = sub.add_parser("analyze", help="Phase-3: analyze & report (no execution)")
     ap_a.add_argument("--baseline-id", type=int, default=0)
     ap_a.add_argument("--trial-dir", type=str, default=None)
+
     ap_r = sub.add_parser("run", help="One-command: generate → execute → analyze")
     ap_r.add_argument("--baseline-id", type=int, default=0)
     ap_r.add_argument("--with-lit", action="store_true")
     ap_r.add_argument("--which", choices=["baseline", "patched", "both"], default="both")
+
     args = ap.parse_args()
+
     cfg_text = open(args.config, "r", encoding="utf-8").read()
     cfg = json.loads(cfg_text)
-    import re
-    def expand_vars(obj, env):
-        if isinstance(obj, dict):
-            return {k: expand_vars(v, env) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [expand_vars(v, env) for v in obj]
-        elif isinstance(obj, str):
-            return re.sub(r"\$\{(\w+)\}", lambda m: env.get(m.group(1), m.group(0)), obj)
-        return obj
+    env = dict(os.environ); env.update(cfg)
+    cfg = _expand_vars(cfg, env)
 
-    env = dict(os.environ)
-    env.update(cfg) 
-    cfg = expand_vars(cfg, env)
+    pipeline_mode = args.pipeline_mode or cfg.get("pipeline_mode", "baseline")
+    log("MAIN", f"Pipeline mode: {pipeline_mode}")
+
+    if pipeline_mode == "prompt":
+        if args.cmd == "generate":
+            cmd_prompt_defined(cfg, prompt_path=cfg.get("prompt_branch", {}).get("prompt_file"), subcmd="generate")
+            return
+        elif args.cmd == "execute":
+            cmd_prompt_defined(cfg, prompt_path=cfg.get("prompt_branch", {}).get("prompt_file"), subcmd="execute")
+            return
+        elif args.cmd == "analyze":
+            cmd_prompt_defined(cfg, prompt_path=cfg.get("prompt_branch", {}).get("prompt_file"), subcmd="analyze")
+            return
+        elif args.cmd == "run":
+            cmd_prompt_defined(cfg, prompt_path=cfg.get("prompt_branch", {}).get("prompt_file"), subcmd="run")
+            return
+
     if args.cmd == "generate":
         cmd_generate(cfg, baseline_id=args.baseline_id, with_lit=args.with_lit)
     elif args.cmd == "execute":
@@ -205,5 +330,6 @@ def main():
         ret = cmd_generate(cfg, baseline_id=args.baseline_id, with_lit=args.with_lit)
         cmd_execute(cfg, baseline_id=args.baseline_id, which=args.which, trial_dir=ret["trial_dir"])
         cmd_analyze(cfg, baseline_id=args.baseline_id, trial_dir=ret["trial_dir"])
+
 if __name__ == "__main__":
     main()

@@ -1,0 +1,52 @@
+# Prompt-defined pipeline specification
+# Fill in your dataset paths and column names, and tweak the split/metrics as needed.
+dataset:
+  name: "${dataset_name}"
+  resources:
+    # Provide one or more data files (CSV/Parquet/Feather). The generated code should handle CSV by default.
+    train_file: "./data/${dataset_name}/train.csv"   # <-- edit to your real path
+    #valid_file: "./data/${dataset_name}/valid.csv"  # optional
+    #test_file: "./data/${dataset_name}/test.csv"    # optional
+  columns:
+    smiles: "SMILES"          # column for molecular SMILES; required for leave-smiles-out
+    plate: "plate_id"         # column for plate ID or batch; required for leave-plates-out
+    targets: ["y"]            # one or more numeric targets to predict
+    deg_flag: "is_deg"        # optional boolean/int column; used for DEG_* metrics
+    systema_flag: "is_systema"  # optional boolean/int column; used for Systema_* metrics
+  options:
+    # If features are not present, the model can featurize SMILES (e.g., RDKit descriptors) inside the generated code.
+    has_precomputed_features: false
+
+split:
+  # Two supported methods: leave-smiles-out (recommended) and leave-plates-out
+  method: "leave-smiles-out"   # or "leave-plates-out"
+  n_folds: 5
+  group_column_override: ""    # set to a column name if you want to override automatic grouping
+
+metrics:
+  primary: "PCC"  # Choose from: PCC, RMSE, DEG_PCC, DEG_RMSE, Direction_ACC, Systema_PCC, Systema_RMSE
+  list: ["PCC", "RMSE", "DEG_PCC", "DEG_RMSE", "Direction_ACC", "Systema_PCC", "Systema_RMSE"]
+  direction_threshold: 0.0  # >= threshold means "up", < threshold means "down"
+
+modeling:
+  # Give high-level preferences only; the LLM will pick the exact algorithms.
+  preferences:
+    - "Start with linear/elastic net baselines; consider tree ensembles if nonlinearity is evident."
+    - "Standardize numeric features; stratify if applicable."
+    - "Use deterministic seeds for reproducibility."
+  constraints:
+    - "Do NOT leak test folds into training in any way."
+    - "Honor the grouping and fairness constraints for CV."
+    - "Report and save per-fold & aggregated metrics to metrics.json."
+
+runtime:
+  seed: 22
+  save_dir: "./results/${dataset_name}/generate_execution/prompt_runs"  # base dir; a timestamped subdir will be created
+
+# The agent should generate a SINGLE self-contained Python script that:
+# - Loads the specified data
+# - Builds 5-fold CV with the chosen grouping protocol
+# - Trains reasonable baseline models
+# - Computes all requested metrics
+# - Saves metrics.json and a small text log
+# - Prints the final aggregated metrics
