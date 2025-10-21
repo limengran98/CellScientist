@@ -117,7 +117,7 @@ def execute_once(
     guard_added = False
     if inject_exit_guard:
         guard_code = (
-            "# [AUTO-FIX] execution guard: neutralize exit calls so the kernel keeps running\n"
+            "# [AUTO-FIX] execution guard: keep kernel alive and sanitize argv for argparse\n"
             "import sys, builtins, os\n"
             "def _nb_exit_guard(*args, **kwargs):\n"
             "    print('[AUTO-FIX] Intercepted exit(); continuing execution instead of killing kernel.')\n"
@@ -128,6 +128,13 @@ def execute_once(
             "    os._exit = _nb_exit_guard\n"
             "except Exception as _e:\n"
             "    print('[AUTO-FIX] exit guard install warning:', _e)\n"
+            "try:\n"
+            "    # If running under ipykernel, strip its args so argparse won't see -f /tmp/xxx.json\n"
+            "    if ('ipykernel' in (sys.argv[0] or '')) or any(a == '-f' or a.startswith('-f=') for a in sys.argv[1:]):\n"
+            "        sys.argv = [sys.argv[0]]\n"
+            "        print('[AUTO-FIX] sanitized sys.argv for argparse safety')\n"
+            "except Exception as _e:\n"
+            "    print('[AUTO-FIX] argv sanitize warning:', _e)\n"
         )
         nb_to_run.cells.insert(0, nbformat.v4.new_code_cell(guard_code))
         guard_added = True
