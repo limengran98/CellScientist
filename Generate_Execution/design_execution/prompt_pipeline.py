@@ -19,6 +19,9 @@ results/${dataset_name}/generate_execution/prompt/prompt_run_YYYYMMDD_HHMMSS/
 import os, io, re, json, time, datetime, subprocess, textwrap, pathlib, sys, glob
 from typing import Dict, Any, Tuple, List, Optional
 
+from pathlib import Path
+
+
 try:
     import yaml
 except Exception:
@@ -28,6 +31,68 @@ import nbformat
 from nbclient import NotebookClient
 import requests
 
+from pathlib import Path
+from design_execution.nb_autofix import execute_with_autofix 
+
+def _find_llm_providers_path_for_gen(cfg: Optional[Dict[str, Any]]) -> Optional[Path]:
+    # 1) cfg.paths.llm_providers
+    if cfg:
+        p = (cfg.get("paths") or {}).get("llm_providers")
+        if p:
+            pp = Path(p).expanduser().resolve()
+            if pp.exists():
+                return pp
+    # 2) env override
+    env_p = os.getenv("LLM_PROVIDERS_PATH")
+    if env_p:
+        ep = Path(env_p).expanduser().resolve()
+        if ep.exists():
+            return ep
+    # 3) walk upwards to find llm_providers.json
+    here = Path(__file__).resolve()
+    for anc in [here] + list(here.parents):
+        cand = anc / "llm_providers.json"
+        if cand.exists():
+            return cand
+    return None
+
+def _load_llm_profile_for_generation(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    fp = _find_llm_providers_path_for_gen(cfg)
+    if not fp:
+        raise RuntimeError("llm_providers.json not found. Set cfg.paths.llm_providers or LLM_PROVIDERS_PATH.")
+    mp = json.loads(fp.read_text(encoding="utf-8"))
+    providers = (mp.get("providers") or {})
+    want = ((cfg.get("llm") or {}).get("provider")) or mp.get("default_provider")
+    if not want and providers:
+        want = next(iter(providers.keys()))
+    if not want or want not in providers:
+        raise RuntimeError(f"Provider '{want}' not found in {fp}")
+    prof = providers[want] or {}
+
+    # pick model
+    model = prof.get("model")
+    if not model:
+        models = prof.get("models") or []
+        model = models[0] if models else "gpt-4o-mini"
+
+    # env override for secrets
+    base_url = os.getenv(f"{want.upper()}_BASE_URL", prof.get("base_url"))
+    api_key  = os.getenv(f"{want. upper()}_API_KEY",  prof.get("api_key"))
+
+    # temperature / max_tokens: 优先 prompt_branch（生成阶段常用），否则 provider 默认
+    pb = (cfg.get("prompt_branch") or {})
+    temperature = pb.get("temperature", prof.get("temperature", 0.0))
+    max_tokens  = pb.get("max_tokens",  prof.get("max_tokens", 20000))
+
+    return {
+        "provider": want,
+        "model": model,
+        "base_url": base_url,
+        "api_key": api_key,
+        "temperature": float(temperature),
+        "max_tokens": int(max_tokens),
+        "providers_path": str(fp),
+    }
 
 PROMPT_SYSTEM = """\
 You are an elite ML engineer. Produce a SINGLE Jupyter notebook (nbformat v4 JSON).
@@ -175,17 +240,50 @@ def _chat_text_stable(messages, api_key: str, base_url: str, model: str,
 # ---------------------------
 def generate_notebook_from_prompt(cfg: Dict[str, Any], spec_path: str, debug_dir: str) -> Tuple[nbformat.NotebookNode, str]:
     os.makedirs(debug_dir, exist_ok=True)
+    ds_name = (cfg.get("dataset_name")
+            or os.environ.get("dataset_name")
+            or os.environ.get("DATASET_NAME")
+            or "").strip()
+    if ds_name:
+        os.environ["dataset_name"] = ds_name
+        os.environ["DATASET_NAME"] = ds_name
+
+    repo_root = Path(__file__).resolve()
+    while not (repo_root / "data").exists() and repo_root != repo_root.parent:
+        repo_root = repo_root.parent
+    os.environ.setdefault("repo_root", str(repo_root))
+
+    # 读取 & 变量展开（你原来的）
     spec = _expand_vars(_read_yaml(spec_path))
 
-    # optional Phase-1 hint (high-level only)
-    phase1_dir = cfg.get("paths", {}).get("stage1_analysis_dir", "")
-    phase1_hint = _summarize_phase1(phase1_dir)
+    # ==== (1) 组装 messages：支持没有 user: 的 YAML ====
+    import yaml
+    sys_txt = ""
+    dev_txt = ""
+    usr_txt = ""
 
-    system = PROMPT_SYSTEM
-    user = _build_user_prompt(spec, phase1_hint)
-    messages = [{"role": "system", "content": system},
-                {"role": "user", "content": user}]
+    if isinstance(spec, dict):
+        sys_txt = (spec.get("system") or "").strip()
+        dev_txt = (spec.get("developer") or "").strip()
+        # 没有 user: 时，把除 system/developer 的顶层键当 SPEC 序列化
+        core = {k: v for k, v in spec.items() if k not in ("system", "developer", "user")}
+        if core:
+            usr_txt = yaml.safe_dump(core, allow_unicode=True, sort_keys=False).strip()
 
+    if not usr_txt:
+        # 回退到你的一阶段构造逻辑
+        phase1_dir = cfg.get("paths", {}).get("stage1_analysis_dir", "")
+        phase1_hint = _summarize_phase1(phase1_dir)
+        usr_txt = _build_user_prompt(spec, phase1_hint)
+
+    system = sys_txt if sys_txt else PROMPT_SYSTEM
+
+    messages = [{"role": "system", "content": system}]
+    if dev_txt:
+        messages.append({"role": "system", "content": "Developer instructions:\n" + dev_txt})
+    messages.append({"role": "user", "content": usr_txt})
+
+    # ==== (2) 调用 LLM（保持你的调用参数） ====
     llm_cfg = cfg.get("llm", {})
     base_url = llm_cfg.get("base_url", os.getenv("OPENAI_BASE_URL", "https://vip.yi-zhan.top/v1"))
     api_key  = llm_cfg.get("api_key",  os.getenv("OPENAI_API_KEY", "any_string_if_required"))
@@ -193,7 +291,22 @@ def generate_notebook_from_prompt(cfg: Dict[str, Any], spec_path: str, debug_dir
     timeout  = int(llm_cfg.get("timeout", 1200))
     pb = cfg.get("prompt_branch", {}) or {}
 
-    raw_text = _chat_text_stable(
+    def _strip_code_fences(s: str) -> str:
+        if not isinstance(s, str):
+            return ""
+        s = s.strip()
+        if s.startswith("```"):
+            # 去掉 ```json / ```python 围栏
+            s = re.sub(r"^```(?:json|python)?\s*|\s*```$", "", s, flags=re.I | re.S).strip()
+        return s
+
+    def _wrap_code_to_notebook(code_text: str) -> nbformat.NotebookNode:
+        nb = nbformat.v4.new_notebook()
+        nb.cells = [nbformat.v4.new_code_cell(code_text)]
+        return nb
+
+    # round-1: 原始 prompt
+    raw_text_1 = _chat_text_stable(
         messages=messages,
         api_key=api_key,
         base_url=base_url,
@@ -204,27 +317,82 @@ def generate_notebook_from_prompt(cfg: Dict[str, Any], spec_path: str, debug_dir
         timeout=timeout,
         debug_dir=debug_dir
     )
+    # 落盘快照
+    open(os.path.join(debug_dir, "llm_raw_text_r1.txt"), "w", encoding="utf-8").write(raw_text_1 or "")
 
-    # Expect a pure JSON for nbformat v4; try to extract if fenced
-    cleaned = raw_text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.IGNORECASE | re.DOTALL).strip()
+    cleaned = _strip_code_fences(raw_text_1)
+
+    # 尝试按 JSON 解析
+    try:
+        if cleaned:
+            nb_json = json.loads(cleaned)
+        else:
+            raise ValueError("empty response")
+    except Exception:
+        # 如果不是 JSON，尝试解析为代码并包成 notebook（不中断）
+        if cleaned and not cleaned.lstrip().startswith("{"):
+            # 很多模型直接给了脚本文本/带 ```python
+            nb = _wrap_code_to_notebook(cleaned)
+            return nb, usr_txt
+
+        # round-2: 强约束“只返回 JSON”
+        hard_rule = (
+            "Return STRICT JSON only with one of these keys:\n"
+            "  1) {\"notebook\": <nbformat v4 JSON>}\n"
+            "  2) {\"code\": \"<python script>\"}\n"
+            "No markdown, no backticks, no extra commentary."
+        )
+        messages2 = list(messages) + [{"role": "system", "content": hard_rule}]
+        raw_text_2 = _chat_text_stable(
+            messages=messages2,
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            temperature=pb.get("temperature", 0.2),
+            max_tokens=pb.get("max_tokens", 80000),
+            retries=max(1, pb.get("retries", 4)-1),
+            timeout=timeout,
+            debug_dir=debug_dir
+        )
+        open(os.path.join(debug_dir, "llm_raw_text_r2.txt"), "w", encoding="utf-8").write(raw_text_2 or "")
+        cleaned2 = _strip_code_fences(raw_text_2)
+
+        # 二次尝试 JSON
+        try:
+            nb_json = json.loads(cleaned2)
+        except Exception as e2:
+            # 最后兜底：如果像代码，就包成 notebook
+            if cleaned2 and not cleaned2.lstrip().startswith("{"):
+                nb = _wrap_code_to_notebook(cleaned2)
+                return nb, usr_txt
+            # 保存原文并报错
+            with open(os.path.join(debug_dir, "raw_unparsed.txt"), "w", encoding="utf-8") as f:
+                f.write(raw_text_1 or "")
+                f.write("\n\n===== SECOND ROUND =====\n\n")
+                f.write(raw_text_2 or "")
+            raise RuntimeError(f"Notebook JSON parse failed: {e2}")
+
+    # 走到这里：拿到了 JSON，可能是 {notebook: {...}} 或直接 nbformat dict
+    if isinstance(nb_json, dict) and "notebook" in nb_json and isinstance(nb_json["notebook"], dict):
+        nb_payload = nb_json["notebook"]
+    else:
+        nb_payload = nb_json
 
     try:
-        nb_json = json.loads(cleaned)
-    except Exception as e:
-        with open(os.path.join(debug_dir, "raw_unparsed.txt"), "w", encoding="utf-8") as f:
-            f.write(raw_text)
-        raise RuntimeError(f"Notebook JSON parse failed: {e}")
-
-    try:
-        nb = nbformat.from_dict(nb_json)
+        nb = nbformat.from_dict(nb_payload)
         if nb.nbformat != 4:
             raise RuntimeError(f"nbformat must be 4, got {nb.nbformat}")
     except Exception as e:
+        # 如果 JSON 其实是 {"code": "..."}，也兼容
+        code_fallback = None
+        if isinstance(nb_json, dict) and isinstance(nb_json.get("code"), str):
+            code_fallback = nb_json["code"]
+        if code_fallback:
+            nb = _wrap_code_to_notebook(code_fallback)
+            return nb, usr_txt
         raise RuntimeError(f"Invalid notebook format: {e}")
 
-    return nb, user
+    return nb, usr_txt
 
 
 # ---------------------------
@@ -287,8 +455,10 @@ def prompt_generate(cfg: dict, spec_path: str) -> dict:
         nbformat.write(nb, f)
     return {"trial_dir": tdir, "artifact": nb_path}
 
+
+
 def prompt_execute(cfg: dict, trial_dir: str = None) -> dict:
-    """Execute an existing prompt artifact (default: the latest one)."""
+    """Execute the latest prompt artifact with auto-fix (known patches + optional LLM)."""
     tdir = trial_dir or _latest_prompt_dir(cfg)
     if not tdir:
         raise RuntimeError("No prompt trial found. Run 'generate' first.")
@@ -297,53 +467,120 @@ def prompt_execute(cfg: dict, trial_dir: str = None) -> dict:
     if not os.path.exists(nb_path):
         raise RuntimeError(f"notebook_prompt.ipynb not found in {tdir}")
 
-    nb = nbformat.read(nb_path, as_version=4)
-    os.environ["OUTPUT_DIR"] = tdir
-    client = NotebookClient(nb, timeout=1800, kernel_name="python3", resources={"metadata": {"path": tdir}})
-    exec_nb = client.execute()
-    with open(os.path.join(tdir, "notebook_prompt_exec.ipynb"), "w", encoding="utf-8") as f:
-        nbformat.write(exec_nb, f)
+    # --- read exec config & LLM switch ---
+    exec_cfg = (cfg.get("exec") or {})
+    timeout = int(exec_cfg.get("timeout_seconds", 1800))
+    max_fix_rounds = int(exec_cfg.get("max_fix_rounds", 1))
+    use_llm = bool(exec_cfg.get("enable_llm_autofix", True))   # <— the switch
 
+    print(f"[PROMPT] exec config -> timeout_seconds={timeout}, max_fix_rounds={max_fix_rounds}, "
+          f"enable_llm_autofix={use_llm}")
+    print(f"[PROMPT] trial_dir={tdir}")
+    print(f"[PROMPT] notebook={nb_path}")
+
+    out_exec = os.path.join(tdir, "notebook_prompt_exec.ipynb")
+    final_exec_path = execute_with_autofix(
+        ipynb_path=nb_path,
+        out_exec_path=out_exec,
+        workdir=tdir,
+        timeout=timeout,
+        max_fix_rounds=max_fix_rounds,
+        verbose=True,
+        phase_cfg=cfg,                 # pass full cfg so LLM can read provider/env
+        use_llm_autofix=use_llm,       # <— pass the flag down
+        save_intermediates=True,
+    )
+    print(f"[PROMPT] executed notebook -> {final_exec_path}")
+
+    # read metrics if present
     metrics_path = os.path.join(tdir, "metrics.json")
     metrics = {}
     if os.path.exists(metrics_path):
         try:
-            metrics = json.load(open(metrics_path, "r", encoding="utf-8"))
-        except Exception:
-            pass
-    return {"trial_dir": tdir, "metrics": metrics}
+            with open(metrics_path, "r", encoding="utf-8") as f:
+                metrics = json.load(f)
+            print(f"[PROMPT] metrics loaded: keys={list(metrics.keys())}")
+        except Exception as e:
+            print(f"[PROMPT][WARN] failed to read metrics.json: {e}")
+    else:
+        print(f"[PROMPT][WARN] metrics.json not found in {tdir}")
 
-def prompt_analyze(cfg: dict, trial_dir: str = None) -> str:
-    """Read metrics.json and write a short markdown report under reports/."""
-    tdir = trial_dir or _latest_prompt_dir(cfg)
-    if not tdir:
-        raise RuntimeError("No prompt trial found. Run 'generate'/'execute' first.")
-    metrics_path = os.path.join(tdir, "metrics.json")
+    return {"trial_dir": tdir, "metrics": metrics, "exec_notebook": final_exec_path}
+
+
+
+def prompt_analyze(cfg: dict, trial_dir: str) -> dict:
+    """
+    Analyze the executed prompt run. If metrics.json is missing, attempt to
+    execute once, then degrade gracefully instead of raising.
+    """
+    metrics_path = os.path.join(trial_dir, "metrics.json")
+
     if not os.path.exists(metrics_path):
-        raise RuntimeError(f"metrics.json not found in {tdir}")
-    metrics = json.load(open(metrics_path, "r", encoding="utf-8"))
-    # write a minimal report
-    reports_dir = os.path.join(cfg["paths"]["design_execution_root"], "reports")
-    os.makedirs(reports_dir, exist_ok=True)
-    name = os.path.basename(tdir)
-    rpt = os.path.join(reports_dir, f"Report_{name}.md")
-    with open(rpt, "w", encoding="utf-8") as f:
-        f.write(f"# Prompt Trial Report: {name}\n\n")
-        f.write("## Aggregate metrics\n\n```json\n")
-        f.write(json.dumps(metrics.get("aggregate", {}), indent=2, ensure_ascii=False))
-        f.write("\n```\n")
-    return rpt
+        print(f"[WARN] metrics.json not found in {trial_dir}; attempting to execute once...")
+        try:
+            # 兜底：跑一遍执行（如果上游没跑或失败），不抛错影响后续
+            _ = prompt_execute(cfg, trial_dir)
+        except Exception as e:
+            print(f"[WARN] execution attempt during analyze failed: {e}")
+
+    metrics = {}
+    if os.path.exists(metrics_path):
+        try:
+            with open(metrics_path, "r", encoding="utf-8") as f:
+                metrics = json.load(f)
+        except Exception as e:
+            print(f"[WARN] failed to read metrics.json: {e}")
+    else:
+        # 仍然没有，就降级而不是 raise，避免像你现在的栈那样中断
+        print(f"[WARN] metrics.json still missing after execution attempt; "
+              f"continue analysis with limited info.")
+
+    # === 这里保持你原有的分析逻辑 ===
+    # 例：生成一份简要报告占位；如果你已有更完整的报告逻辑，直接用你现有的
+    report = {
+        "trial_dir": trial_dir,
+        "has_metrics": bool(metrics),
+        "metrics_keys": list(metrics.keys()) if metrics else [],
+        "notes": "metrics unavailable" if not metrics else "ok"
+    }
+
+    # （可选）把分析结果落盘
+    try:
+        with open(os.path.join(trial_dir, "analysis_summary.json"), "w", encoding="utf-8") as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    return report
+
 
 
 # ---------------------------
 # One-click
 # ---------------------------
-def run_prompt_pipeline(cfg: Dict[str, Any], spec_path: str) -> Dict[str, Any]:
-    """One-click: generate → execute → analyze."""
-    gen = prompt_generate(cfg, spec_path)
-    exe = prompt_execute(cfg, gen["trial_dir"])
-    rpt = prompt_analyze(cfg, gen["trial_dir"])
-    ret = {"trial_dir": gen["trial_dir"], "metrics": exe.get("metrics", {})}
-    ret["notebook_path"] = os.path.join(gen["trial_dir"], "notebook_prompt.ipynb")
-    ret["report_path"] = rpt
-    return ret
+def run_prompt_pipeline(cfg: dict, prompt_path: str) -> dict:
+    """
+    End-to-end pipeline for prompt-defined run:
+      1) generate notebook
+      2) execute with auto-fix (produces metrics.json)
+      3) analyze (consumes metrics.json if present)
+    """
+    print("[INFO] === Generating prompt notebook ===")
+    gen = prompt_generate(cfg, prompt_path)   
+    tdir = gen["trial_dir"]
+
+    print("[INFO] === Executing prompt notebook (with auto-fix) ===")
+    exec_ret = prompt_execute(cfg, tdir)     
+    print("[INFO] === Analyzing results ===")
+    rpt = prompt_analyze(cfg, exec_ret["trial_dir"]) 
+
+    return {
+        "trial_dir": exec_ret["trial_dir"],
+        "exec_notebook": exec_ret.get("exec_notebook"),
+        "metrics": exec_ret.get("metrics", {}),
+        "report": rpt
+    }
+
+
+

@@ -2,12 +2,12 @@
 
 ## Run
 ```bash
-python cellscientist_phase_2.py --config generate_execution_config.json generate --baseline-id 0 --with-lit
+python cellscientist_phase_2.py --config generate_execution_config.json generate --with-lit
 ```
 
 Or run the full 3-phase pipeline:
 ```bash
-python cellscientist_phase_2.py --config generate_execution_config.json run --baseline-id 0 --with-lit --which both
+python cellscientist_phase_2.py --config generate_execution_config.json run --with-lit
 ```
 
 ---

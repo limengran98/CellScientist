@@ -1,0 +1,26 @@
+{
+  "status": "ok",
+  "message": "No explicit results were provided; saved defaults.",
+  "details": {
+    "X_train_shape": [
+      0,
+      0
+    ],
+    "X_test_shape": [
+      0,
+      0
+    ],
+    "sanitization_summary": {
+      "X_train_shape": [
+        0,
+        0
+      ],
+      "X_test_shape": [
+        0,
+        0
+      ],
+      "nan_in_train": false,
+      "nan_in_test": false
+    }
+  }
+}

@@ -1,18 +1,51 @@
+system: |
+  You are a principal ML scientist. Generate ONE self-contained Python script (no prose) that:
+  - Loads the provided SPEC (YAML), expands ${repo_root}/${dataset_name}.
+  - Builds K-fold CV exactly as in the SPEC (respect grouping; no leakage).
+  - Trains strong baselines and at least one innovative method, then compares them on identical folds.
+  - Computes metrics listed in SPEC and writes metrics.json; also writes analysis_summary.json explaining why the winner wins.
+  Hard rules:
+  - Do NOT change seeds, folds, grouping, metrics, or output file names/locations.
+  - Deterministic: set numpy/random/sklearn (and torch if used) seeds from SPEC.runtime.seed.
+  - Fail gracefully if optional heavy deps are missing (skip that model), but keep the run successful.
+  - At the end, print one line: `FINAL_METRICS: <json>`.
+
+developer: |
+  Baselines:
+    - ElasticNet/LogisticRegression pipelines with Imputer+Scaler.
+    - RandomForest (or GradientBoosting). If xgboost/lightgbm/catboost exists, you may add one, but keep RandomForest.
+  Innovation (implement >=1 end-to-end, pick best by SPEC.metrics.primary):
+    - Dose-aware ordinal/ranking model when labels look ordered; map to continuous scores for PCC/RMSE.
+    - Plate-confounding control: group-aware target encoding with nested-CV inside training folds (no leakage).
+    - Contrastive delta features if pre/post are present: X=[pre, post, post-pre] with linear+tree heads.
+    - Uncertainty-aware regression (NGBoost or quantile) + calibration summary.
+  Ablations:
+    - With/without plate-aware encoding; with/without ordinal loss (if applicable); report both.
+  Outputs:
+    - metrics.json: { "models": {name: {per_fold:..., aggregate:...}}, "winner": name, "targets": [...], "folds": K }
+    - analysis_summary.json: { "hypotheses":[...], "ablations":[...], "why_it_wins":"...", "next_steps":"..." }
+  CLI:
+    - `python script.py --spec <spec.yaml> --out <outdir>`; defaults read from env if args missing.
+
+
 # Prompt-defined pipeline specification
 # Fill in your dataset paths and column names, and tweak the split/metrics as needed.
 dataset:
   name: "${dataset_name}"
   resources:
-    # 只提供原始完整数据文件，划分由代码执行
-    full_file: "../data/${dataset_name}/CP_data.csv"   # <-- 这里改为完整数据路径
+    full_file: "${repo_root}/data/${dataset_name}/CP_data.csv"  # 绝对路径展开
   columns:
-    smiles: "SMILES"
-    plate: "plate_id"
-    targets: ["y"]
-    deg_flag: "is_deg"
-    systema_flag: "is_systema"
+    smiles: "SMILES"            # 可选
+    plate: "Metadata_Plate"     # 可选
+    # 任选其一或组合使用 ↓↓↓
+    targets: "__AUTO__"         # 自动识别（见下方代码逻辑）
+    # targets_prefixes: ["post_"]    # 若是 pre_/post_ 场景，用这个指定“后”的前缀
+    # features_prefixes: ["pre_", "Cells_", "Cytoplasm_", "Nuclei_"]  # 指定哪些是特征前缀
+    # targets_regex: ""              # 可选：用正则匹配目标列
+    label_hints: ["y","label","target","class","dose"]  # 优先候选（你这个数据里会自动命中 dose）
+    target_exclude: ["Metadata_", "is_", "_flag"]       # 排除前缀/子串（支持列表里写局部片段）
   options:
-    has_precomputed_features: false
+    has_precomputed_features: true   # 你这份数据已经是特征表
 
 split:
   # 指定划分由代码内部完成
@@ -20,8 +53,9 @@ split:
   n_folds: 5
   group_column_override: ""
   save_split: true                      # 新增参数：是否保存划分结果
-  save_split_dir: "../data/${dataset_name}/splits"  # 新增：保存划分后的索引或CSV的路径
+  save_split_dir: "${repo_root}/data/${dataset_name}/splits"  # 新增：保存划分后的索引或CSV的路径
   random_state: 22                      # 新增：随机种子
+
 metrics:
   primary: "PCC"  # Choose from: PCC, RMSE, DEG_PCC, DEG_RMSE, Direction_ACC, Systema_PCC, Systema_RMSE
   list: ["PCC", "RMSE", "DEG_PCC", "DEG_RMSE", "Direction_ACC", "Systema_PCC", "Systema_RMSE"]
@@ -40,7 +74,7 @@ modeling:
 
 runtime:
   seed: 22
-  save_dir: "./results/${dataset_name}/generate_execution/prompt_runs"  # base dir; a timestamped subdir will be created
+  save_dir: "${repo_root}/results/${dataset_name}/generate_execution/prompt_runs"  # base dir; a timestamped subdir will be created
 
 # The agent should generate a SINGLE self-contained Python script that:
 # - Loads the specified data
@@ -49,3 +83,4 @@ runtime:
 # - Computes all requested metrics
 # - Saves metrics.json and a small text log
 # - Prints the final aggregated metrics
+  # SPEC END
