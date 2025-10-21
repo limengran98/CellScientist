@@ -94,16 +94,62 @@ def collect_cell_errors(nb: nbformat.NotebookNode) -> List[Dict[str, Any]]:
                 })
     return errs
 
-def execute_once(nb: nbformat.NotebookNode, workdir: str, timeout: int = 1800, allow_errors: bool = True) -> Tuple[nbformat.NotebookNode, List[Dict[str, Any]]]:
-    """Execute a notebook once in the given working directory and return (executed_notebook, errors)."""
+def execute_once(
+    nb: nbformat.NotebookNode,
+    workdir: str,
+    timeout: int = 1800,
+    allow_errors: bool = True,
+    inject_exit_guard: bool = True,
+) -> Tuple[nbformat.NotebookNode, List[Dict[str, Any]]]:
+    """
+    Execute a notebook once under workdir and return (executed_notebook, errors).
+
+    If `inject_exit_guard` is True, we prepend a temporary guard cell that neutralizes
+    sys.exit / builtins.exit / os._exit so they DO NOT terminate the kernel.
+    The guard cell is removed from the returned executed notebook so the structure matches the original.
+    """
     os.makedirs(workdir, exist_ok=True)
     os.environ["OUTPUT_DIR"] = workdir
+
+    from copy import deepcopy as _dc
+    nb_to_run = _dc(nb)
+
+    guard_added = False
+    if inject_exit_guard:
+        guard_code = (
+            "# [AUTO-FIX] execution guard: neutralize exit calls so the kernel keeps running\n"
+            "import sys, builtins, os\n"
+            "def _nb_exit_guard(*args, **kwargs):\n"
+            "    print('[AUTO-FIX] Intercepted exit(); continuing execution instead of killing kernel.')\n"
+            "    raise RuntimeError('NBExitIntercepted')\n"
+            "try:\n"
+            "    sys.exit = _nb_exit_guard\n"
+            "    builtins.exit = _nb_exit_guard\n"
+            "    os._exit = _nb_exit_guard\n"
+            "except Exception as _e:\n"
+            "    print('[AUTO-FIX] exit guard install warning:', _e)\n"
+        )
+        nb_to_run.cells.insert(0, nbformat.v4.new_code_cell(guard_code))
+        guard_added = True
+
     client = NotebookClient(
-        nb, timeout=timeout, kernel_name="python3",
-        allow_errors=allow_errors, resources={"metadata": {"path": workdir}}
+        nb_to_run,
+        timeout=timeout,
+        kernel_name="python3",
+        allow_errors=allow_errors,
+        resources={"metadata": {"path": workdir}},
     )
     exec_nb = client.execute()
-    return exec_nb, collect_cell_errors(exec_nb)
+
+    # remove the guard cell; keep indices aligned with original
+    if guard_added and len(exec_nb.cells) > 0:
+        exec_nb.cells.pop(0)
+
+    # collect errors (do NOT filter out SystemExit / NBExitIntercepted anymore)
+    errors = collect_cell_errors(exec_nb)
+    return exec_nb, errors
+
+
 
 def _short(s: str, n: int = 160) -> str:
     """Shorten a string for concise logging."""
