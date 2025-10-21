@@ -94,7 +94,7 @@ python cellscientist_phase_2.py --config generate_execution_config.json --pipeli
 ### **B. Execute**
 Run baseline and patched notebooks:
 ```bash
-python cellscientist_phase_2.py --config generate_execution_config.json --pipeline-mode prompt execute  --which both
+python cellscientist_phase_2.py --config generate_execution_config.json --pipeline-mode prompt execute --which both
 ```
 
 Outputs:
@@ -117,7 +117,7 @@ Report path:
 ### **D. Full Pipeline**
 Run all three stages in sequence:
 ```bash
-python cellscientist_phase_2.py --config generate_execution_config.json run --baseline-id 0 --with-lit --which both
+python cellscientist_phase_2.py --config generate_execution_config.json run --with-lit --which both
 ```
 
 

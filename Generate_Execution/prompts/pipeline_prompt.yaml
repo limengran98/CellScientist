@@ -3,26 +3,25 @@
 dataset:
   name: "${dataset_name}"
   resources:
-    # Provide one or more data files (CSV/Parquet/Feather). The generated code should handle CSV by default.
-    train_file: "./data/${dataset_name}/train.csv"   # <-- edit to your real path
-    #valid_file: "./data/${dataset_name}/valid.csv"  # optional
-    #test_file: "./data/${dataset_name}/test.csv"    # optional
+    # 只提供原始完整数据文件，划分由代码执行
+    full_file: "../data/${dataset_name}/CP_data.csv"   # <-- 这里改为完整数据路径
   columns:
-    smiles: "SMILES"          # column for molecular SMILES; required for leave-smiles-out
-    plate: "plate_id"         # column for plate ID or batch; required for leave-plates-out
-    targets: ["y"]            # one or more numeric targets to predict
-    deg_flag: "is_deg"        # optional boolean/int column; used for DEG_* metrics
-    systema_flag: "is_systema"  # optional boolean/int column; used for Systema_* metrics
+    smiles: "SMILES"
+    plate: "plate_id"
+    targets: ["y"]
+    deg_flag: "is_deg"
+    systema_flag: "is_systema"
   options:
-    # If features are not present, the model can featurize SMILES (e.g., RDKit descriptors) inside the generated code.
     has_precomputed_features: false
 
 split:
-  # Two supported methods: leave-smiles-out (recommended) and leave-plates-out
-  method: "leave-smiles-out"   # or "leave-plates-out"
+  # 指定划分由代码内部完成
+  method: "leave-smiles-out"   # 可改为 leave-plates-out
   n_folds: 5
-  group_column_override: ""    # set to a column name if you want to override automatic grouping
-
+  group_column_override: ""
+  save_split: true                      # 新增参数：是否保存划分结果
+  save_split_dir: "../data/${dataset_name}/splits"  # 新增：保存划分后的索引或CSV的路径
+  random_state: 22                      # 新增：随机种子
 metrics:
   primary: "PCC"  # Choose from: PCC, RMSE, DEG_PCC, DEG_RMSE, Direction_ACC, Systema_PCC, Systema_RMSE
   list: ["PCC", "RMSE", "DEG_PCC", "DEG_RMSE", "Direction_ACC", "Systema_PCC", "Systema_RMSE"]
