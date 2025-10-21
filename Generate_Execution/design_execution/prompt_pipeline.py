@@ -487,7 +487,7 @@ def prompt_execute(cfg: dict, trial_dir: str = None) -> dict:
         max_fix_rounds=max_fix_rounds,
         verbose=True,
         phase_cfg=cfg,                 # pass full cfg so LLM can read provider/env
-        use_llm_autofix=use_llm,       # <— pass the flag down
+        preserve_source_in_exec=True,
         save_intermediates=True,
     )
     print(f"[PROMPT] executed notebook -> {final_exec_path}")

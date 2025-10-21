@@ -14,6 +14,9 @@ from .run_llm_nb import (
         execute_notebook as _llm_execute_notebook,
     )
 
+
+from copy import deepcopy
+
 def _find_llm_providers_path(cfg: dict | None) -> Path | None:
     """Find llm_providers.json: cfg.paths.llm_providers > repo root walk-up."""
     # 1) explicit path in cfg
@@ -335,9 +338,11 @@ def _known_fix_snippet(evalue: str) -> Optional[str]:
     # No known patch
     return None
 
-def apply_known_patches(nb: nbformat.NotebookNode, errors: List[Dict[str, Any]]) -> int:
-    """Append known fix snippets to failing code cells only. Return the number of changed cells."""
+def apply_known_patches(nb: nbformat.NotebookNode, errors: List[Dict[str, Any]]) -> Tuple[int, List[int]]:
+    """Inject known fix snippets at the tail of failing code cells.
+    Returns (num_changed, changed_indices)."""
     changed = 0
+    changed_indices: List[int] = []
     for e in errors:
         idx = int(e["cell_index"])
         patch = _known_fix_snippet(e.get("evalue",""))
@@ -352,7 +357,18 @@ def apply_known_patches(nb: nbformat.NotebookNode, errors: List[Dict[str, Any]])
         if patch not in src:
             cell["source"] = src.rstrip() + "\n\n# --- auto-fix patch injected ---\n" + patch
             changed += 1
-    return changed
+            changed_indices.append(idx)
+    return changed, changed_indices
+
+def _restore_sources(exec_nb: nbformat.NotebookNode, original_sources: List[str], indices: Optional[List[int]] = None):
+    """Restore cell `source` from original notebook for selected indices.
+    If indices is None, restore all code cells that have a matching position."""
+    if indices is None:
+        indices = list(range(min(len(original_sources), len(exec_nb.cells))))
+    for i in indices:
+        if 0 <= i < len(exec_nb.cells) and i < len(original_sources):
+            if exec_nb.cells[i].get("cell_type") == "code":
+                exec_nb.cells[i]["source"] = original_sources[i]
 
 # ========== LLM-based repair (leverages phase-1 utilities if available) ==========
 
@@ -475,6 +491,44 @@ def _llm_auto_fix_once(
 
 
 # ========== Main entry: execute + auto-fix ==========
+# --- replace inside design_execution/nb_autofix.py ---
+
+from copy import deepcopy
+
+def apply_known_patches(nb: nbformat.NotebookNode, errors: List[Dict[str, Any]]) -> Tuple[int, List[int]]:
+    """Inject known fix snippets at the tail of failing code cells.
+    Returns (num_changed, changed_indices)."""
+    changed = 0
+    changed_indices: List[int] = []
+    for e in errors:
+        idx = int(e["cell_index"])
+        patch = _known_fix_snippet(e.get("evalue",""))
+        if not patch:
+            continue
+        if idx < 0 or idx >= len(nb.cells):
+            continue
+        cell = nb.cells[idx]
+        if cell.get("cell_type") != "code":
+            continue
+        src = cell.get("source") or ""
+        if patch not in src:
+            cell["source"] = src.rstrip() + "\n\n# --- auto-fix patch injected ---\n" + patch
+            changed += 1
+            changed_indices.append(idx)
+    return changed, changed_indices
+
+
+def _restore_sources(exec_nb: nbformat.NotebookNode, original_sources: List[str], indices: Optional[List[int]] = None):
+    """Restore cell `source` from original notebook for selected indices.
+    If indices is None, restore all code cells that have a matching position."""
+    if indices is None:
+        indices = list(range(min(len(original_sources), len(exec_nb.cells))))
+    for i in indices:
+        if 0 <= i < len(exec_nb.cells) and i < len(original_sources):
+            if exec_nb.cells[i].get("cell_type") == "code":
+                exec_nb.cells[i]["source"] = original_sources[i]
+
+
 def execute_with_autofix(
     ipynb_path: str,
     out_exec_path: str,
@@ -484,39 +538,32 @@ def execute_with_autofix(
     max_fix_rounds: int = 1,
     verbose: bool = False,
     phase_cfg: dict | None = None,
-    use_llm_autofix: bool = True,
-    save_intermediates: bool = False,   
-    intermediate_dir: str | None = None,
+    preserve_source_in_exec: bool = True,
+    save_intermediates: bool = False,
 ) -> str:
     """
-    Execute a notebook with auto-fix.
-    Saves ONLY the final executed notebook to out_exec_path, unless save_intermediates=True.
+    Execute notebook with auto-fix. If `preserve_source_in_exec=True`, the saved
+    exec notebook keeps the **original sources** (from input file) and only
+    attaches outputs from the fixed run. Intermediates are skipped if `save_intermediates=False`.
     """
+
     if verbose:
         print(f"[AUTO-FIX] start execute: {ipynb_path}")
         print(f"[AUTO-FIX] workdir={workdir}, timeout={timeout}s, max_fix_rounds={max_fix_rounds}")
-        print(f"[AUTO-FIX] LLM-based repair: {'ENABLED' if use_llm_autofix else 'DISABLED'}")
-        print(f"[AUTO-FIX] save_intermediates: {save_intermediates}")
+        if preserve_source_in_exec:
+            print("[AUTO-FIX] preserve_source_in_exec=True (exec keeps original code)")
+        if not save_intermediates:
+            print("[AUTO-FIX] save_intermediates=False (no patched *_r#.ipynb saved)")
 
-    nb = nbformat.read(ipynb_path, as_version=4)
+    # Load original notebook once; keep its sources for later restoration.
+    nb_orig = nbformat.read(ipynb_path, as_version=4)
+    original_sources = [c.get("source", "") for c in nb_orig.cells]
 
-    # where to dump intermediates (only if enabled)
-    if save_intermediates:
-        from pathlib import Path
-        inter_dir = Path(intermediate_dir or workdir) / "_autofix_debug"
-        inter_dir.mkdir(parents=True, exist_ok=True)
-        def _write_inter(nbnode, name):
-            p = inter_dir / name
-            nbformat.write(nbnode, p)
-            return str(p)
-    else:
-        def _write_inter(*_args, **_kwargs):
-            return None
+    # We'll work on an in-memory copy for patching/execution.
+    nb_run = deepcopy(nb_orig)
 
-    # initial run (do NOT write out_exec yet)
-    exec_nb, errors = execute_once(nb, workdir, timeout=timeout, allow_errors=True)
-    last_exec_nb = exec_nb
-    _write_inter(exec_nb, "exec_init.ipynb")
+    # First run (allow errors to collect)
+    exec_nb, errors = execute_once(nb_run, workdir, timeout=timeout, allow_errors=True)
 
     if verbose:
         if errors:
@@ -526,44 +573,70 @@ def execute_with_autofix(
         else:
             print("[AUTO-FIX] initial run: success (no errors)")
 
+    # Keep track of which indices we changed (for restoration)
+    all_changed_indices: set[int] = set()
+
     round_idx = 0
     while errors and round_idx < max_fix_rounds:
         round_idx += 1
         if verbose:
-            print(f"[AUTO-FIX] round {round_idx}/{max_fix_rounds} | error cells={[e['cell_index'] for e in errors]}")
+            err_cells = [e["cell_index"] for e in errors]
+            print(f"[AUTO-FIX] round {round_idx}/{max_fix_rounds} | error cells={err_cells}")
 
-        # A) known patches (apply to original source each round)
-        base = nbformat.read(ipynb_path, as_version=4)
-        changed_known = apply_known_patches(base, errors)
-        if changed_known > 0:
-            _write_inter(base, f"patched_r{round_idx}.ipynb")
-            exec_nb, errors = execute_once(base, workdir, timeout=timeout, allow_errors=True)
-            last_exec_nb = exec_nb
-            _write_inter(exec_nb, f"exec_r{round_idx}.ipynb")
+        # A) known patches on a fresh copy of ORIGINAL (avoid cumulative drift)
+        nb_run = deepcopy(nb_orig)
+        changed_known, changed_idxs = apply_known_patches(nb_run, errors)
+        all_changed_indices.update(changed_idxs)
 
-            if not errors:
-                break
-            elif verbose:
-                print(f"[AUTO-FIX] after known patch: remaining errors={len(errors)}")
-
-        # B) LLM repair (only if enabled)
-        if use_llm_autofix and errors:
-            nb_for_llm = base if changed_known > 0 else nbformat.read(ipynb_path, as_version=4)
-            if verbose:
-                print("[AUTO-FIX] escalating to LLM-based fix...")
-            nb_after, errors_after, _patched_cells = _llm_auto_fix_once(
-                nb_for_llm, errors, phase_cfg=phase_cfg, timeout=timeout, verbose=verbose
+        if changed_known > 0 and save_intermediates:
+            patched_src = os.path.join(
+                os.path.dirname(out_exec_path),
+                f"{os.path.splitext(os.path.basename(out_exec_path))[0]}_patched_r{round_idx}.ipynb"
             )
-            last_exec_nb = nb_after
-            _write_inter(nb_after, f"exec_llm_r{round_idx}.ipynb")
-            errors = errors_after
-        elif verbose and errors:
-            print("[AUTO-FIX] LLM disabled; skipping LLM step.")
+            nbformat.write(nb_run, patched_src)
+            if verbose:
+                print(f"[AUTO-FIX] patched source -> {patched_src} (cells changed={changed_known})")
 
-    # write ONLY the final executed notebook
-    nbformat.write(last_exec_nb, out_exec_path)
+        # re-execute after known patches
+        exec_nb, errors = execute_once(nb_run, workdir, timeout=timeout, allow_errors=True)
+        if save_intermediates:
+            exec_round_path = os.path.join(
+                os.path.dirname(out_exec_path),
+                f"{os.path.splitext(os.path.basename(out_exec_path))[0]}_exec_r{round_idx}.ipynb"
+            )
+            nbformat.write(exec_nb, exec_round_path)
+
+        if not errors:
+            break
+        if verbose:
+            print(f"[AUTO-FIX] after known patch: remaining errors={len(errors)}")
+
+        # B) LLM fix if still failing
+        if verbose:
+            print("[AUTO-FIX] escalating to LLM-based fix...")
+        nb_after, errors_after, patched_cells = _llm_auto_fix_once(
+            deepcopy(nb_orig), errors, phase_cfg=phase_cfg, timeout=timeout, verbose=verbose
+        )
+        exec_nb = nb_after  # nb_after is already executed in _llm_auto_fix_once
+        errors = errors_after
+        for idx in patched_cells or []:
+            all_changed_indices.add(int(idx))
+
+    # If user wants the saved exec to keep original code, restore sources now.
+    final_nb = exec_nb
+    if preserve_source_in_exec:
+        # safety: only if cell counts match; otherwise keep the executed code to stay runnable
+        if len(exec_nb.cells) == len(original_sources):
+            final_nb = deepcopy(exec_nb)
+            _restore_sources(final_nb, original_sources, list(all_changed_indices) or None)
+        else:
+            if verbose:
+                print("[AUTO-FIX][WARN] cell count changed; cannot safely restore sources. Keeping executed code.")
+
+    # Always write final exec
+    nbformat.write(final_nb, out_exec_path)
     if verbose:
-        print(f"[AUTO-FIX] final exec -> {out_exec_path} | remaining_errors={len(errors) if errors else 0}")
+        print(f"[AUTO-FIX] done. final exec -> {out_exec_path}")
     return out_exec_path
 
 
