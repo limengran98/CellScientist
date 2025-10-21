@@ -253,10 +253,10 @@ def generate_notebook_from_prompt(cfg: Dict[str, Any], spec_path: str, debug_dir
         repo_root = repo_root.parent
     os.environ.setdefault("repo_root", str(repo_root))
 
-    # 读取 & 变量展开（你原来的）
+    # Read and expand variables (original logic)
     spec = _expand_vars(_read_yaml(spec_path))
 
-    # ==== (1) 组装 messages：支持没有 user: 的 YAML ====
+    # ==== (1) Build messages: support YAMLs without a 'user:' field ====
     import yaml
     sys_txt = ""
     dev_txt = ""
@@ -265,13 +265,13 @@ def generate_notebook_from_prompt(cfg: Dict[str, Any], spec_path: str, debug_dir
     if isinstance(spec, dict):
         sys_txt = (spec.get("system") or "").strip()
         dev_txt = (spec.get("developer") or "").strip()
-        # 没有 user: 时，把除 system/developer 的顶层键当 SPEC 序列化
+        # When there's no 'user:' key, treat all top-level keys except system/developer/user as SPEC and serialize them
         core = {k: v for k, v in spec.items() if k not in ("system", "developer", "user")}
         if core:
             usr_txt = yaml.safe_dump(core, allow_unicode=True, sort_keys=False).strip()
 
     if not usr_txt:
-        # 回退到你的一阶段构造逻辑
+        # Fallback to phase-1 logic
         phase1_dir = cfg.get("paths", {}).get("stage1_analysis_dir", "")
         phase1_hint = _summarize_phase1(phase1_dir)
         usr_txt = _build_user_prompt(spec, phase1_hint)
@@ -283,7 +283,7 @@ def generate_notebook_from_prompt(cfg: Dict[str, Any], spec_path: str, debug_dir
         messages.append({"role": "system", "content": "Developer instructions:\n" + dev_txt})
     messages.append({"role": "user", "content": usr_txt})
 
-    # ==== (2) 调用 LLM（保持你的调用参数） ====
+    # ==== (2) Call the LLM (preserve original parameters) ====
     llm_cfg = cfg.get("llm", {})
     base_url = llm_cfg.get("base_url", os.getenv("OPENAI_BASE_URL", "https://vip.yi-zhan.top/v1"))
     api_key  = llm_cfg.get("api_key",  os.getenv("OPENAI_API_KEY", "any_string_if_required"))
@@ -296,7 +296,7 @@ def generate_notebook_from_prompt(cfg: Dict[str, Any], spec_path: str, debug_dir
             return ""
         s = s.strip()
         if s.startswith("```"):
-            # 去掉 ```json / ```python 围栏
+            # Remove ```json / ```python code fences
             s = re.sub(r"^```(?:json|python)?\s*|\s*```$", "", s, flags=re.I | re.S).strip()
         return s
 
@@ -305,7 +305,7 @@ def generate_notebook_from_prompt(cfg: Dict[str, Any], spec_path: str, debug_dir
         nb.cells = [nbformat.v4.new_code_cell(code_text)]
         return nb
 
-    # round-1: 原始 prompt
+    # Round 1: original prompt
     raw_text_1 = _chat_text_stable(
         messages=messages,
         api_key=api_key,
@@ -317,25 +317,25 @@ def generate_notebook_from_prompt(cfg: Dict[str, Any], spec_path: str, debug_dir
         timeout=timeout,
         debug_dir=debug_dir
     )
-    # 落盘快照
+    # Save snapshot
     open(os.path.join(debug_dir, "llm_raw_text_r1.txt"), "w", encoding="utf-8").write(raw_text_1 or "")
 
     cleaned = _strip_code_fences(raw_text_1)
 
-    # 尝试按 JSON 解析
+    # Try parsing as JSON
     try:
         if cleaned:
             nb_json = json.loads(cleaned)
         else:
             raise ValueError("empty response")
     except Exception:
-        # 如果不是 JSON，尝试解析为代码并包成 notebook（不中断）
+        # If not valid JSON, try to parse as code and wrap into a notebook (non-fatal)
         if cleaned and not cleaned.lstrip().startswith("{"):
-            # 很多模型直接给了脚本文本/带 ```python
+            # Many models return raw scripts or ```python blocks
             nb = _wrap_code_to_notebook(cleaned)
             return nb, usr_txt
 
-        # round-2: 强约束“只返回 JSON”
+        # Round 2: enforce "return JSON only"
         hard_rule = (
             "Return STRICT JSON only with one of these keys:\n"
             "  1) {\"notebook\": <nbformat v4 JSON>}\n"
@@ -357,22 +357,22 @@ def generate_notebook_from_prompt(cfg: Dict[str, Any], spec_path: str, debug_dir
         open(os.path.join(debug_dir, "llm_raw_text_r2.txt"), "w", encoding="utf-8").write(raw_text_2 or "")
         cleaned2 = _strip_code_fences(raw_text_2)
 
-        # 二次尝试 JSON
+        # Second JSON parsing attempt
         try:
             nb_json = json.loads(cleaned2)
         except Exception as e2:
-            # 最后兜底：如果像代码，就包成 notebook
+            # Final fallback: if it looks like code, wrap as notebook
             if cleaned2 and not cleaned2.lstrip().startswith("{"):
                 nb = _wrap_code_to_notebook(cleaned2)
                 return nb, usr_txt
-            # 保存原文并报错
+            # Save raw text and raise error
             with open(os.path.join(debug_dir, "raw_unparsed.txt"), "w", encoding="utf-8") as f:
                 f.write(raw_text_1 or "")
                 f.write("\n\n===== SECOND ROUND =====\n\n")
                 f.write(raw_text_2 or "")
             raise RuntimeError(f"Notebook JSON parse failed: {e2}")
 
-    # 走到这里：拿到了 JSON，可能是 {notebook: {...}} 或直接 nbformat dict
+    # At this point: JSON obtained, could be {"notebook": {...}} or a direct nbformat dict
     if isinstance(nb_json, dict) and "notebook" in nb_json and isinstance(nb_json["notebook"], dict):
         nb_payload = nb_json["notebook"]
     else:
@@ -383,7 +383,7 @@ def generate_notebook_from_prompt(cfg: Dict[str, Any], spec_path: str, debug_dir
         if nb.nbformat != 4:
             raise RuntimeError(f"nbformat must be 4, got {nb.nbformat}")
     except Exception as e:
-        # 如果 JSON 其实是 {"code": "..."}，也兼容
+        # If JSON is actually {"code": "..."} handle it as well
         code_fallback = None
         if isinstance(nb_json, dict) and isinstance(nb_json.get("code"), str):
             code_fallback = nb_json["code"]
