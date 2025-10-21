@@ -3,35 +3,21 @@
 import warnings
 warnings.filterwarnings("ignore")
 
-import os, sys, json, glob, shutil, argparse, datetime
-import nbformat
-from nbclient import NotebookClient
-from design_execution.baseline_migrator import migrate_reference_ipynb
-from design_execution.literature_manager import (init_scaffold, openalex_search, save_rows_to_csv, csv_to_md, llm_summarize_literature)
-from design_execution.trial_manager import create_trial_from_baseline, propose_notebook_improvements
-from design_execution.llm_client import LLMClient
-from design_execution.patch_applier import apply_patch
-from design_execution.report_builder import build_markdown_report
-from design_execution.prompt_pipeline import run_prompt_pipeline
-from design_execution.context_extractor import summarize_folder_ipynb, summarize_notebook
-
-# 你的其他代码...
-
 import os, sys, json, glob, shutil, argparse, datetime, re
 import nbformat
 from nbclient import NotebookClient
 
 from design_execution.baseline_migrator import migrate_reference_ipynb
 from design_execution.literature_manager import (
-    init_scaffold, openalex_search, save_rows_to_csv, csv_to_md, llm_summarize_literature
+    openalex_search, save_rows_to_csv, csv_to_md, llm_summarize_literature
 )
 from design_execution.trial_manager import create_trial_from_baseline, propose_notebook_improvements
 from design_execution.llm_client import LLMClient
 from design_execution.patch_applier import apply_patch
 from design_execution.report_builder import build_markdown_report
+from design_execution.prompt_pipeline import run_prompt_pipeline as _prompt_run
 from design_execution.context_extractor import summarize_folder_ipynb, summarize_notebook
 
-from design_execution.prompt_pipeline import run_prompt_pipeline as _prompt_run
 try:
     from design_execution.prompt_pipeline import prompt_generate as _prompt_generate
     from design_execution.prompt_pipeline import prompt_execute as _prompt_execute
@@ -43,9 +29,11 @@ except Exception:
 def log(stage: str, msg: str) -> None:
     print(f"[{stage}] {msg}", flush=True)
 
+
 def _latest(path: str) -> str:
     subs = [p for p in glob.glob(os.path.join(path, "*")) if os.path.isdir(p)]
     return sorted(subs)[-1] if subs else None
+
 
 def _copy_stage1_to_reference_pool(cfg: dict):
     src = cfg["paths"].get("stage1_analysis_dir")
@@ -58,14 +46,16 @@ def _copy_stage1_to_reference_pool(cfg: dict):
     for p in sorted(glob.glob(os.path.join(src, "*.ipynb"))):
         shutil.copy2(p, os.path.join(dst, os.path.basename(p)))
         count += 1
+    print(f"[INFO] Copied {count} Stage-1 notebooks to reference pool: {dst}")
     return count, dst
+
 
 def _run_literature(cfg: dict, enable: bool):
     root = cfg["paths"]["design_execution_root"]
     lit_root = os.path.join(root, "literature")
     os.makedirs(lit_root, exist_ok=True)
     if not enable:
-        log("LIT", "Disabled by flag; skipped search.")
+        print("[INFO] Literature search disabled. Skipping.")
         open(os.path.join(lit_root, "auto_sections.md"), "w", encoding="utf-8").write("")
         return lit_root, ""
     lit = cfg.get("literature", {}) or {}
@@ -73,27 +63,30 @@ def _run_literature(cfg: dict, enable: bool):
     n = int(lit.get("n", 10))
     llm_sum = bool(lit.get("llm_summarize", True))
     if not query:
-        log("LIT", "No query configured; skipped search.")
+        print("[INFO] No literature query found. Skipping search.")
         open(os.path.join(lit_root, "auto_sections.md"), "w", encoding="utf-8").write("")
         return lit_root, ""
     rows = openalex_search(query, per_page=n)
     if rows:
         csv_path = os.path.join(lit_root, "papers.csv")
         save_rows_to_csv(rows, csv_path)
-        csv_to_md(csv_path, os.path.join(lit_root, "auto_sections.md"))
-        log("LIT", f"Fetched {len(rows)} items from OpenAlex.")
+        md_path = os.path.join(lit_root, "auto_sections.md")
+        csv_to_md(csv_path, md_path)
+        print(f"[INFO] Literature search results saved to: {csv_path}")
+        print(f"[INFO] Markdown summary created at: {md_path}")
     else:
         open(os.path.join(lit_root, "auto_sections.md"), "w", encoding="utf-8").write("")
-        log("LIT", "No results from OpenAlex; wrote empty auto_sections.md")
+        print("[INFO] No literature results found. Empty file created.")
     bullets = ""
     if llm_sum:
         try:
             syn = llm_summarize_literature(lit_root, query, cfg.get("llm", {}))
             bullets = open(syn, "r", encoding="utf-8").read()
-            log("LIT", f"Wrote synthesis to {syn}")
+            print(f"[INFO] LLM literature synthesis file created at: {syn}")
         except Exception as e:
-            log("LIT", f"Synthesis failed: {e}")
+            print(f"[INFO] LLM synthesis failed: {e}")
     return lit_root, bullets
+
 
 def _prepare_context(cfg: dict, baseline_dir: str, baseline_id: int):
     root = cfg["paths"]["design_execution_root"]
@@ -101,40 +94,38 @@ def _prepare_context(cfg: dict, baseline_dir: str, baseline_id: int):
     reference_summary = summarize_folder_ipynb(ref_pool, max_chars=1200) if os.path.isdir(ref_pool) else ""
     baseline_nb = os.path.join(baseline_dir, f"baseline_{baseline_id:02d}.ipynb")
     baseline_summary = summarize_notebook(baseline_nb, max_chars=1000) if os.path.exists(baseline_nb) else ""
+    print(f"[INFO] Prepared baseline notebook summary from: {baseline_nb}")
     return {"reference_summary": reference_summary, "baseline_summary": baseline_summary, "baseline_nb": baseline_nb}
+
 
 def _exec_nb(in_nb: str, out_nb: str):
     nb = nbformat.read(in_nb, as_version=4)
     NotebookClient(nb, timeout=1200, kernel_name="python3", allow_errors=True).execute()
     nbformat.write(nb, out_nb)
+    print(f"[INFO] Executed notebook saved at: {out_nb}")
+
 
 # ---------------- Baseline branch ----------------
 def cmd_generate(cfg: dict, baseline_id: int, with_lit: bool):
+    print("\n[INFO] === Starting generate phase ===")
     paths = cfg["paths"]
     root = paths["design_execution_root"]
 
-    # 复制Stage-1分析到参考池
     moved, ref_dir = _copy_stage1_to_reference_pool(cfg)
-    if moved:
-        log("INIT", f"Copied {moved} Stage-1 notebooks into reference_pool (reference only): {ref_dir}")
-
-    # 基准笔记本迁移
     bdir = migrate_reference_ipynb(paths["baseline_source_dir"], root, include_globs=["*.ipynb"])
-    log("MIGRATE", f"Baselines copied -> {bdir}")
+    print(f"[INFO] Baseline notebooks migrated to: {bdir}")
 
-    # 文献检索
     _lit_root, bullets = _run_literature(cfg, enable=with_lit)
     ctx = _prepare_context(cfg, bdir, baseline_id)
 
     tag = (cfg.get("trial", {}) or {}).get("tag", "improve-data-model")
     seed = (cfg.get("trial", {}) or {}).get("seed", 22)
     tdir = create_trial_from_baseline(root, tag, baseline_id, seed)
-    log("TRIAL", f"Trial created -> {tdir}")
+    print(f"[INFO] Trial directory created at: {tdir}")
 
     llm_conf = cfg.get("llm", {}) or {}
     llm = LLMClient(**llm_conf)
 
-    # 生成 notebook 改进
     patch_path = propose_notebook_improvements(
         cfg,
         tdir,
@@ -146,24 +137,17 @@ def cmd_generate(cfg: dict, baseline_id: int, with_lit: bool):
         require_llm=True,
         llm_retries=int(llm_conf.get("retries", 2)),
     )
-    log("IMPROVE", f"LLM patch -> {patch_path}")
+    print(f"[INFO] LLM-generated patch file created at: {patch_path}")
 
-    # 应用补丁到 notebook (生成文件)
     patched = apply_patch(os.path.join(tdir, "notebook_unexec.ipynb"), patch_path)
-    log("PATCH", f"Patched notebook -> {patched}")
+    print(f"[INFO] Patched notebook generated at: {patched}")
+    print("[INFO] === Generate phase completed ===\n")
 
-    log("DONE", "Generate phase completed (no execution).")  # 确保这里只是生成，不执行
-
-    # 仅返回生成的路径
     return {"baseline_dir": bdir, "trial_dir": tdir, "patched_nb": patched}
 
+
 def cmd_execute(cfg: dict, baseline_id: int, which: str, trial_dir: str = None):
-    """
-    Execute notebooks:
-      - baseline: execute baseline notebook to baseline_XX_exec.ipynb
-      - patched:  apply llm_patch.json to notebook_unexec.ipynb and execute to notebook_unexec_patched_exec.ipynb
-      - both:     do both
-    """
+    print("\n[INFO] === Starting execute phase ===")
     paths = cfg["paths"]
     root = paths["design_execution_root"]
     bdir = _latest(os.path.join(root, "baselines"))
@@ -171,12 +155,11 @@ def cmd_execute(cfg: dict, baseline_id: int, which: str, trial_dir: str = None):
         raise RuntimeError("No baselines found. Run `generate` first.")
     baseline_nb = os.path.join(bdir, f"baseline_{baseline_id:02d}.ipynb")
     if not os.path.exists(baseline_nb):
-        raise FileNotFoundError(f"baseline not found: {baseline_nb}")
+        raise FileNotFoundError(f"Baseline not found: {baseline_nb}")
 
     if which in ("baseline", "both"):
         b_exec = baseline_nb.replace(".ipynb", "_exec.ipynb")
         _exec_nb(baseline_nb, b_exec)
-        log("EXEC_BASE", f"Baseline executed -> {b_exec}")
 
     if which in ("patched", "both"):
         if not trial_dir:
@@ -190,12 +173,12 @@ def cmd_execute(cfg: dict, baseline_id: int, which: str, trial_dir: str = None):
             patched_nb = os.path.join(tdir, "notebook_unexec.ipynb")
         patched_exec = patched_nb.replace(".ipynb", "_exec.ipynb")
         _exec_nb(patched_nb, patched_exec)
-        log("EXEC_TRIAL", f"Patched executed -> {patched_exec}")
 
-    log("DONE", f"Execute phase completed ({which}).")
+    print("[INFO] === Execute phase completed ===\n")
 
 
 def cmd_analyze(cfg: dict, trial_dir: str = None, baseline_id: int = 0):
+    print("\n[INFO] === Starting analyze phase ===")
     paths = cfg["paths"]
     root = paths["design_execution_root"]
     bdir = _latest(os.path.join(root, "baselines"))
@@ -212,57 +195,48 @@ def cmd_analyze(cfg: dict, trial_dir: str = None, baseline_id: int = 0):
         rpt = build_markdown_report(root, trial_name, None)
     except TypeError:
         rpt = build_markdown_report(root, trial_name, None, None)
-    log("REPORT", f"Report -> {rpt}")
-    log("DONE", "Analyze phase completed.")
+    print(f"[INFO] Markdown report file generated at: {rpt}")
+    print("[INFO] === Analyze phase completed ===\n")
     return rpt
 
-# ---------------- Prompt branch wrappers ----------------
+
 def cmd_prompt_defined(cfg: dict, prompt_path: str = None, subcmd: str = "run"):
-    """
-    Prompt branch dispatcher.
-    - If prompt_pipeline exposes prompt_generate/execute/analyze, use them.
-    - Otherwise fall back to run_prompt_pipeline (one-click).
-    """
+    print(f"\n[INFO] === Starting prompt phase: {subcmd} ===")
     prompt_path = prompt_path or cfg.get("prompt_branch", {}).get("prompt_file") or "prompts/pipeline_prompt.yaml"
-    log("PROMPT", f"Using prompt file: {prompt_path}")
+    print(f"[INFO] Using prompt file: {prompt_path}")
 
     if subcmd == "run":
         ret = _prompt_run(cfg, prompt_path)
         try:
             from design_execution.evaluator import record_metrics
             record_metrics(ret["trial_dir"], ret.get("metrics", {}))
+            print(f"[INFO] Metrics recorded for trial: {ret['trial_dir']}")
         except Exception:
-            pass
+            print("[INFO] Metrics recording skipped (not available).")
         try:
-            # Optional: write a quick report path if your report builder needs it
-            build_markdown_report(
+            report_path = build_markdown_report(
                 ret["trial_dir"],
                 bdir=cfg["paths"].get("baseline_source_dir", ""),
                 report_dir=os.path.join(cfg["paths"]["design_execution_root"], "reports"),
                 baseline_metrics_path=None
             )
+            print(f"[INFO] Prompt report file created at: {report_path}")
         except Exception:
-            pass
-        log("PROMPT", f"Done. Trial dir: {ret['trial_dir']}")
+            print("[INFO] Report generation skipped (not available).")
+        print(f"[INFO] Trial directory: {ret['trial_dir']}")
+        print("[INFO] === Prompt phase completed ===\n")
         return ret
 
-    # 3-phase support if available
-    if subcmd == "generate":
-        if _prompt_generate is None:
-            raise RuntimeError("prompt_generate is not available in prompt_pipeline. Update the module or use 'run'.")
+    if subcmd == "generate" and _prompt_generate:
         return _prompt_generate(cfg, prompt_path)
-    elif subcmd == "execute":
-        if _prompt_execute is None:
-            raise RuntimeError("prompt_execute is not available in prompt_pipeline. Update the module or use 'run'.")
+    elif subcmd == "execute" and _prompt_execute:
         return _prompt_execute(cfg)
-    elif subcmd == "analyze":
-        if _prompt_analyze is None:
-            raise RuntimeError("prompt_analyze is not available in prompt_pipeline. Update the module or use 'run'.")
+    elif subcmd == "analyze" and _prompt_analyze:
         return _prompt_analyze(cfg)
     else:
-        raise ValueError(f"Unknown prompt subcmd: {subcmd}")
+        raise ValueError(f"Unknown or unavailable prompt subcmd: {subcmd}")
 
-# ---------------- CLI ----------------
+
 def _expand_vars(obj, env):
     if isinstance(obj, dict):
         return {k: _expand_vars(v, env) for k, v in obj.items()}
@@ -272,7 +246,9 @@ def _expand_vars(obj, env):
         return re.sub(r"\$\{(\w+)\}", lambda m: env.get(m.group(1), m.group(0)), obj)
     return obj
 
+
 def main():
+    print("\n[INFO] === Pipeline started ===")
     ap = argparse.ArgumentParser(description="CellScientist design_execution phased pipeline")
     ap.add_argument("--config", required=True, help="path to config JSON")
     ap.add_argument("--pipeline-mode", choices=["baseline", "prompt"], default=None)
@@ -304,32 +280,24 @@ def main():
     cfg = _expand_vars(cfg, env)
 
     pipeline_mode = args.pipeline_mode or cfg.get("pipeline_mode", "baseline")
-    log("MAIN", f"Pipeline mode: {pipeline_mode}")
+    print(f"[INFO] Pipeline mode: {pipeline_mode}")
 
     if pipeline_mode == "prompt":
+        cmd_prompt_defined(cfg, subcmd=args.cmd)
+    else:
         if args.cmd == "generate":
-            cmd_prompt_defined(cfg, prompt_path=cfg.get("prompt_branch", {}).get("prompt_file"), subcmd="generate")
-            return
+            cmd_generate(cfg, baseline_id=args.baseline_id, with_lit=args.with_lit)
         elif args.cmd == "execute":
-            cmd_prompt_defined(cfg, prompt_path=cfg.get("prompt_branch", {}).get("prompt_file"), subcmd="execute")
-            return
+            cmd_execute(cfg, baseline_id=args.baseline_id, which=args.which, trial_dir=args.trial_dir)
         elif args.cmd == "analyze":
-            cmd_prompt_defined(cfg, prompt_path=cfg.get("prompt_branch", {}).get("prompt_file"), subcmd="analyze")
-            return
+            cmd_analyze(cfg, baseline_id=args.baseline_id, trial_dir=args.trial_dir)
         elif args.cmd == "run":
-            cmd_prompt_defined(cfg, prompt_path=cfg.get("prompt_branch", {}).get("prompt_file"), subcmd="run")
-            return
+            ret = cmd_generate(cfg, baseline_id=args.baseline_id, with_lit=args.with_lit)
+            cmd_execute(cfg, baseline_id=args.baseline_id, which=args.which, trial_dir=ret["trial_dir"])
+            cmd_analyze(cfg, baseline_id=args.baseline_id, trial_dir=ret["trial_dir"])
 
-    if args.cmd == "generate":
-        cmd_generate(cfg, baseline_id=args.baseline_id, with_lit=args.with_lit)
-    elif args.cmd == "execute":
-        cmd_execute(cfg, baseline_id=args.baseline_id, which=args.which, trial_dir=args.trial_dir)
-    elif args.cmd == "analyze":
-        cmd_analyze(cfg, baseline_id=args.baseline_id, trial_dir=args.trial_dir)
-    elif args.cmd == "run":
-        ret = cmd_generate(cfg, baseline_id=args.baseline_id, with_lit=args.with_lit)
-        cmd_execute(cfg, baseline_id=args.baseline_id, which=args.which, trial_dir=ret["trial_dir"])
-        cmd_analyze(cfg, baseline_id=args.baseline_id, trial_dir=ret["trial_dir"])
+    print("[INFO] === Pipeline finished successfully ===\n")
+
 
 if __name__ == "__main__":
     main()
