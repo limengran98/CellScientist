@@ -55,12 +55,12 @@ dataset:
   name: "${dataset_name}"
   resources:
     full_file: "${repo_root}/data/${dataset_name}/CP_data.csv"
-  columns:
-    smiles: "SMILES"            # optional
-    plate: "Metadata_Plate"     # optional
-    targets: "__AUTO__"         # auto-detect target columns
-  options:
-    has_precomputed_features: true  # this dataset already has feature tables
+  # columns:
+  #   smiles: "SMILES"            # optional
+  #   plate: "Metadata_Plate"     # optional
+  #   targets: "__AUTO__"         # auto-detect target columns
+  # options:
+  #   has_precomputed_features: true  # this dataset already has feature tables
 
 split:
   method: "leave-smiles-out"   # leave-smiles-out or leave-plates-out
@@ -68,14 +68,13 @@ split:
   group_column_override: ""  # optional: group by this column (if any)
   save_split: true
   save_split_dir: "${repo_root}/data/${dataset_name}/splits"  # where to save split indices
-  random_state: 22  # random seed
+  random_state: 0  # random seed
 
 metrics:
   primary: "PCC"  # primary metric to select the best model
   list: ["PCC", "RMSE", "DEG_PCC", "DEG_RMSE", "Direction_ACC", "Systema_PCC", "Systema_RMSE"]
   direction_threshold: 0.0  # thresholds for "up"/"down" classification
 
-
 runtime:
-  seed: 22
+  seed: 0
   save_dir: "${repo_root}/results/${dataset_name}/generate_execution/prompt_runs"  # base directory for results
