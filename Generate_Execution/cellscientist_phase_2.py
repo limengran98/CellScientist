@@ -253,15 +253,6 @@ def main():
     ap.add_argument("--config", required=True, help="path to config JSON")
     ap.add_argument("--pipeline-mode", choices=["baseline", "prompt"], default=None)
 
-    ap.add_argument("--cfg", required=False,
-                default="Generate_Execution/generate_execution_config.json")
-
-    ap.add_argument("--spec", required=False,
-                default=os.environ.get("PROMPT_PATH",
-                        "Generate_Execution/prompts/pipeline_prompt.yaml"))
-
-
-
     sub = ap.add_subparsers(dest="cmd", required=True)
     ap_g = sub.add_parser("generate", help="Phase-1: LLM patch generation only (no execution)")
     ap_g.add_argument("--baseline-id", type=int, default=0)
