@@ -294,7 +294,7 @@ def main():
         elif args.cmd == "run":
             ret = cmd_generate(cfg, baseline_id=args.baseline_id, with_lit=args.with_lit)
             cmd_execute(cfg, baseline_id=args.baseline_id, which=args.which, trial_dir=ret["trial_dir"])
-            cmd_analyze(cfg, baseline_id=args.baseline_id, trial_dir=ret["trial_dir"])
+            #cmd_analyze(cfg, baseline_id=args.baseline_id, trial_dir=ret["trial_dir"])
 
     print("[INFO] === Pipeline finished successfully ===\n")
 
