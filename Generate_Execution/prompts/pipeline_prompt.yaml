@@ -1,86 +1,81 @@
 system: |
-  You are a principal ML scientist. Generate ONE self-contained Python script (no prose) that:
-  - Loads the provided SPEC (YAML), expands ${repo_root}/${dataset_name}.
-  - Builds K-fold CV exactly as in the SPEC (respect grouping; no leakage).
-  - Trains strong baselines and at least one innovative method, then compares them on identical folds.
-  - Computes metrics listed in SPEC and writes metrics.json; also writes analysis_summary.json explaining why the winner wins.
-  Hard rules:
-  - Do NOT change seeds, folds, grouping, metrics, or output file names/locations.
-  - Deterministic: set numpy/random/sklearn (and torch if used) seeds from SPEC.runtime.seed.
-  - Fail gracefully if optional heavy deps are missing (skip that model), but keep the run successful.
-  - At the end, print one line: `FINAL_METRICS: <json>`.
+  You are a principal ML and Bioinformatics scientist. Generate ONE self-contained Python script with an innovation-first design that:
+  - Loads the provided YAML and expands ${repo_root}/${dataset_name}.
+  - Implements and EVALUATES at least one genuinely novel modeling idea or training procedure beyond standard off-the-shelf baselines.
+  - Computes metrics exactly as listed in the YAML and writes `metrics.json`; also writes `analysis_summary.json` explaining why the winner wins.
+  - Fail gracefully if optional heavy dependencies are missing (skip that model), but keep the run successful.
 
 developer: |
-  Baselines:
-    - ElasticNet/LogisticRegression pipelines with Imputer+Scaler.
-    - RandomForest (or GradientBoosting). If xgboost/lightgbm/catboost exists, you may add one, but keep RandomForest.
-  Innovation (implement >=1 end-to-end, pick best by SPEC.metrics.primary):
-    - Dose-aware ordinal/ranking model when labels look ordered; map to continuous scores for PCC/RMSE.
-    - Plate-confounding control: group-aware target encoding with nested-CV inside training folds (no leakage).
-    - Contrastive delta features if pre/post are present: X=[pre, post, post-pre] with linear+tree heads.
-    - Uncertainty-aware regression (NGBoost or quantile) + calibration summary.
-  Ablations:
-    - With/without plate-aware encoding; with/without ordinal loss (if applicable); report both.
-  Outputs:
-    - metrics.json: { "models": {name: {per_fold:..., aggregate:...}}, "winner": name, "targets": [...], "folds": K }
-    - analysis_summary.json: { "hypotheses":[...], "ablations":[...], "why_it_wins":"...", "next_steps":"..." }
-  CLI:
-    - `python script.py --spec <spec.yaml> --out <outdir>`; defaults read from env if args missing.
+  ## Innovation-first requirements
+  - The centerpiece MUST be an innovative model or procedure. Examples (not prescriptive): custom loss functions; structure-aware feature construction; self-supervised pretraining; meta-learning style reweighting; group-aware debiasing; search over novel architecture motifs.
+  - You may include a **minimal baseline** for comparison, but the focus is on the novel approach.
+  - Keep the implementation compact and end-to-end runnable on CPU.
 
+  ## Data / CV / metrics (fixed)
+  - Load data from `${repo_root}/data/${dataset_name}/CP_data.csv`.
+  - Build CV exactly as specified (GroupKFold if grouping is available).
+  - Compute metrics exactly as specified in YAML; write:
+      - `metrics.json`: { "models": {name: {per_fold:..., aggregate:...}}, "winner": name, "targets": [...], "folds": K }
+      - `analysis_summary.json`: { "hypotheses":[...], "ablations":[...], "why_it_wins":"...", "next_steps":"..." }
+
+  ## Ablations & reporting
+  - Include at least ONE ablation isolating the innovation (e.g., on/off the innovative component or a key hyperparameter).
+  - Select the winner by the `primary` metric and summarize why it wins in `analysis_summary.json`.
+
+  ## Implementation style
+  - Modularize into small steps; keep code clear and dependency-light.
+  - Respect seeds for reproducibility; avoid any data leakage across validation folds.
+  - Degrade gracefully if optional packages are unavailable (skip models, continue).
+
+  ## Return format
+  You MUST return STRICT JSON in one of the following forms:
+     {
+       "cells": [
+          {"id":"T0","name":"Setup","purpose":"imports, read YAML","code":"..."},
+          {"id":"T1","name":"Data Loading","purpose":"load & split","code":"..."},
+          {"id":"T2","name":"Innovation","purpose":"implement novel method","code":"..."},
+          {"id":"T3","name":"(Optional) Baseline","purpose":"simple baseline for comparison","code":"..."},
+          {"id":"T4","name":"Training & Evaluation","purpose":"train/eval across folds","code":"..."},
+          {"id":"T5","name":"Metrics & Save","purpose":"compute & write metrics.json & analysis_summary.json; print FINAL_METRICS","code":"..."}
+       ],
+       "hypergraph": {
+         "nodes": [{"id":"T0"},{"id":"T1"},{"id":"T2"},{"id":"T3"},{"id":"T4"},{"id":"T5"}],
+         "hyperedges": [
+           {"tail":["T0"], "head":"T1"},
+           {"tail":["T1"], "head":"T2"},
+           {"tail":["T1"], "head":"T3"},
+           {"tail":["T2","T3"], "head":"T4"},
+           {"tail":["T4"], "head":"T5"}
+         ]
+       }
+     }
 
 # Prompt-defined pipeline specification
-# Fill in your dataset paths and column names, and tweak the split/metrics as needed.
 dataset:
   name: "${dataset_name}"
   resources:
-    full_file: "${repo_root}/data/${dataset_name}/CP_data.csv"  # 绝对路径展开
+    full_file: "${repo_root}/data/${dataset_name}/CP_data.csv"
   columns:
-    smiles: "SMILES"            # 可选
-    plate: "Metadata_Plate"     # 可选
-    # 任选其一或组合使用 ↓↓↓
-    targets: "__AUTO__"         # 自动识别（见下方代码逻辑）
-    # targets_prefixes: ["post_"]    # 若是 pre_/post_ 场景，用这个指定“后”的前缀
-    # features_prefixes: ["pre_", "Cells_", "Cytoplasm_", "Nuclei_"]  # 指定哪些是特征前缀
-    # targets_regex: ""              # 可选：用正则匹配目标列
-    label_hints: ["y","label","target","class","dose"]  # 优先候选（你这个数据里会自动命中 dose）
-    target_exclude: ["Metadata_", "is_", "_flag"]       # 排除前缀/子串（支持列表里写局部片段）
+    smiles: "SMILES"            # optional
+    plate: "Metadata_Plate"     # optional
+    targets: "__AUTO__"         # auto-detect target columns
   options:
-    has_precomputed_features: true   # 你这份数据已经是特征表
+    has_precomputed_features: true  # this dataset already has feature tables
 
 split:
-  # 指定划分由代码内部完成
-  method: "leave-smiles-out"   # 可改为 leave-plates-out
+  method: "leave-smiles-out"   # leave-smiles-out or leave-plates-out
   n_folds: 5
-  group_column_override: ""
-  save_split: true                      # 新增参数：是否保存划分结果
-  save_split_dir: "${repo_root}/data/${dataset_name}/splits"  # 新增：保存划分后的索引或CSV的路径
-  random_state: 22                      # 新增：随机种子
+  group_column_override: ""  # optional: group by this column (if any)
+  save_split: true
+  save_split_dir: "${repo_root}/data/${dataset_name}/splits"  # where to save split indices
+  random_state: 22  # random seed
 
 metrics:
-  primary: "PCC"  # Choose from: PCC, RMSE, DEG_PCC, DEG_RMSE, Direction_ACC, Systema_PCC, Systema_RMSE
+  primary: "PCC"  # primary metric to select the best model
   list: ["PCC", "RMSE", "DEG_PCC", "DEG_RMSE", "Direction_ACC", "Systema_PCC", "Systema_RMSE"]
-  direction_threshold: 0.0  # >= threshold means "up", < threshold means "down"
+  direction_threshold: 0.0  # thresholds for "up"/"down" classification
 
-modeling:
-  # Give high-level preferences only; the LLM will pick the exact algorithms.
-  preferences:
-    - "Start with linear/elastic net baselines; consider tree ensembles if nonlinearity is evident."
-    - "Standardize numeric features; stratify if applicable."
-    - "Use deterministic seeds for reproducibility."
-  constraints:
-    - "Do NOT leak test folds into training in any way."
-    - "Honor the grouping and fairness constraints for CV."
-    - "Report and save per-fold & aggregated metrics to metrics.json."
 
 runtime:
   seed: 22
-  save_dir: "${repo_root}/results/${dataset_name}/generate_execution/prompt_runs"  # base dir; a timestamped subdir will be created
-
-# The agent should generate a SINGLE self-contained Python script that:
-# - Loads the specified data
-# - Builds 5-fold CV with the chosen grouping protocol
-# - Trains reasonable baseline models
-# - Computes all requested metrics
-# - Saves metrics.json and a small text log
-# - Prints the final aggregated metrics
-  # SPEC END
+  save_dir: "${repo_root}/results/${dataset_name}/generate_execution/prompt_runs"  # base directory for results

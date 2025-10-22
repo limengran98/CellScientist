@@ -24,7 +24,6 @@
   "improve": {
     "primary_metric": "AUROC"
   },
-
   "pipeline_mode": "baseline",
   "baseline_branch": {
     "temperature": 0.8,
@@ -40,7 +39,11 @@
     "save_root": "../results/${dataset_name}/generate_execution"
   },
   "exec": {
-  "timeout_seconds": 3600,
-  "max_fix_rounds": 5
+    "timeout_seconds": 3600,
+    "max_fix_rounds": 3,
+    "max_cell_retries": 2,
+    "enable_llm_autofix": true,
+    "enable_hypergraph_viz": true,
+    "viz_format": "mermaid"
   }
 }

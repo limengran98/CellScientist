@@ -1,0 +1,43 @@
+{
+  "models": {
+    "GBCorEN": {
+      "per_fold": [],
+      "aggregate": {
+        "PCC": null,
+        "RMSE": null,
+        "DEG_PCC": null,
+        "DEG_RMSE": null,
+        "Direction_ACC": null,
+        "Systema_PCC": null,
+        "Systema_RMSE": null
+      }
+    },
+    "GBCorEN_ablate_no_group": {
+      "per_fold": [],
+      "aggregate": {
+        "PCC": null,
+        "RMSE": null,
+        "DEG_PCC": null,
+        "DEG_RMSE": null,
+        "Direction_ACC": null,
+        "Systema_PCC": null,
+        "Systema_RMSE": null
+      }
+    },
+    "ElasticNet": {
+      "per_fold": [],
+      "aggregate": {
+        "PCC": null,
+        "RMSE": null,
+        "DEG_PCC": null,
+        "DEG_RMSE": null,
+        "Direction_ACC": null,
+        "Systema_PCC": null,
+        "Systema_RMSE": null
+      }
+    }
+  },
+  "winner": null,
+  "targets": [],
+  "folds": 0
+}

@@ -75,8 +75,6 @@ def _load_llm_profile_from_file(cfg: dict | None, *, verbose: bool = False) -> d
     }
 
 
-
-
 # ========== Basic utilities ==========
 def collect_cell_errors(nb: nbformat.NotebookNode) -> List[Dict[str, Any]]:
     """Collect error outputs from each code cell in an executed notebook."""
