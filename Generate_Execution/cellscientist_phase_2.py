@@ -250,28 +250,27 @@ def _expand_vars(obj, env):
 
 def main():
     print("\n[INFO] === Pipeline started ===")
-    ap = argparse.ArgumentParser(description="CellScientist design_execution phased pipeline")
+    ap = argparse.ArgumentParser(description="CellScientist unified pipeline")
     ap.add_argument("--config", required=True, help="path to config JSON")
-    ap.add_argument("--pipeline-mode", choices=["baseline", "prompt"], default=None)
 
     sub = ap.add_subparsers(dest="cmd", required=True)
-    ap_g = sub.add_parser("generate", help="Phase-1: LLM patch generation only (no execution)")
-    ap_g.add_argument("--baseline-id", type=int, default=0)
-    ap_g.add_argument("--with-lit", action="store_true", help="enable literature search & synthesis")
 
-    ap_e = sub.add_parser("execute", help="Phase-2: execute baseline and/or patched")
-    ap_e.add_argument("--baseline-id", type=int, default=0)
-    ap_e.add_argument("--which", choices=["baseline", "patched", "both"], default="both")
-    ap_e.add_argument("--trial-dir", type=str, default=None)
-
-    ap_a = sub.add_parser("analyze", help="Phase-3: analyze & report (no execution)")
-    ap_a.add_argument("--baseline-id", type=int, default=0)
-    ap_a.add_argument("--trial-dir", type=str, default=None)
-
-    ap_r = sub.add_parser("run", help="One-command: generate → execute → analyze")
-    ap_r.add_argument("--baseline-id", type=int, default=0)
-    ap_r.add_argument("--with-lit", action="store_true")
-    ap_r.add_argument("--which", choices=["baseline", "patched", "both"], default="both")
+    # Unified entry: text prompt + optional baseline code
+    ap_run = sub.add_parser("run", help="Unified run: text prompt + optional baseline code")
+    ap_run.add_argument("--baseline-id", type=int, default=0, help="which baseline ipynb to use if available")
+    ap_run.add_argument("--with-lit", action="store_true", help="enable literature search & synthesis")
+    ap_run.add_argument("--prompt-file", type=str, default=None, help="path to a plain text/yaml prompt file")
+    ap_run.add_argument("--prompt-text", type=str, default=None, help="inline text prompt (overrides file if given)")
+    ap_run.add_argument(
+        "--which", choices=["baseline", "patched", "both"], default="both",
+        help="which notebook(s) to execute"
+    )
+    group = ap_run.add_mutually_exclusive_group()
+    group.add_argument("--use-baseline", dest="include_baseline", action="store_true",
+                       help="use baseline notebook as prior context (default)")
+    group.add_argument("--no-baseline", dest="include_baseline", action="store_false",
+                       help="do NOT use baseline notebook; text prompt only")
+    ap_run.set_defaults(include_baseline=False)
 
     args = ap.parse_args()
 
@@ -280,25 +279,26 @@ def main():
     env = dict(os.environ); env.update(cfg)
     cfg = _expand_vars(cfg, env)
 
-    pipeline_mode = args.pipeline_mode or cfg.get("pipeline_mode", "baseline")
-    print(f"[INFO] Pipeline mode: {pipeline_mode}")
+    print("[INFO] Pipeline mode: unified")
+    if args.cmd == "run":
+        print(f"[INFO] use_baseline: {args.include_baseline}")
 
-    if pipeline_mode == "prompt":
-        cmd_prompt_defined(cfg, subcmd=args.cmd)
-    else:
-        if args.cmd == "generate":
-            cmd_generate(cfg, baseline_id=args.baseline_id, with_lit=args.with_lit)
-        elif args.cmd == "execute":
-            cmd_execute(cfg, baseline_id=args.baseline_id, which=args.which, trial_dir=args.trial_dir)
-        elif args.cmd == "analyze":
-            cmd_analyze(cfg, baseline_id=args.baseline_id, trial_dir=args.trial_dir)
-        elif args.cmd == "run":
-            ret = cmd_generate(cfg, baseline_id=args.baseline_id, with_lit=args.with_lit)
-            cmd_execute(cfg, baseline_id=args.baseline_id, which=args.which, trial_dir=ret["trial_dir"])
-            #cmd_analyze(cfg, baseline_id=args.baseline_id, trial_dir=ret["trial_dir"])
+        ret = run_unified_pipeline(
+            cfg=cfg,
+            baseline_id=int(args.baseline_id or 0),
+            with_lit=bool(args.with_lit),
+            prompt_file=args.prompt_file,
+            prompt_text=args.prompt_text,
+            include_baseline=bool(args.include_baseline),
+            which=args.which
+        )
+        print("[INFO] Trial dir:", ret.get("trial_dir", ""))
+        print("[INFO] Patched notebook:", ret.get("patched_nb", ""))
+        print("[INFO] Executed notebook:", ret.get("executed_nb", ""))
+        if ret.get("report_path"):
+            print("[INFO] Report:", ret["report_path"])
 
     print("[INFO] === Pipeline finished successfully ===\n")
-
 
 if __name__ == "__main__":
     main()
