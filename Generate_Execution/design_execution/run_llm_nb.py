@@ -12,6 +12,7 @@ def _load_runner_clean():
 
 # --- LLM helper ---
 def chat_json(messages, *, api_key, base_url, model, temperature=0.2, max_tokens=800):
+    print(f"[LLM] model={model} base_url={base_url}")
     """Return JSON object from an OpenAI-compatible /chat/completions endpoint.
     [FIX] Improved robustness: retries, strict JSON parsing, fenced-block extraction, and tool_call fallback.
     """

@@ -4,80 +4,88 @@ from typing import List, Dict, Any, Optional, Tuple
 import os, json, re
 import nbformat
 from nbclient import NotebookClient
-
 from pathlib import Path
-
-from .run_llm_nb import (
-        build_fix_messages as _llm_build_fix_messages,
-        chat_json as _llm_chat_json,
-        apply_edits as _llm_apply_edits,
-        execute_notebook as _llm_execute_notebook,
-    )
-
-
 from copy import deepcopy
 
-def _find_llm_providers_path(cfg: dict | None) -> Path | None:
-    """Find llm_providers.json: cfg.paths.llm_providers > repo root walk-up."""
-    # 1) explicit path in cfg
-    if cfg:
-        p = (cfg.get("paths") or {}).get("llm_providers")
-        if p:
-            pp = Path(p).resolve()
-            if pp.exists():
-                return pp
-    # 2) walk upwards until we see llm_providers.json or the repo root
-    here = Path(__file__).resolve()
-    for anc in [here] + list(here.parents):
-        cand = anc / "llm_providers.json"
-        if cand.exists():
-            return cand
-    return None
+# Import utilities used for LLM-based repair I/O.
+# Note: chat_json() will also print model/base_url on call.
+from .run_llm_nb import (
+    build_fix_messages as _llm_build_fix_messages,  # kept for compatibility (not used here)
+    chat_json as _llm_chat_json,
+    apply_edits as _llm_apply_edits,
+    execute_notebook as _llm_execute_notebook,      # kept for compatibility (not used here)
+)
 
-def _load_llm_profile_from_file(cfg: dict | None, *, verbose: bool = False) -> dict:
+# =============================================================================
+# LLM profile loading (CFG-ONLY; no llm_providers.json dependency)
+# =============================================================================
+
+def _load_llm_profile(cfg: dict | None, *, verbose: bool = False) -> dict:
     """
-    Load provider profile from llm_providers.json.
+    Resolve LLM connection profile ONLY from the merged runtime config (cfg).
+    Priority:
+      1) cfg["llm"].* overrides,
+      2) cfg["providers"][provider].* if present,
+      3) minimal defaults.
+    Returns a dict containing: provider, model, base_url, api_key, temperature, max_tokens.
     """
-    fp = _find_llm_providers_path(cfg)
-    if not fp:
-        raise RuntimeError("llm_providers.json not found (set cfg.paths.llm_providers or put it at repo root).")
-    mp = json.loads(fp.read_text(encoding="utf-8"))
-    providers = (mp.get("providers") or {})
-    # choose provider: cfg.llm.provider > file.default_provider > first key
-    want = ((cfg or {}).get("llm") or {}).get("provider") or mp.get("default_provider")
-    if not want and providers:
-        want = next(iter(providers.keys()))
-    if not want or want not in providers:
-        raise RuntimeError(f"Provider '{want}' not found in {fp}")
-    prof = providers[want] or {}
-    # model can be 'model' or first of 'models'
-    model = prof.get("model")
+    cfg = cfg or {}
+    llm_cfg = cfg.get("llm") or {}
+    providers = cfg.get("providers") or {}
+
+    # provider selection: llm.provider > default_provider > first key
+    provider = llm_cfg.get("provider") or cfg.get("default_provider")
+    if not provider and providers:
+        provider = next(iter(providers.keys()))
+
+    prov_profile = (providers.get(provider) or {}) if provider else {}
+
+    # model override priority: llm.model > provider.model/models[0] > default fallback
+    model = llm_cfg.get("model") or prov_profile.get("model")
     if not model:
-        ms = prof.get("models") or []
-        model = ms[0] if ms else "gpt-5"
-    # allow inline api_key/base_url in file; env can override if set
-    base_url = os.environ.get(f"{want.upper()}_BASE_URL") or prof.get("base_url")
-    api_key  = os.environ.get(f"{want.upper()}_API_KEY")  or prof.get("api_key")
-    temperature = float(prof.get("temperature", ((cfg or {}).get("llm") or {}).get("temperature", 0.0)))
-    max_tokens  = int(prof.get("max_tokens",  ((cfg or {}).get("llm") or {}).get("max_tokens", 20000)))
+        models = prov_profile.get("models") or []
+        model = models[0] if models else "gpt-5"
+
+    # base_url/api_key: llm.* overrides > ENV > provider profile
+    base_url = (
+        llm_cfg.get("base_url")
+        or os.environ.get(f"{(provider or 'openai').upper()}_BASE_URL")
+        or prov_profile.get("base_url")
+    )
+    api_key = (
+        llm_cfg.get("api_key")
+        or os.environ.get(f"{(provider or 'openai').upper()}_API_KEY")
+        or prov_profile.get("api_key")
+    )
+
+    temperature = float(
+        prov_profile.get("temperature", llm_cfg.get("temperature", 0.0))
+    )
+    max_tokens = int(
+        prov_profile.get("max_tokens", llm_cfg.get("max_tokens", 20000))
+    )
 
     if verbose:
-        print(f"[AUTO-FIX][LLM] providers map -> {fp}")
-        print(f"[AUTO-FIX][LLM] provider={want} model={model} temp={temperature} max_tokens={max_tokens}")
+        print(
+            f"[AUTO-FIX][LLM] provider={provider or 'openai_compat'} "
+            f"model={model} temp={temperature} max_tokens={max_tokens}"
+        )
+
     return {
-        "provider": want,
+        "provider": provider or "openai_compat",
         "model": model,
         "base_url": base_url,
         "api_key": api_key,
         "temperature": temperature,
         "max_tokens": max_tokens,
-        "providers_path": str(fp),
     }
 
+# =============================================================================
+# Basic utilities: notebook execution and error collection
+# =============================================================================
 
-# ========== Basic utilities ==========
 def collect_cell_errors(nb: nbformat.NotebookNode) -> List[Dict[str, Any]]:
-    """Collect error outputs from each code cell in an executed notebook."""
+    """Scan executed notebook and collect error outputs from code cells."""
     errs: List[Dict[str, Any]] = []
     for i, c in enumerate(nb.cells):
         if c.get("cell_type") != "code":
@@ -100,17 +108,16 @@ def execute_once(
     inject_exit_guard: bool = True,
 ) -> Tuple[nbformat.NotebookNode, List[Dict[str, Any]]]:
     """
-    Execute a notebook once under workdir and return (executed_notebook, errors).
+    Execute a notebook once under `workdir` and return (executed_notebook, errors).
 
     If `inject_exit_guard` is True, we prepend a temporary guard cell that neutralizes
-    sys.exit / builtins.exit / os._exit so they DO NOT terminate the kernel.
+    sys.exit / builtins.exit / os._exit to keep the kernel alive.
     The guard cell is removed from the returned executed notebook so the structure matches the original.
     """
     os.makedirs(workdir, exist_ok=True)
     os.environ["OUTPUT_DIR"] = workdir
 
-    from copy import deepcopy as _dc
-    nb_to_run = _dc(nb)
+    nb_to_run = deepcopy(nb)
 
     guard_added = False
     if inject_exit_guard:
@@ -146,15 +153,12 @@ def execute_once(
     )
     exec_nb = client.execute()
 
-    # remove the guard cell; keep indices aligned with original
+    # Remove guard cell; keep indices aligned with the original
     if guard_added and len(exec_nb.cells) > 0:
         exec_nb.cells.pop(0)
 
-    # collect errors (do NOT filter out SystemExit / NBExitIntercepted anymore)
     errors = collect_cell_errors(exec_nb)
     return exec_nb, errors
-
-
 
 def _short(s: str, n: int = 160) -> str:
     """Shorten a string for concise logging."""
@@ -163,13 +167,15 @@ def _short(s: str, n: int = 160) -> str:
     s = s.replace("\n", " ").strip()
     return (s[:n] + "...") if len(s) > n else s
 
-# ========== Known-error → patch generation ==========
+# =============================================================================
+# Heuristic known-error patches (minimal, data-agnostic)
+# =============================================================================
+
 def _patch_sanitize_features() -> str:
-    """Generic feature sanitization: convert +/-inf to NaN and coerce non-numeric columns to numeric (invalids→NaN)."""
+    """Sanitize features: convert +/-inf to NaN and coerce non-numeric columns to numeric (invalid → NaN)."""
     return (
         "import numpy as np, pandas as pd\n"
         "def _to_numeric_df(df: pd.DataFrame) -> pd.DataFrame:\n"
-        "    # Try converting all columns to numeric; invalid entries become NaN\n"
         "    out = pd.DataFrame()\n"
         "    for c in df.columns:\n"
         "        try:\n"
@@ -181,7 +187,6 @@ def _patch_sanitize_features() -> str:
         "def _sanitize_X(X):\n"
         "    if isinstance(X, pd.DataFrame):\n"
         "        X = X.replace([np.inf, -np.inf], np.nan)\n"
-        "        # If there are non-numeric columns, coerce to numeric (invalids→NaN)\n"
         "        non_numeric_cols = [c for c in X.columns if not pd.api.types.is_numeric_dtype(X[c])]\n"
         "        if non_numeric_cols:\n"
         "            print('[AUTO-FIX] non-numeric columns -> to_numeric(coerce):', non_numeric_cols[:6], '...')\n"
@@ -193,7 +198,7 @@ def _patch_sanitize_features() -> str:
         "    return X\n"
         "\n"
         "print('[AUTO-FIX] sanitizing features: inf/NaN & non-numeric → NaN before fit...')\n"
-        "for _nm in ('X_tr_fit','X_va_fit','X_train','X_valid','X_val','X'):  # common variable names\n"
+        "for _nm in ('X_tr_fit','X_va_fit','X_train','X_valid','X_val','X'):\n"
         "    try:\n"
         "        globals()[_nm] = _sanitize_X(globals()[_nm])\n"
         "    except Exception:\n"
@@ -201,7 +206,7 @@ def _patch_sanitize_features() -> str:
     )
 
 def _patch_minimal_config() -> str:
-    """Build a minimal fallback `config` (guess repo_root & dataset_name from environment) to avoid NameError."""
+    """Build a minimal fallback `config` to avoid NameError for missing config."""
     return (
         "import os\n"
         "from pathlib import Path\n"
@@ -293,7 +298,7 @@ def _patch_recover_config_from_yaml_or_json() -> str:
     )
 
 def _patch_fix_missing_file() -> str:
-    """For FileNotFoundError: try to rewrite relative paths to absolute repo-root paths."""
+    """Resolve relative data paths to absolute paths under repo root."""
     return (
         "import os\n"
         "from pathlib import Path\n"
@@ -306,7 +311,6 @@ def _patch_fix_missing_file() -> str:
         "    return Path(os.getcwd()).resolve()\n"
         "root=_find_repo_root()\n"
         "try:\n"
-        "    # Common variable names: DATA_FILE / data_file / full_file\n"
         "    for var in ('DATA_FILE','data_file','full_file'):\n"
         "        if var in globals() and isinstance(globals()[var], str):\n"
         "            p = Path(globals()[var])\n"
@@ -319,7 +323,7 @@ def _patch_fix_missing_file() -> str:
     )
 
 def _patch_create_missing_column(colname: str) -> str:
-    """For KeyError on a missing column: create a placeholder (all NaN) to avoid immediate failure."""
+    """Create a placeholder column in DataFrame to bypass KeyError."""
     return (
         "import numpy as np\n"
         f"print('[AUTO-FIX] KeyError: creating placeholder column: {colname}')\n"
@@ -330,7 +334,7 @@ def _patch_create_missing_column(colname: str) -> str:
     )
 
 def _patch_impute_nans() -> str:
-    """If NaNs cause a fit/transform failure: impute with median as a fallback."""
+    """Impute NaNs with median for common matrices."""
     return (
         "print('[AUTO-FIX] imputing NaNs with median for common matrices ...')\n"
         "from sklearn.impute import SimpleImputer\n"
@@ -354,16 +358,13 @@ def _patch_impute_nans() -> str:
     )
 
 def _known_fix_snippet(evalue: str) -> Optional[str]:
-    """
-    Return a patch snippet for common errors. Keep it generic and data-agnostic.
-    """
+    """Return a generic fix snippet for known error patterns."""
     msg = (evalue or "").lower()
 
     # Numeric issues
     if ("input x contains infinity" in msg) or ("too large for dtype" in msg):
         return _patch_sanitize_features()
     if ("input x contains nan" in msg) or ("contains nan" in msg and "input x" in msg):
-        # Combine imputation and sanitization
         return _patch_impute_nans() + "\n" + _patch_sanitize_features()
 
     # Config / parsing issues
@@ -386,12 +387,10 @@ def _known_fix_snippet(evalue: str) -> Optional[str]:
     if ("could not convert string to float" in msg) or ("could not convert" in msg and "float" in msg):
         return _patch_sanitize_features()
 
-    # No known patch
     return None
 
 def apply_known_patches(nb: nbformat.NotebookNode, errors: List[Dict[str, Any]]) -> Tuple[int, List[int]]:
-    """Inject known fix snippets at the tail of failing code cells.
-    Returns (num_changed, changed_indices)."""
+    """Inject known fix snippets at the tail of failing code cells. Return (num_changed, changed_indices)."""
     changed = 0
     changed_indices: List[int] = []
     for e in errors:
@@ -412,8 +411,10 @@ def apply_known_patches(nb: nbformat.NotebookNode, errors: List[Dict[str, Any]])
     return changed, changed_indices
 
 def _restore_sources(exec_nb: nbformat.NotebookNode, original_sources: List[str], indices: Optional[List[int]] = None):
-    """Restore cell `source` from original notebook for selected indices.
-    If indices is None, restore all code cells that have a matching position."""
+    """
+    Restore cell `source` from original notebook for selected indices.
+    If indices is None, restore all code cells that have a matching position.
+    """
     if indices is None:
         indices = list(range(min(len(original_sources), len(exec_nb.cells))))
     for i in indices:
@@ -421,15 +422,17 @@ def _restore_sources(exec_nb: nbformat.NotebookNode, original_sources: List[str]
             if exec_nb.cells[i].get("cell_type") == "code":
                 exec_nb.cells[i]["source"] = original_sources[i]
 
-# ========== LLM-based repair (leverages phase-1 utilities if available) ==========
+# =============================================================================
+# LLM-based minimal repair
+# =============================================================================
 
-
-
-def _make_bugfix_messages(nb: nbformat.NotebookNode,
-                          errors: List[Dict[str, Any]],
-                          language: str = "English",
-                          max_src_chars: int = 4000) -> List[Dict[str, str]]:
-    """Strict guardrails: fix runtime bugs with minimal edits in failing cells only."""
+def _make_bugfix_messages(
+    nb: nbformat.NotebookNode,
+    errors: List[Dict[str, Any]],
+    language: str = "English",
+    max_src_chars: int = 4000
+) -> List[Dict[str, str]]:
+    """Build strict guardrail messages to request minimal edits on failing cells."""
     idx_set = {int(e["cell_index"]) for e in errors}
     failing_cells_dump = []
     for i in sorted(idx_set):
@@ -441,7 +444,9 @@ def _make_bugfix_messages(nb: nbformat.NotebookNode,
 
     err_dump = []
     for e in errors:
-        err_dump.append(f"Cell {e['cell_index']} :: {e.get('ename','')} :: {e.get('evalue','')}\n{e.get('traceback','')}\n")
+        err_dump.append(
+            f"Cell {e['cell_index']} :: {e.get('ename','')} :: {e.get('evalue','')}\n{e.get('traceback','')}\n"
+        )
 
     system_msg = {
         "role": "system",
@@ -464,8 +469,6 @@ def _make_bugfix_messages(nb: nbformat.NotebookNode,
     }
     return [system_msg, user_msg]
 
-
-
 def _llm_auto_fix_once(
     nb: nbformat.NotebookNode,
     errors: List[Dict[str, Any]],
@@ -474,20 +477,28 @@ def _llm_auto_fix_once(
     timeout: int,
     verbose: bool
 ) -> Tuple[nbformat.NotebookNode, List[Dict[str, Any]], List[int]]:
-    """LLM bug-fix with strict guardrails: minimal edits; do not alter logic/metrics/splits/seed."""
-    prof = _load_llm_profile_from_file(phase_cfg, verbose=verbose)
+    """
+    Call the LLM once to propose minimal edits. Only apply edits to failing cells.
+    Returns (new_notebook, new_errors, patched_indices).
+    """
+    # Resolve profile from cfg only (no llm_providers.json)
+    prof = _load_llm_profile(phase_cfg, verbose=verbose)
+
     api_key   = prof["api_key"]
     base_url  = prof["base_url"]
     model     = prof["model"]
     temp      = prof["temperature"]
     max_tok   = prof["max_tokens"]
 
+    if verbose:
+        print(f"[LLM] provider={prof['provider']} model={model} base_url={base_url}")
+
     if not api_key:
-        print("[AUTO-FIX][LLM][WARN] API key is missing (neither env nor llm_providers.json). LLM call will likely fail.")
+        print("[AUTO-FIX][LLM][WARN] API key is missing (neither env nor cfg.providers). LLM call will likely fail.")
 
     messages = _make_bugfix_messages(nb, errors, language="English")
 
-    # --- call LLM ---
+    # Call LLM. chat_json() itself prints model/base_url too.
     spec = _llm_chat_json(
         messages,
         api_key=api_key,
@@ -496,13 +507,14 @@ def _llm_auto_fix_once(
         temperature=temp,
         max_tokens=max_tok,
     )
+
     edits = spec.get("edits") or []
     if not edits:
         if verbose:
             print("[AUTO-FIX][LLM] no edits suggested by model.")
         return nb, errors, []
 
-    # --- apply only to failing cells ---
+    # Keep only edits for failing cells and valid code cells
     target = {int(e["cell_index"]) for e in errors}
     valid_edits: List[Dict[str, Any]] = []
     patched_idx: List[int] = []
@@ -511,10 +523,9 @@ def _llm_auto_fix_once(
             idx = int(ed.get("cell_index"))
             if idx in target and 0 <= idx < len(nb["cells"]) and nb["cells"][idx].get("cell_type") == "code":
                 new_src = ed.get("source") or ""
-                if not isinstance(new_src, str) or not new_src.strip():
-                    continue
-                valid_edits.append({"cell_index": idx, "source": new_src})
-                patched_idx.append(idx)
+                if isinstance(new_src, str) and new_src.strip():
+                    valid_edits.append({"cell_index": idx, "source": new_src})
+                    patched_idx.append(idx)
         except Exception:
             continue
 
@@ -529,7 +540,7 @@ def _llm_auto_fix_once(
     if changed == 0:
         return nb, errors, []
 
-    # --- re-exec once, still allowing errors; caller loop will decide next round ---
+    # Re-exec once (allowing errors); caller loop decides next round
     nb, _ = _llm_execute_notebook(nb, timeout=timeout, allow_errors=True)
     new_errs = collect_cell_errors(nb)
     if verbose:
@@ -539,85 +550,69 @@ def _llm_auto_fix_once(
             print("[AUTO-FIX][LLM] post-exec success (no errors).")
     return nb, new_errs, patched_idx
 
-
-
-# ========== Main entry: execute + auto-fix ==========
-# --- replace inside design_execution/nb_autofix.py ---
-
-from copy import deepcopy
-
-def apply_known_patches(nb: nbformat.NotebookNode, errors: List[Dict[str, Any]]) -> Tuple[int, List[int]]:
-    """Inject known fix snippets at the tail of failing code cells.
-    Returns (num_changed, changed_indices)."""
-    changed = 0
-    changed_indices: List[int] = []
-    for e in errors:
-        idx = int(e["cell_index"])
-        patch = _known_fix_snippet(e.get("evalue",""))
-        if not patch:
-            continue
-        if idx < 0 or idx >= len(nb.cells):
-            continue
-        cell = nb.cells[idx]
-        if cell.get("cell_type") != "code":
-            continue
-        src = cell.get("source") or ""
-        if patch not in src:
-            cell["source"] = src.rstrip() + "\n\n# --- auto-fix patch injected ---\n" + patch
-            changed += 1
-            changed_indices.append(idx)
-    return changed, changed_indices
-
-
-def _restore_sources(exec_nb: nbformat.NotebookNode, original_sources: List[str], indices: Optional[List[int]] = None):
-    """Restore cell `source` from original notebook for selected indices.
-    If indices is None, restore all code cells that have a matching position."""
-    if indices is None:
-        indices = list(range(min(len(original_sources), len(exec_nb.cells))))
-    for i in indices:
-        if 0 <= i < len(exec_nb.cells) and i < len(original_sources):
-            if exec_nb.cells[i].get("cell_type") == "code":
-                exec_nb.cells[i]["source"] = original_sources[i]
-
+# =============================================================================
+# Main entry: execute + (known/LLM) auto-fix
+# Compatible with both call styles:
+#   - New: execute_with_autofix(nb_path=..., workdir=..., timeout_seconds=..., ...)
+#   - Legacy: execute_with_autofix(ipynb_path=..., out_exec_path=..., workdir=..., timeout=..., ...)
+# =============================================================================
 
 def execute_with_autofix(
-    ipynb_path: str,
-    out_exec_path: str,
+    nb_path: Optional[str] = None,
     *,
     workdir: str,
-    timeout: int = 1800,
-    max_fix_rounds: int = 1,
-    verbose: bool = False,
-    phase_cfg: dict | None = None,
-    use_llm_autofix: bool = True,
+    timeout_seconds: Optional[int] = None,
+    max_fix_rounds: int = 3,
+    max_cell_retries: int = 2,  # accepted for compatibility; not used directly
     preserve_source_in_exec: bool = True,
+    phase_cfg: dict | None = None,
+    verbose: bool = True,
     save_intermediates: bool = False,
+    **kwargs: Any,
 ) -> str:
     """
-    Execute notebook with auto-fix. Behavior:
-      - Early exit: if initial run has 0 errors, save and return immediately.
-      - Up to `max_fix_rounds` attempts; after each known/LLM patch re-run, if 0 errors -> return.
-      - If `preserve_source_in_exec=True`, final saved notebook keeps the ORIGINAL sources
-        (so code matches `notebook_prompt.ipynb`), only outputs are attached.
-      - If `save_intermediates=False`, do not persist any *_patched_r#.ipynb or *_exec_r#.ipynb artifacts.
+    Execute the notebook and try to repair errors using known patches and a few LLM rounds.
+    Returns the final executed notebook path (suffix: "_exec.ipynb").
+
+    This function supports both the new and legacy call signatures:
+      - New style:
+          execute_with_autofix(nb_path=..., workdir=..., timeout_seconds=..., ...)
+      - Legacy style:
+          execute_with_autofix(ipynb_path=..., out_exec_path=..., workdir=..., timeout=..., ...)
     """
+    # ---- Compatibility shim for legacy kwargs ----
+    if nb_path is None and "ipynb_path" in kwargs:
+        nb_path = kwargs.pop("ipynb_path")
+
+    # Map legacy 'timeout' to 'timeout_seconds' if provided
+    if timeout_seconds is None:
+        if "timeout" in kwargs:
+            timeout_seconds = int(kwargs.pop("timeout"))
+        else:
+            timeout_seconds = 1800  # default
+
+    # Legacy optional explicit output path
+    out_exec_path: Optional[str] = kwargs.pop("out_exec_path", None)
+
+    # Sanity checks
+    if nb_path is None:
+        raise TypeError("execute_with_autofix() requires 'nb_path' (or legacy 'ipynb_path').")
+
     if verbose:
-        print(f"[AUTO-FIX] start execute: {ipynb_path}")
-        print(f"[AUTO-FIX] workdir={workdir}, timeout={timeout}s, max_fix_rounds={max_fix_rounds}")
+        print(f"[AUTO-FIX] start execute: {nb_path}")
+        print(f"[AUTO-FIX] workdir={workdir}, timeout={timeout_seconds}s, max_fix_rounds={max_fix_rounds}")
         if preserve_source_in_exec:
             print("[AUTO-FIX] preserve_source_in_exec=True (exec keeps original code)")
-        if not save_intermediates:
-            print("[AUTO-FIX] save_intermediates=False (no patched intermediates saved)")
 
     # Load original notebook; keep sources for later restoration
-    nb_orig = nbformat.read(ipynb_path, as_version=4)
+    nb_orig = nbformat.read(nb_path, as_version=4)
     original_sources = [c.get("source", "") for c in nb_orig.cells]
 
     # Work on a copy for patching/execution
     nb_run = deepcopy(nb_orig)
 
     # Initial run
-    exec_nb, errors = execute_once(nb_run, workdir, timeout=timeout, allow_errors=True)
+    exec_nb, errors = execute_once(nb_run, workdir, timeout=timeout_seconds, allow_errors=True)
 
     if verbose:
         if errors:
@@ -627,12 +622,16 @@ def execute_with_autofix(
         else:
             print("[AUTO-FIX] initial run: success (no errors)")
 
+    # Compute final output path
+    if out_exec_path is None:
+        out_exec_path = nb_path.replace(".ipynb", "_exec.ipynb")
+
     # Early exit if no errors on first run
     if not errors:
         final_nb = exec_nb
         if preserve_source_in_exec and len(exec_nb.cells) == len(original_sources):
             final_nb = deepcopy(exec_nb)
-            _restore_sources(final_nb, original_sources, indices=[])  # nothing to restore, kept for consistency
+            # Nothing to restore, kept for symmetry
         nbformat.write(final_nb, out_exec_path)
         if verbose:
             print(f"[AUTO-FIX] early exit: no errors on initial run. -> {out_exec_path}")
@@ -663,7 +662,7 @@ def execute_with_autofix(
                 print(f"[AUTO-FIX] patched source -> {patched_src} (cells changed={changed_known})")
 
         # Re-execute after known patches
-        exec_nb, errors = execute_once(nb_run, workdir, timeout=timeout, allow_errors=True)
+        exec_nb, errors = execute_once(nb_run, workdir, timeout=timeout_seconds, allow_errors=True)
 
         # Early exit if fixed
         if not errors:
@@ -676,31 +675,27 @@ def execute_with_autofix(
                 print(f"[AUTO-FIX] success after known patches in round {round_idx}. -> {out_exec_path}")
             return out_exec_path
 
-        # B) LLM fix (optional)
-        if use_llm_autofix:
-            if verbose:
-                print("[AUTO-FIX] escalating to LLM-based fix...")
-            nb_after, errors_after, patched_cells = _llm_auto_fix_once(
-                deepcopy(nb_orig), errors, phase_cfg=phase_cfg, timeout=timeout, verbose=verbose
-            )
-            exec_nb = nb_after
-            errors = errors_after
-            for idx in patched_cells or []:
-                all_changed_indices.add(int(idx))
+        # B) LLM-based minimal patch
+        if verbose:
+            print("[AUTO-FIX] escalating to LLM-based fix...")
+        nb_after, errors_after, patched_cells = _llm_auto_fix_once(
+            deepcopy(nb_orig), errors, phase_cfg=phase_cfg, timeout=timeout_seconds, verbose=verbose
+        )
+        exec_nb = nb_after
+        errors = errors_after
+        for idx in patched_cells or []:
+            all_changed_indices.add(int(idx))
 
-            # Early exit if fixed
-            if not errors:
-                final_nb = exec_nb
-                if preserve_source_in_exec and len(exec_nb.cells) == len(original_sources):
-                    final_nb = deepcopy(exec_nb)
-                    _restore_sources(final_nb, original_sources, list(all_changed_indices) or None)
-                nbformat.write(final_nb, out_exec_path)
-                if verbose:
-                    print(f"[AUTO-FIX] success after LLM patches in round {round_idx}. -> {out_exec_path}")
-                return out_exec_path
-        else:
+        # Early exit if fixed
+        if not errors:
+            final_nb = exec_nb
+            if preserve_source_in_exec and len(exec_nb.cells) == len(original_sources):
+                final_nb = deepcopy(exec_nb)
+                _restore_sources(final_nb, original_sources, list(all_changed_indices) or None)
+            nbformat.write(final_nb, out_exec_path)
             if verbose:
-                print("[AUTO-FIX] LLM autofix disabled; skipping LLM step.")
+                print(f"[AUTO-FIX] success after LLM patches in round {round_idx}. -> {out_exec_path}")
+            return out_exec_path
 
     # If here, still have errors or exhausted rounds. Save whatever we have.
     final_nb = exec_nb
@@ -712,5 +707,3 @@ def execute_with_autofix(
     if verbose:
         print(f"[AUTO-FIX] done with remaining errors={len(errors)}; final exec -> {out_exec_path}")
     return out_exec_path
-
-

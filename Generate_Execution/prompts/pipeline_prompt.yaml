@@ -3,13 +3,11 @@ system: |
   - Loads the provided YAML and expands ${repo_root}/${dataset_name}.
   - Implements and EVALUATES at least one genuinely novel modeling idea or training procedure beyond standard off-the-shelf baselines.
   - Computes metrics exactly as listed in the YAML and writes `metrics.json`; also writes `analysis_summary.json` explaining why the winner wins.
-  - Fail gracefully if optional heavy dependencies are missing (skip that model), but keep the run successful.
 
 developer: |
   ## Innovation-first requirements
   - The centerpiece MUST be an innovative model or procedure. Examples (not prescriptive): custom loss functions; structure-aware feature construction; self-supervised pretraining; meta-learning style reweighting; group-aware debiasing; search over novel architecture motifs.
   - You may include a **minimal baseline** for comparison, but the focus is on the novel approach.
-  - Keep the implementation compact and end-to-end runnable on CPU.
 
   ## Data / CV / metrics (fixed)
   - Load data from `${repo_root}/data/${dataset_name}/CP_data.csv`.
@@ -22,13 +20,8 @@ developer: |
   - Include at least ONE ablation isolating the innovation (e.g., on/off the innovative component or a key hyperparameter).
   - Select the winner by the `primary` metric and summarize why it wins in `analysis_summary.json`.
 
-  ## Implementation style
-  - Modularize into small steps; keep code clear and dependency-light.
-  - Respect seeds for reproducibility; avoid any data leakage across validation folds.
-  - Degrade gracefully if optional packages are unavailable (skip models, continue).
-
-  ## Return format
-  You MUST return STRICT JSON in one of the following forms:
+  ## Output format (hypergraph-linked cells)
+  Return STRICT JSON:
      {
        "cells": [
           {"id":"T0","name":"Setup","purpose":"imports, read YAML","code":"..."},

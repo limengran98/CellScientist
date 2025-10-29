@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os, json, re, glob, time, shutil, datetime as _dt
 from typing import Any, Dict, List, Tuple, Optional
+from .llm_client import resolve_llm_from_cfg, LLMClient
 from pathlib import Path
 
 import nbformat
@@ -249,11 +250,11 @@ def generate_notebook_from_prompt(cfg: Dict[str, Any], spec_path: str, debug_dir
     messages.append({"role": "user", "content": usr_txt})
 
     # LLM config
-    llm_cfg = cfg.get("llm", {}) or {}
-    base_url = llm_cfg.get("base_url", os.getenv("OPENAI_BASE_URL", "https://vip.yi-zhan.top/v1"))
-    api_key  = llm_cfg.get("api_key",  os.getenv("OPENAI_API_KEY", "any_string_if_required"))
-    model    = llm_cfg.get("model",    "gpt-5")
-    timeout  = int(llm_cfg.get("timeout", 1200))
+    resolved = resolve_llm_from_cfg(cfg)
+    base_url = resolved['base_url']
+    api_key = resolved['api_key']
+    model = resolved['model']
+    timeout = int(resolved.get('timeout', 1200))
     pb = cfg.get("prompt_branch", {}) or {}
 
     def _strip_code_fences(s: str) -> str:
@@ -298,6 +299,7 @@ def generate_notebook_from_prompt(cfg: Dict[str, Any], spec_path: str, debug_dir
             "No markdown, no backticks, no extra commentary."
         )
         messages2 = list(messages) + [{"role": "system", "content": hard_rule}]
+        print(f"[LLM] model={model} base_url={base_url}")
         raw_text_2 = _chat_text_stable(
             messages=messages2,
             api_key=api_key,

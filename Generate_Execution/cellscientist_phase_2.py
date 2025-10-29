@@ -12,11 +12,12 @@ from design_execution.literature_manager import (
     openalex_search, save_rows_to_csv, csv_to_md, llm_summarize_literature
 )
 from design_execution.trial_manager import create_trial_from_baseline, propose_notebook_improvements
-from design_execution.llm_client import LLMClient
+from design_execution.llm_client import LLMClient, resolve_llm_from_cfg
 from design_execution.patch_applier import apply_patch
 from design_execution.report_builder import build_markdown_report
 from design_execution.prompt_pipeline import run_prompt_pipeline as _prompt_run
 from design_execution.context_extractor import summarize_folder_ipynb, summarize_notebook
+from design_execution.unified_pipeline import run_unified_pipeline
 
 try:
     from design_execution.prompt_pipeline import prompt_generate as _prompt_generate
@@ -80,7 +81,7 @@ def _run_literature(cfg: dict, enable: bool):
     bullets = ""
     if llm_sum:
         try:
-            syn = llm_summarize_literature(lit_root, query, cfg.get("llm", {}))
+            syn = llm_summarize_literature(lit_root, query, cfg)
             bullets = open(syn, "r", encoding="utf-8").read()
             print(f"[INFO] LLM literature synthesis file created at: {syn}")
         except Exception as e:
@@ -123,8 +124,9 @@ def cmd_generate(cfg: dict, baseline_id: int, with_lit: bool):
     tdir = create_trial_from_baseline(root, tag, baseline_id, seed)
     print(f"[INFO] Trial directory created at: {tdir}")
 
-    llm_conf = cfg.get("llm", {}) or {}
-    llm = LLMClient(**llm_conf)
+    llm_conf = resolve_llm_from_cfg(cfg)
+    print(f"[LLM] provider={llm_conf['provider']} model={llm_conf['model']} base_url={llm_conf['base_url']}")
+    llm = LLMClient(provider=llm_conf['provider'], model=llm_conf['model'], base_url=llm_conf['base_url'], api_key=llm_conf['api_key'], timeout=llm_conf.get('timeout',1200))
 
     patch_path = propose_notebook_improvements(
         cfg,
@@ -245,7 +247,6 @@ def _expand_vars(obj, env):
     elif isinstance(obj, str):
         return re.sub(r"\$\{(\w+)\}", lambda m: env.get(m.group(1), m.group(0)), obj)
     return obj
-
 
 def main():
     print("\n[INFO] === Pipeline started ===")

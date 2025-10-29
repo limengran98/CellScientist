@@ -60,12 +60,15 @@ def csv_to_md(csv_path: str, md_path: str) -> None:
         if str(row.get('relation_to_project','')).strip(): lines.append(f"- Relevance: {row.get('relation_to_project','')}")
         lines.append("")
     open(md_path, "w", encoding="utf-8").write("\n".join(lines))
-def llm_summarize_literature(lit_root: str, query: str, llm_cfg: dict) -> str:
+def llm_summarize_literature(lit_root: str, query: str, cfg: dict) -> str:
     md_path = os.path.join(lit_root, "auto_sections.md")
     text = open(md_path, "r", encoding="utf-8").read() if os.path.exists(md_path) else ""
     if not text.strip():
         syn = os.path.join(lit_root, "synthesis.md"); open(syn, "w", encoding="utf-8").write(""); return syn
-    client = LLMClient(**(llm_cfg or {}))
+    from .llm_client import resolve_llm_from_cfg
+    conf = resolve_llm_from_cfg(cfg or {})
+    client = LLMClient(provider=conf['provider'], model=conf['model'], base_url=conf['base_url'], api_key=conf['api_key'], timeout=conf['timeout'])
+    print(f"[LLM] provider={conf['provider']} model={conf['model']} base_url={conf['base_url']}")
     messages = [
         {"role": "system", "content": LITERATURE_SYSTEM},
         {"role": "user", "content": f"Topic: {query}\n\nSynthesize bullets (5-10 lines) focused on preprocessing/model design:\n{text[:6000]}"},
