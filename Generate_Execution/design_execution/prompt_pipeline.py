@@ -6,7 +6,7 @@ Guarantees:
 - generate_notebook_from_prompt(...) ALWAYS returns (nb, user_prompt) or raises.
 - Provides run_prompt_pipeline(cfg, spec_path) for callers that expect a single entrypoint.
 - Supports {"cells": [...], "hypergraph": {...}} → multi-cell notebook with cellwise execution.
-- Backward compatible with {"notebook": {...}} and {"code": "..."}.
+- Backward compatible with {"notebook": {...}} and {"code": "..."}. 
 
 Only execution logic is changed/enhanced.
 """
@@ -83,6 +83,7 @@ def _summarize_phase1(reference_dir: str, max_chars: int = 1600) -> str:
         return "\n".join(lines)[:max_chars]
     except Exception:
         return ""
+
 
 def _build_user_prompt(spec_obj: Dict[str, Any], phase1_hint: str) -> str:
     """Convert dict spec to user YAML while injecting a phase-1 summary hint."""
@@ -235,13 +236,16 @@ def generate_notebook_from_prompt(cfg: Dict[str, Any], spec_path: str, debug_dir
     else:
         core = {}
 
+    # Stage 1 Analysis (if available)
+    phase1_dir = cfg.get("paths", {}).get("stage1_analysis_dir", "")
+    phase1_hint = _summarize_phase1(phase1_dir)
+
+    # Integrate the phase1_hint into the user prompt
     if yaml is not None:
         usr_txt = yaml.safe_dump(core, allow_unicode=True, sort_keys=False).strip()
         if not usr_txt:
             usr_txt = "{}"
     else:
-        phase1_dir = cfg.get("paths", {}).get("stage1_analysis_dir", "")
-        phase1_hint = _summarize_phase1(phase1_dir)
         usr_txt = _build_user_prompt(core, phase1_hint)
 
     messages = [{"role": "system", "content": (sys_txt or "You are a principal ML scientist. Return STRICT JSON only.")}]
@@ -345,7 +349,6 @@ def generate_notebook_from_prompt(cfg: Dict[str, Any], spec_path: str, debug_dir
     except Exception as e:
         # Final guard: never return None
         raise RuntimeError(f"Invalid notebook format: {e}")
-
 
 # ========== Output & Viz ==========
 
@@ -484,58 +487,105 @@ def prompt_execute(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict
     return {"trial_dir": tdir, "metrics": metrics, "exec_notebook": final_exec_path}
 
 def prompt_analyze(cfg: Dict[str, Any], trial_dir: str) -> Dict[str, Any]:
-    """Read metrics and produce a tiny analysis summary (non-fatal if missing)."""
+    """
+    Read-only analyze phase:
+      - Do NOT execute or auto-fix here.
+      - If metrics.json is missing / invalid / empty, print the reason and return a report without metrics.
+    """
+    import os, json
+
     metrics_path = os.path.join(trial_dir, "metrics.json")
 
-    if not os.path.exists(metrics_path):
-        print(f"[WARN] metrics.json not found in {trial_dir}; attempting to execute once...")
-        try:
-            _ = prompt_execute(cfg, trial_dir)
-        except Exception as e:
-            print(f"[WARN] execution attempt during analyze failed: {e}")
-
-    metrics: Dict[str, Any] = {}
-    if os.path.exists(metrics_path):
-        try:
-            with open(metrics_path, "r", encoding="utf-8") as f:
-                metrics = json.load(f)
-        except Exception as e:
-            print(f"[WARN] failed to read metrics.json: {e}")
-    else:
-        print(f"[WARN] metrics.json still missing after execution attempt; continue analysis with limited info.")
-
-    report = {
+    report: Dict[str, Any] = {
         "trial_dir": trial_dir,
-        "has_metrics": bool(metrics),
-        "metrics_keys": list(metrics.keys()) if metrics else [],
-        "notes": "metrics unavailable" if not metrics else "ok"
+        "has_metrics": False,
+        "metrics_keys": [],
+        "reason": None,
+        "metrics": {}
     }
+
+    if not os.path.exists(metrics_path):
+        reason = f"metrics.json not found in {trial_dir}; analyze is read-only and will NOT re-execute."
+        print(f"[WARN] {reason}")
+        report["reason"] = "missing_metrics_json"
+        try:
+            with open(os.path.join(trial_dir, "analysis_summary.json"), "w", encoding="utf-8") as f:
+                json.dump(report, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+        return report
+
+    try:
+        with open(metrics_path, "r", encoding="utf-8") as f:
+            metrics_obj = json.load(f)
+    except Exception as e:
+        reason = f"failed to read/parse metrics.json: {e}"
+        print(f"[WARN] {reason}")
+        report["reason"] = "invalid_metrics_json"
+        try:
+            with open(os.path.join(trial_dir, "analysis_summary.json"), "w", encoding="utf-8") as f:
+                json.dump(report, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+        return report
+
+    if not isinstance(metrics_obj, dict) or not metrics_obj:
+        reason = "metrics.json loaded but empty or not a dict; analyze will NOT re-execute."
+        print(f"[WARN] {reason}")
+        report["reason"] = "empty_or_invalid_metrics"
+        try:
+            with open(os.path.join(trial_dir, "analysis_summary.json"), "w", encoding="utf-8") as f:
+                json.dump(report, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+        return report
+    
+    report["has_metrics"] = True
+    report["metrics_keys"] = list(metrics_obj.keys())
+    report["metrics"] = metrics_obj
+    report["reason"] = "ok"
+    print(f"[INFO] Loaded metrics from {metrics_path}: keys={report['metrics_keys']}")
+
+    primary = ((cfg.get("experiment") or {}).get("primary_metric")
+               or (cfg.get("improve") or {}).get("primary_metric"))
+    if primary and primary not in metrics_obj:
+        print(f"[WARN] primary metric '{primary}' not found in metrics.json keys.")
     try:
         with open(os.path.join(trial_dir, "analysis_summary.json"), "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+
     return report
 
 
 # ========== Public API (pipeline entrypoint) ==========
 
+from typing import Dict, Any
+
 def run_prompt_pipeline(cfg: Dict[str, Any], spec_path: str) -> Dict[str, Any]:
     """
-    Single entrypoint API to match callers expecting run_prompt_pipeline(cfg, spec_path).
-    Returns dict with keys: trial_dir, exec_notebook, metrics, report.
+    Orchestrate the prompt pipeline with 3 phases (read-only analyze):
+      1) prompt_generate -> materialize notebook
+      2) prompt_execute  -> execute notebook (with auto-fix if enabled)
+      3) prompt_analyze  -> read-only analysis (no re-exec)
+    Returns dict with keys: trial_dir, exec_notebook, metrics, report
     """
+    print("[INFO] === Generating prompt notebook ===")
     g = prompt_generate(cfg, spec_path)
+
     print("[INFO] === Executing prompt notebook ===")
     e = prompt_execute(cfg, g["trial_dir"])
+
     print("[INFO] === Analyzing results ===")
-    r = prompt_analyze(cfg, e["trial_dir"])
+    trial_for_analyze = e.get("trial_dir", g["trial_dir"])
+    a = prompt_analyze(cfg, trial_for_analyze)
+
+    merged_metrics = a.get("metrics") or e.get("metrics") or {}
+
     return {
-        "trial_dir": e["trial_dir"],
+        "trial_dir": trial_for_analyze,
         "exec_notebook": e.get("exec_notebook"),
-        "metrics": e.get("metrics", {}),
-        "report": r,
+        "metrics": merged_metrics,
+        "report": a,
     }
-
-
-

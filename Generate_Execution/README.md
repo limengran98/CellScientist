@@ -82,42 +82,31 @@ Generate improved notebook patches **without execution**.
 #### Without literature (simpler, faster)
 
 ```bash
-python cellscientist_phase_2.py --config generate_execution_config.json --pipeline-mode prompt generate 
+python cellscientist_phase_2.py --config generate_execution_config.json generate 
 ```
 
 #### With literature (adds OpenAlex search + LLM summarization)
 
 ```bash
-python cellscientist_phase_2.py --config generate_execution_config.json --pipeline-mode prompt generate --with-lit
+python cellscientist_phase_2.py --config generate_execution_config.json generate --with-lit
 ```
 
 ### **B. Execute**
 Run baseline and patched notebooks:
 ```bash
-python cellscientist_phase_2.py --config generate_execution_config.json --pipeline-mode prompt execute --which both
-```
-
-Outputs:
-```
-baseline_00_exec.ipynb
-notebook_unexec_patched_exec.ipynb
+python cellscientist_phase_2.py --config generate_execution_config.json execute
 ```
 
 ### **C. Analyze**
 Generate Markdown summary report:
 ```bash
-python cellscientist_phase_2.py --config generate_execution_config.json --pipeline-mode prompt analyze
+python cellscientist_phase_2.py --config generate_execution_config.json analyze
 ```
-Report path:
-```
-./results/${dataset_name}/generate_execution/reports/Report_T<date>-improve-data-model-s22.md
-```
-
 
 ### **D. Full Pipeline**
 Run all three stages in sequence:
 ```bash
-python cellscientist_phase_2.py --config generate_execution_config.json run --with-lit --which both
+python cellscientist_phase_2.py --config generate_execution_config.json run --with-lit
 ```
 
 
