@@ -30,7 +30,7 @@ python cellscientist_phase_2.py --config generate_execution_config.json run
 | **design_execution/llm_client.py**                                             | Unified OpenAI-compatible client; prints provider/model each call; `resolve_llm_from_cfg` picks the exact model used. |
 | **design_execution/nb_autofix.py**                                             | Execute + auto-fix loop (known patches, optional LLM bug-fix); preserves source in exec by default.                   |
 | **design_execution/notebook_executor.py**                                      | Thin wrapper helpers for nb execution.                                                                                |
-| **design_execution/report_builder.py**                                         | (If needed) builds minimal markdown/JSON summaries.                                                                   |
+| **design_execution/report_builder.py**                                         | Builds minimal markdown/JSON summaries.                                                                   |
 | **design_execution/prompts.py / design_execution/prompt_viz.py / design_execution/run_llm_nb.py / design_execution/evaluator.py** | Helpers (message building, hypergraph viz, JSON-chat wrapper, metrics recorder).                                      |
 
 
