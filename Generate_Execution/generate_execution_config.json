@@ -33,24 +33,12 @@
     "n": 12,
     "llm_summarize": true
   },
-  "trial": {
-    "tag": "improve-data-model",
-    "seed": 22
-  },
-  "improve": {
-    "primary_metric": "AUROC"
-  },
-  "pipeline_mode": "baseline",
-  "baseline_branch": {
-    "temperature": 0.8,
-    "retries": 2,
-    "max_tokens": 20000
-  },
+
   "prompt_branch": {
     "output_type": "notebook",
     "prompt_file": "prompts/pipeline_prompt.yaml",
     "temperature": 0.5,
-    "max_tokens": 20000,
+    "max_tokens": 16384,
     "retries": 1,
     "save_root": "../results/${dataset_name}/generate_execution"
   },

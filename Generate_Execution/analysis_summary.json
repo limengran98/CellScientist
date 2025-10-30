@@ -1,16 +1,1 @@
-{
-  "hypotheses": [
-    "The primary hypothesis is that a standard MSE loss is suboptimal for high-dimensional biological profile prediction.",
-    "A custom 'ProfileLoss' that combines MSE with a cosine similarity term will encourage the model to learn the overall 'shape' of the cellular profile vector, leading to better generalization on unseen compounds."
-  ],
-  "ablations": [
-    "The key ablation is the comparison between 'ProfileNet_alpha0.5' (using the custom loss) and 'ProfileNet_MSE_Only' (using a standard MSE loss, alpha=1.0).",
-    "This directly isolates the impact of the cosine similarity component of the loss function."
-  ],
-  "why_it_wins": "The winning model, 'N/A', achieved the best performance on the primary metric 'PCC' with a score of -inf.",
-  "next_steps": [
-    "Perform a hyperparameter sweep on the loss mixing parameter 'alpha' to find the optimal balance between MSE and cosine similarity.",
-    "Explore more complex neural network architectures, such as those incorporating attention mechanisms over the input chemical features.",
-    "Investigate the model's performance on specific compound classes or mechanisms of action to identify areas of strength and weakness."
-  ]
-}
+{"why_it_wins": "N/A"}

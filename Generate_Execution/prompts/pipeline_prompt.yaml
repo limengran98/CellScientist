@@ -29,51 +29,64 @@ developer: |
 
   ## Return format
   You MUST return STRICT JSON in one of the following forms:
-     {
-       "cells": [
-          {"id":"T0","name":"Setup","purpose":"imports, read YAML","code":"..."},
-          {"id":"T1","name":"Data Loading","purpose":"load & split","code":"..."},
-          {"id":"T2","name":"Innovation","purpose":"implement novel method","code":"..."},
-          {"id":"T3","name":"(Optional) Baseline","purpose":"simple baseline for comparison","code":"..."},
-          {"id":"T4","name":"Training & Evaluation","purpose":"train/eval across folds","code":"..."},
-          {"id":"T5","name":"Metrics & Save","purpose":"compute & write metrics.json & analysis_summary.json; print FINAL_METRICS","code":"..."}
-       ],
-       "hypergraph": {
-         "nodes": [{"id":"T0"},{"id":"T1"},{"id":"T2"},{"id":"T3"},{"id":"T4"},{"id":"T5"}],
-         "hyperedges": [
-           {"tail":["T0"], "head":"T1"},
-           {"tail":["T1"], "head":"T2"},
-           {"tail":["T1"], "head":"T3"},
-           {"tail":["T2","T3"], "head":"T4"},
-           {"tail":["T4"], "head":"T5"}
-         ]
-       }
-     }
+  1) **Knowledge Retrieval** — 3-6 actionable bullets derived from Stage-1 text & YAML (no web).
+  2) **Semantic Alignment** — confirm target/features/grouping columns from YAML.
+  3) **Setting Standardization** — handle missing/abnormal data; batch structure; scaling strategy; within-fold fitting.
+  4) **Executability Check** — assert file existence, column completeness, memory/sample feasibility, CPU-only execution; human-readable error messages.
+  5) **Algorithm Generation** — implement a compact DL model + ≥1 baseline + ablation toggles; unified fit/predict/evaluate interface.
+  6) **Algorithm Execution** — train/evaluate strictly by split rules; log per-fold metrics.
+  7) **Algorithm Evaluation** — aggregate metrics; perform overall + stratified (e.g., by plate/smiles) + robustness/error analysis; select winner; write both JSONs; print `FINAL_METRICS`.
+
+  ## Return format (STRICT JSON)
+  Return exactly one object:
+  {
+    "cells": [
+      {"id":"K","name":"Knowledge Retrieval","purpose":"extract actionable bullets from Stage-1 text and YAML","code":"..."},
+      {"id":"A","name":"Semantic Alignment","purpose":"confirm targets/features/grouping columns","code":"..."},
+      {"id":"S","name":"Setting Standardization","purpose":"handle missing values, scaling, batch effects, leakage control","code":"..."},
+      {"id":"X","name":"Executability Check","purpose":"assert data/file integrity and CPU feasibility","code":"..."},
+      {"id":"G","name":"Algorithm Generation","purpose":"define DL model(s), baseline(s), ablation toggles","code":"..."},
+      {"id":"R","name":"Algorithm Execution","purpose":"train and evaluate per split; collect per-fold metrics","code":"..."},
+      {"id":"E","name":"Algorithm Evaluation","purpose":"aggregate results, write metrics.json & analysis_summary.json; print FINAL_METRICS","code":"..."}
+    ],
+    "hypergraph": {
+      "nodes": [
+        {"id":"K","name":"Knowledge Retrieval"},
+        {"id":"A","name":"Semantic Alignment"},
+        {"id":"S","name":"Setting Standardization"},
+        {"id":"X","name":"Executability Check"},
+        {"id":"G","name":"Algorithm Generation"},
+        {"id":"R","name":"Algorithm Execution"},
+        {"id":"E","name":"Algorithm Evaluation"}
+      ],
+      "hyperedges": [
+        {"tail":["K","A"], "head":"S"},
+        {"tail":["S"], "head":"X"},
+        {"tail":["X"], "head":"G"},
+        {"tail":["G","S"], "head":"R"},
+        {"tail":["R","S"], "head":"E"}
+      ]
+    }
+  }
+
 
 # Prompt-defined pipeline specification
 dataset:
   name: "${dataset_name}"
   resources:
     full_file: "${repo_root}/data/${dataset_name}/CP_data.csv"
-  # columns:
-  #   smiles: "SMILES"            # optional
-  #   plate: "Metadata_Plate"     # optional
-  #   targets: "__AUTO__"         # auto-detect target columns
-  # options:
-  #   has_precomputed_features: true  # this dataset already has feature tables
 
 split:
   method: "leave-smiles-out"   # leave-smiles-out or leave-plates-out
   n_folds: 5
-  group_column_override: ""  # optional: group by this column (if any)
   save_split: true
   save_split_dir: "${repo_root}/data/${dataset_name}/splits"  # where to save split indices
   random_state: 0  # random seed
 
 metrics:
-  primary: "PCC"  # primary metric to select the best model
+  primary: "PCC"
   list: ["PCC", "RMSE", "DEG_PCC", "DEG_RMSE", "Direction_ACC", "Systema_PCC", "Systema_RMSE"]
-  direction_threshold: 0.0  # thresholds for "up"/"down" classification
+  direction_threshold: 0.0
 
 runtime:
   seed: 0
