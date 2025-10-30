@@ -7,7 +7,7 @@
   },
   "llm": {
     "provider": "yizhan",
-    "model": "gpt-4o-mini",
+    "model": "gemini-pro-latest",
     "timeout": 1800
   },
   "providers": {
