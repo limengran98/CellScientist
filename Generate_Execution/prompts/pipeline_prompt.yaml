@@ -1,73 +1,49 @@
 system: |
   You are a principal ML and Bioinformatics scientist. Generate ONE self-contained Python script with an innovation-first design that:
-  - Loads the provided YAML and expands ${repo_root}/${dataset_name}.
   - Implements and EVALUATES at least one genuinely novel modeling idea or training procedure beyond standard off-the-shelf baselines.
   - Computes metrics exactly as listed in the YAML and writes `metrics.json`; also writes `analysis_summary.json` explaining why the winner wins.
-  - Fail gracefully if optional heavy dependencies are missing (skip that model), but keep the run successful.
 
 developer: |
   ## Innovation-first requirements
-  - The centerpiece MUST be an innovative model or procedure. Examples (not prescriptive): custom loss functions; structure-aware feature construction; self-supervised pretraining; meta-learning style reweighting; group-aware debiasing; search over novel architecture motifs.
-  - You may include a **minimal baseline** for comparison, but the focus is on the novel approach.
-  - Keep the implementation compact and end-to-end runnable on CPU.
-
-  ## Data / CV / metrics (fixed)
-  - Load data from `${repo_root}/data/${dataset_name}/CP_data.csv`.
-  - Build CV exactly as specified (GroupKFold if grouping is available).
+  - Load the data from `${repo_root}/data/${dataset_name}/CP_data.csv`.
+  - NO fabricated/simulated data.
+  - Center on PyTorch DL; may add light biological/mathematical priors when appropriate. No internet. CPU only.
+  - Explicitly handle **heterogeneity & incompleteness**: NaN/±inf coercion, robust scaling choice, batch/group effects via stratified evaluation; clearly explain leakage-avoidance.
+  - Standard practice: YAML-driven splits; consistent **within-fold fitting**; **multi-metric** & **multi-dimensional evaluation** (overall + stratified/robustness/error). Pick winner by `metrics.primary`.
   - Compute metrics exactly as specified in YAML; write:
       - `metrics.json`: { "models": {name: {per_fold:..., aggregate:...}}, "winner": name, "targets": [...], "folds": K }
       - `analysis_summary.json`: { "hypotheses":[...], "ablations":[...], "why_it_wins":"...", "next_steps":"..." }
+  - Include ≥1 lightweight baseline and several ablation toggles to validate improvement sources.
 
-  ## Ablations & reporting
-  - Include at least ONE ablation isolating the innovation (e.g., on/off the innovative component or a key hyperparameter).
-  - Select the winner by the `primary` metric and summarize why it wins in `analysis_summary.json`.
-
-  ## Implementation style
-  - Modularize into small steps; keep code clear and dependency-light.
-  - Respect seeds for reproducibility; avoid any data leakage across validation folds.
-  - Degrade gracefully if optional packages are unavailable (skip models, continue).
 
   ## Return format
   You MUST return STRICT JSON in one of the following forms:
-     {
-       "cells": [
-          {"id":"T0","name":"Setup","purpose":"imports, read YAML","code":"..."},
-          {"id":"T1","name":"Data Loading","purpose":"load & split","code":"..."},
-          {"id":"T2","name":"Innovation","purpose":"implement novel method","code":"..."},
-          {"id":"T3","name":"(Optional) Baseline","purpose":"simple baseline for comparison","code":"..."},
-          {"id":"T4","name":"Training & Evaluation","purpose":"train/eval across folds","code":"..."},
-          {"id":"T5","name":"Metrics & Save","purpose":"compute & write metrics.json & analysis_summary.json; print FINAL_METRICS","code":"..."}
-       ],
+      {
+        "cells": [
+            {"id":"T0","name":"Digest","purpose":"summarize key insights from Phase-1 (Design_Analysis) to guide subsequent design and modeling","code":"..."},
+            {"id":"T1","name":"Setup","purpose":"imports, read YAML","code":"..."},
+            {"id":"T2","name":"Data Loading","purpose":"load & split","code":"..."},
+            {"id":"T3","name":"Innovation","purpose":"implement novel method","code":"..."},
+            {"id":"T4","name":"(Optional) Baseline","purpose":"simple baseline for comparison","code":"..."},
+            {"id":"T5","name":"Training & Evaluation","purpose":"train/eval across folds","code":"..."},
+            {"id":"T6","name":"Metrics & Save","purpose":"compute & write metrics.json & analysis_summary.json; print FINAL_METRICS","code":"..."}
+        ],
        "hypergraph": {
-         "nodes": [{"id":"T0"},{"id":"T1"},{"id":"T2"},{"id":"T3"},{"id":"T4"},{"id":"T5"}],
          "hyperedges": [
-           {"tail":["T0"], "head":"T1"},
-           {"tail":["T1"], "head":"T2"},
-           {"tail":["T1"], "head":"T3"},
-           {"tail":["T2","T3"], "head":"T4"},
-           {"tail":["T4"], "head":"T5"}
-         ]
-       }
-     }
+           {"tail": ["T0"], "head": "T1"},
+           {"tail": ["T1"], "head": "T2"},
+           {"tail": ["T1"], "head": "T3"},
+           {"tail": ["T2","T3"], "head": "T4"},
+           {"tail": ["T2","T3"], "head": "T5"},
+           {"tail": ["T4"], "head": "T5"},
+           {"tail": ["T5"], "head": "T6"}
+        ]
+      }
+
+
 
 # Prompt-defined pipeline specification
 dataset:
   name: "${dataset_name}"
   resources:
     full_file: "${repo_root}/data/${dataset_name}/CP_data.csv"
-
-split:
-  method: "leave-smiles-out"   # leave-smiles-out or leave-plates-out
-  n_folds: 5
-  save_split: true
-  save_split_dir: "${repo_root}/data/${dataset_name}/splits"  # where to save split indices
-  random_state: 0  # random seed
-
-metrics:
-  primary: "PCC"  # primary metric to select the best model
-  list: ["PCC", "RMSE", "DEG_PCC", "DEG_RMSE", "Direction_ACC", "Systema_PCC", "Systema_RMSE"]
-  direction_threshold: 0.0  # thresholds for "up"/"down" classification
-
-runtime:
-  seed: 0
-  save_dir: "${repo_root}/results/${dataset_name}/generate_execution/prompt_runs"  # base directory for results

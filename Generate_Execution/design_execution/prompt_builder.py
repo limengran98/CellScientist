@@ -375,8 +375,4 @@ def generate_notebook_from_prompt(cfg: Dict[str, Any],
                 raise RuntimeError(f"nbformat must be 4, got {getattr(nb, 'nbformat', None)}")
         except Exception as e:
             raise RuntimeError(f"Invalid notebook format: {e}")
-
-    # Prepend Stage-1 markdown (if toggled & available)
-    stage1_md = build_stage1_markdown(cfg)
-    nb = prepend_stage1_markdown(nb, stage1_md)
     return nb, usr_txt
