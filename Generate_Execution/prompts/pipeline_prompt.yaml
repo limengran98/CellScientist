@@ -15,6 +15,17 @@ developer: |
       - `analysis_summary.json`: { "hypotheses":[...], "ablations":[...], "why_it_wins":"...", "next_steps":"..." }
   - Include ≥1 lightweight baseline and several ablation toggles to validate improvement sources.
 
+  ## Path rules
+  - Define **OUTPUT_DIR** as the absolute directory of the **currently executing artifact**:
+      - Notebook mode: the directory of the executing `notebook_prompt_exec.ipynb`.
+  - All outputs **must** be saved under **OUTPUT_DIR**—nowhere else.
+  - Required files (all under OUTPUT_DIR):
+      - `metrics.json`
+      - `analysis_summary.json`
+      - `experiment.yaml` (if emitted)
+  - Print the absolute path of that directory when saving results.
+
+
 
   ## Return format
   You MUST return STRICT JSON in one of the following forms:
