@@ -261,25 +261,52 @@ Constraints:
 
 Section expectations:
 1. **Data Loading & Initial Exploration**
-   - Load the dataset, preview schema, show summary statistics and distributions.
-   - Identify metadata vs. feature columns (treat dose/SMILES/plate IDs as covariates; keep features numeric).
-   - Convert feature columns to numeric with coercion; replace +inf/-inf with NaN and report affected columns.
-   - Diagnose missingness and distributional shape (skewness, kurtosis), and summarize per-column NaN ratios.
-   - Adaptive handling (NO fixed hard thresholds):
-     * Prefer imputation over dropping (median imputation by default).
-     * If a column is near-constant or >95% missing **and** carries negligible variance after imputation, drop it with justification.
-   - Do NOT force winsorization/clipping. If extreme outliers would numerically break scaling/PCA, apply the **minimum necessary** safeguard (e.g., quantile clipping or power transform) and document the decision.
-   - Choose scaler based on diagnostics:
-     * If features are heavy-tailed or contain outliers, use RobustScaler; otherwise use StandardScaler.
-   - Ensure a fully finite numeric matrix before downstream steps; include assertions that fail early with clear messages if not satisfied.
-   - Report final matrix shape, number of features retained, imputation summary, and any adaptive decisions. Relate these choices to the biological context of the paper (e.g., morphology features often heavy-tailed).
-   - After completing preprocessing, insert a dedicated **Markdown cell** titled "## Biological Interpretation of the Dataset".  
-   - In plain language, explain what the **rows** represent (e.g., individual cells, wells, compound–dose pairs, depending on dataset inspection).  
-   - Explain what the **columns** represent (numeric features such as morphological descriptors, omics values, etc.).  
-   - Clarify what the **metadata columns** represent (e.g., dose = treatment intensity, SMILES = compound identity, plate ID = batch effects).  
-   - Relate the dataset schema directly to the biological experiment described in the paper (what kind of experiment generated it, what the features capture in terms of phenotype or cellular response).  
-   - Provide a **concise, data-driven summary** in natural language, using real counts (e.g., number of samples, unique compounds, unique plates) derived from the dataset, for example:
-    > “This dataset contains **{{n_rows}}** samples measured under **{{n_unique_compounds}}** compounds and **{{n_unique_batches}}** plates. Each row corresponds to a **{{unit_of_observation}}**, and each feature describes a **{{biological_property}}**. Collectively, these features capture biological responses such as {{contextual_examples_from_paper}}.”
+    Input: a CSV file named XXX containing columns dose, SMILES, Metadata_Plate; all other columns are cell-morphology features.
+    Goal: produce one compressed HDF5 file containing drug-morphology pairs ready for downstream ML/DL.
+
+    Required HDF5 schema (exact names):
+    /
+    ├─ smiles            : str   – drug SMILES  
+    ├─ morphology_pre    : float32 (N, F) – DMSO morphology vector  
+    ├─ morphology_post   : float32 (N, F) – drug-treated morphology vector  
+    ├─ dose              : float32 – concentration  
+    └─ plate_id          : str   – plate identifier  
+
+    4-step pipeline (must appear in order):
+    (1) Inspect data  
+    - Load raw file (use given path verbatim)  
+    - Separate morphology features vs metadata (dose/SMILES/plate_id)  
+    - Report shape, missingness, dose/batch counts  
+
+    (2) Clean outliers  
+    - Force numeric features; ±inf → NaN  
+    - Drop columns >95 % missing or near-zero variance; log dropped names  
+    - Median-impute remaining NaNs  
+    - RobustScaler (heavy tails/outliers)  
+
+    (3) Pairing  
+    - Within each plate, match every drug-treated well to its **nearest DMSO well** (well-id or row/col)  
+    - Remove unmatched rows; print remaining pairs  
+
+    (4) Build H5
+    - Create 5-key dict above
+    - Define OUTPUT_DIR = absolute parent directory of the input CSV path
+    - Save the HDF5 file into OUTPUT_DIR using the CSV basename with `.h5` extension
+    - Use h5py write, gzip-4 compression
+    - Read-back assert shapes & no NaN; PRINT the absolute OUTPUT_DIR path, file path, N-samples, N-features, done
+
+    Code rules:
+    - Alternate markdown/code; every code cell preceded by one-sentence explanation  
+    - pandas/numpy/h5py/sklearn only; no internet  
+    - ≤120 lines total  
+
+    Final markdown cell (mandatory):
+    ## ML-Ready Data Summary  
+    - Rows = paired samples (DMSO ↔ drug)  
+    - Columns = morphology features (Robust-scaled)  
+    - Pairing strategy: one-to-one within plate  
+    - Final counts: N-samples samples, F features, N-unique-drugs unique compounds, N-plates plates  
+    - File location: ready for PyTorch/TensorFlow data-loader
 
 2. **Data Patterns**
    - Build directly on the processed matrix from Step 1.
@@ -322,8 +349,15 @@ Section expectations:
      * **Cross-modal integration**: combine morphology with chemical descriptors/omics using multi-view learning (e.g., CCA, multimodal autoencoders, graph-based fusion).
      * **Generalization & robustness**: explicitly test whether models trained on one plate/dose/compound generalize to unseen conditions, with leakage-safe splits (plate-holdout, dose-stratified).
    - Define tasks & success criteria:
-     * ML metrics (R²/MAE, AUROC/AUPRC, clustering indices).
-     * Biological criteria (recovery of known markers, pathway-level consistency, phenotype relevance).
+
+     Evaluation Metrics:
+     - Mean Squared Error (MSE): Measures the average squared difference between predicted and observed cell morphology profiles
+     - Pearson Correlation Coefficient (PCC): Quantifies linear correlation between predicted and observed morphology profiles
+     - R² (Coefficient of Determination): Represents the proportion of variance in the observed morphology explained by the predicted values
+     - MSE for Differentially Morphological Features (MSE_DM): Same as MSE but computed specifically on morphology features that show significant change after treatment
+     - PCC for Differentially Morphological Features (PCC_DM): Same as PCC but computed specifically on differentially changed morphology features
+     - R² for Differentially Morphological Features (R²_DM): Same as R² but computed specifically on differentially changed morphology features
+
    - In code, provide a prototype pipeline skeleton (scikit-learn, XGBoost, or PyTorch) that illustrates how the processed data could be modeled:
      * Baseline: logistic regression or random forest.
      * Advanced: biologically-motivated model (e.g., monotonic regressor, graph-based model, multimodal fusion).
