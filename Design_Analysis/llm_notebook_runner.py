@@ -254,59 +254,77 @@ Constraints:
 - Language: {language_label}.
 - Alternate markdown and code logically; each code cell MUST be preceded by a markdown explanation.
 - Code must be executable offline (no internet), using the given dataset path exactly as received.
-- Prefer standard libs: pandas, numpy, matplotlib (seaborn optional), statsmodels, scikit-learn.
 - The Notebook must explicitly connect data analysis with the scientific context of the provided paper.
 - Include the following section headings (in order), using them exactly:
 {headings_bulleted}
 
 Section expectations:
 1. **Data Loading & Initial Exploration**
-    Input: a CSV file named XXX containing columns dose, SMILES, Metadata_Plate; all other columns are cell-morphology features.
-    Goal: produce one compressed HDF5 file containing drug-morphology pairs ready for downstream ML/DL.
 
-    Required HDF5 schema (exact names):
+    **Input:** a CSV file named XXX containing columns `dose`, `SMILES`, `Metadata_Plate`; all other columns are cell-morphology features.
+    **Goal:** produce one compressed HDF5 file containing drug-morphology pairs ready for downstream ML/DL.
+
+    **Required HDF5 schema (exact names):**
+
+    ```
     /
-    ├─ smiles            : str   – drug SMILES  
-    ├─ morphology_pre    : float32 (N, F) – DMSO morphology vector  
-    ├─ morphology_post   : float32 (N, F) – drug-treated morphology vector  
-    ├─ dose              : float32 – concentration  
-    └─ plate_id          : str   – plate identifier  
+    ├─ smiles           : str         – drug SMILES
+    ├─ morphology_pre   : float32 (N, F) – Control (DMSO) morphology vector
+    ├─ morphology_post  : float32 (N, F) – drug-treated morphology vector
+    ├─ dose             : float32    – concentration
+    └─ plate_id         : str         – plate identifier
+    ```
 
-    4-step pipeline (must appear in order):
-    (1) Inspect data  
-    - Load raw file (use given path verbatim)  
-    - Separate morphology features vs metadata (dose/SMILES/plate_id)  
-    - Report shape, missingness, dose/batch counts  
+    **4-step pipeline (must appear in order):**
 
-    (2) Clean outliers  
-    - Force numeric features; ±inf → NaN  
-    - Drop columns >95 % missing or near-zero variance; log dropped names  
-    - Median-impute remaining NaNs  
-    - RobustScaler (heavy tails/outliers)  
+    **(1) Inspect data**
 
-    (3) Pairing  
-    - Within each plate, match every drug-treated well to its **nearest DMSO well** (well-id or row/col)  
-    - Remove unmatched rows; print remaining pairs  
+    * Load raw file (use given path verbatim).
+    * Separate morphology feature columns vs metadata columns (`dose`, `SMILES`, `Metadata_Plate`).
+    * Report original shape, initial missingness summary, and counts of doses/plates.
 
-    (4) Build H5
-    - Create 5-key dict above
-    - Define OUTPUT_DIR = absolute parent directory of the input CSV path
-    - Save the HDF5 file into OUTPUT_DIR using the CSV basename with `.h5` extension
-    - Use h5py write, gzip-4 compression
-    - Read-back assert shapes & no NaN; PRINT the absolute OUTPUT_DIR path, file path, N-samples, N-features, done
+    **(2) Clean features**
 
-    Code rules:
-    - Alternate markdown/code; every code cell preceded by one-sentence explanation  
-    - pandas/numpy/h5py/sklearn only; no internet  
-    - ≤120 lines total  
+    * Force all morphology columns to numeric; set `±inf` to `NaN`.
+    * Drop feature columns with \>95% missing values or near-zero variance; log the names of dropped columns.
+    * Median-impute any remaining `NaN` values in the feature matrix.
+    * Apply `sklearn.preprocessing.RobustScaler` to the feature matrix (to handle heavy tails/outliers).
 
-    Final markdown cell (mandatory):
-    ## ML-Ready Data Summary  
-    - Rows = paired samples (DMSO ↔ drug)  
-    - Columns = morphology features (Robust-scaled)  
-    - Pairing strategy: one-to-one within plate  
-    - Final counts: N-samples samples, F features, N-unique-drugs unique compounds, N-plates plates  
-    - File location: ready for PyTorch/TensorFlow data-loader
+    **(3) Pairing & Control Aggregation**
+
+
+    * **Identify control wells** (assume `SMILES == 'DMSO'`) and **treatment wells** (all other `SMILES`).
+    * For each unique `Metadata_Plate`:
+        1.  Calculate a **robust center-tendency vector** of all morphology features from the *control (DMSO) wells* on that specific plate. **This vector should be statistically sound and resistant to outliers (e.g., using the median or a similar robust measure).** This single vector is the `morphology_pre` baseline for the plate.
+        2.  Identify all *treatment (drug-treated) wells* on that same plate.
+    * **Create the final paired dataset:** For each treatment well, store its features as `morphology_post` and its corresponding plate's center-tendency control vector as `morphology_pre`.
+    * Discard any treatment wells from plates that had *zero* control (DMSO) wells.
+    * Log the number of plates dropped (if any) and the final total number of (treatment, control\_center\_tendency) pairs.
+
+    **(4) Build H5**
+
+    * Create a 5-key dictionary matching the HDF5 schema.
+    * Define `OUTPUT_DIR` as the absolute parent directory of the input CSV path.
+    * Save the HDF5 file into `OUTPUT_DIR` using the CSV basename with a `.h5` extension (e.g., `input.csv` -\> `input.h5`).
+    * Use `h5py` for writing, enabling `gzip` compression (level 4).
+    * Read-back check: Assert the shapes of the saved arrays match the data and that no `NaN` values exist in the final feature arrays.
+    * PRINT the absolute `OUTPUT_DIR` path, the final file path, N-samples, N-features, and a "Done" message.
+
+    **Code rules:**
+
+    * Alternate markdown/code; every code cell must be preceded by a one-sentence explanation of its purpose.
+    * Assume control wells are identified by `SMILES == 'DMSO'`.
+    * Keep code concise and efficient.
+
+    **Final markdown cell (mandatory):**
+
+    ```markdown
+    ## ML-Ready Data Summary
+    - Rows = paired samples (drug ↔ plate-control)
+    - Columns = morphology features (Robust-scaled)
+    - Pairing strategy: **Many-to-one (within-plate)**. All treatments on a plate are paired against the **median or a similar robust measure of all DMSO controls** from that same plate.
+    - Final counts: N-samples samples, F features, N-unique-drugs unique compounds, N-plates plates
+    - File location: ready for a PyTorch data-loader.
 
 2. **Data Patterns**
    - Build directly on the processed matrix from Step 1.
