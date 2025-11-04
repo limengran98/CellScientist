@@ -3,24 +3,14 @@
 # Orchestrate multi-notebook generation (hyperedges), review them, and export a best "reference" notebook.
 # Everything is driven by config.json under phases.task_analysis.llm_notebook.multi.*
 
-import json, hashlib, os, shutil
+import json, hashlib, os, shutil, re
 from typing import Optional
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 
-def _resolve_placeholders(cfg: dict) -> dict:
-    import re as _re
-    ds = cfg.get("dataset_name", "default_dataset")
-    def _subst(v):
-        if isinstance(v, str):
-            return _re.sub(r"\$\{dataset_name\}", ds, v)
-        if isinstance(v, dict):
-            return {k: _subst(x) for k, x in v.items()}
-        if isinstance(v, list):
-            return [_subst(x) for x in v]
-        return v
-    return _subst(cfg)
+# [NEW] Use the centralized config loader
+from config_loader import load_app_config
 
 import uuid
 
@@ -35,10 +25,17 @@ from run_llm_nb import (
 # --------------------
 # Utilities
 # --------------------
-def _load_cfg(cfg_path: str) -> Dict[str, Any]:
-    with open(cfg_path, "r", encoding="utf-8") as f:
-        cfg = json.load(f)
-    return _resolve_placeholders(cfg)
+def _get_prompts_dir(cfg_path: str) -> str:
+    """Helper to find the prompts/ dir, assumed sibling to config file."""
+    config_dir = Path(cfg_path).parent
+    return str(config_dir / 'prompts') # Assumes prompts/ is in the same dir
+
+def _load_cfg(cfg_path: str, prompts_dir_path: Optional[str] = None) -> Dict[str, Any]:
+    # [MODIFIED] Use centralized loader.
+    if prompts_dir_path is None:
+        prompts_dir_path = _get_prompts_dir(cfg_path)
+    return load_app_config(cfg_path, prompts_dir_path)
+
 def _ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
 
@@ -54,9 +51,10 @@ def _hash_file(p: Path) -> str:
 # --------------------
 # Per-run config builder
 # --------------------
-def _mk_run_prompt(base_cfg: Dict[str, Any], idx: int, prompt_variant: str):
+def _mk_run_prompt(base_cfg: Dict[str, Any], idx: int, prompt_variant: str, seed: Optional[int]):
     import copy
     cfg = copy.deepcopy(base_cfg)
+    # [MODIFIED] Access nb_cfg via path
     nb_cfg = cfg["phases"]["task_analysis"]["llm_notebook"]
     paths = nb_cfg.get("paths", {})
     multi = nb_cfg.get("multi", {})
@@ -64,18 +62,16 @@ def _mk_run_prompt(base_cfg: Dict[str, Any], idx: int, prompt_variant: str):
     out_dir = Path(multi.get("out_dir") or Path(paths.get("out") or "/mnt/data/").parent / "hypergraph_runs")
     _ensure_dir(out_dir)
 
-    seeds = multi.get("seeds") or []
-    seed = seeds[idx] if idx < len(seeds) else None
-
     name_template = multi.get("name_template") or "NB{idx:02d}"
     run_name = name_template.format(idx=idx+1, seed=seed if seed is not None else 0)
     run_dir = out_dir / run_name
     _ensure_dir(run_dir)
 
     # augment prompt
-    base_prompt = nb_cfg.get("prompt") or ""
+    # [MODIFIED] base_prompt is now pre-loaded by config_loader from prompts/
+    base_prompt = nb_cfg.get("prompt") or "" # This is the 'user_prompt'
     extra = f"\\n\\n[Hyperedge Variant {idx+1}] {prompt_variant}".strip() if prompt_variant else ""
-    nb_cfg["prompt"] = (base_prompt + extra).strip()
+    nb_cfg["prompt"] = (base_prompt + extra).strip() # This remains the user prompt
 
     # distinct outputs
     nb_cfg.setdefault("paths", {})
@@ -87,24 +83,37 @@ def _mk_run_prompt(base_cfg: Dict[str, Any], idx: int, prompt_variant: str):
     if seed is not None:
         llm["seed"] = seed
         nb_cfg["llm"] = llm
+        
+    # [MODIFIED] Ensure the full prompts dict is passed along in the temp config
+    cfg["prompts"] = base_cfg.get("prompts", {})
 
     return cfg, run_name, run_dir
 
 # --------------------
 # Orchestrate (multi-run)
 # --------------------
-def orchestrate(cfg_path: str):
+def orchestrate(cfg_path: str, prompts_dir_path: Optional[str] = None):
     """Generate/execute multiple notebooks and emit hypergraph.json.
        If multi.review.enabled=true, run expert_review_hypergraph() then select_and_export_reference().
     """
-    cfg = _load_cfg(cfg_path)
+    cfg = _load_cfg(cfg_path, prompts_dir_path) # [MODIFIED] _load_cfg now loads prompts too
     nb_cfg = (((cfg.get("phases") or {}).get("task_analysis") or {}).get("llm_notebook") or {})
     multi = nb_cfg.get("multi") or {}
     if not multi.get("enabled", False):
         raise SystemExit("Multi-run disabled. Set phases.task_analysis.llm_notebook.multi.enabled=true")
 
+    # [MODIFIED] ### Adaptive Run Logic ###
     prompt_variants = multi.get("prompt_variants") or []
-    num_runs = int(multi.get("num_runs", max(1, len(prompt_variants) or 1)))
+    seeds = multi.get("seeds") or []
+    
+    # 运行次数将是 num_runs、seeds 长度、variants 长度三者中的最小值
+    # 这实现了您要的 "自适应调节"
+    num_runs_config = int(multi.get("num_runs", 1)) # 1 is fallback if key missing
+    num_runs = min(num_runs_config, len(seeds), len(prompt_variants))
+    
+    print(f"ℹ️  [Adaptive] Runs logic: min(config_num_runs={num_runs_config}, seeds={len(seeds)}, variants={len(prompt_variants)}) = {num_runs} runs")
+    # ### End Adaptive Run Logic ###
+
     node_names = multi.get("node_names") or [
         "Data Loading & Initial Exploration",
         "Data Patterns",
@@ -118,16 +127,24 @@ def orchestrate(cfg_path: str):
     t0 = datetime.utcnow().isoformat() + "Z"
 
     for i in range(num_runs):
-        variant = prompt_variants[i] if i < len(prompt_variants) else ""
-        run_cfg, run_name, run_dir = _mk_run_prompt(cfg, i, variant)
+        # [MODIFIED] Use modulo to safely cycle through lists if num_runs is larger
+        variant = prompt_variants[i % len(prompt_variants)] if prompt_variants else ""
+        seed = seeds[i % len(seeds)] if seeds else None
+        
+        run_cfg, run_name, run_dir = _mk_run_prompt(cfg, i, variant, seed)
 
         # write a temp cfg for this run
         tmp_cfg = run_dir / "config.run.json"
+        # [MODIFIED] We must write the full config (including injected prompts)
+        # to the temp file so the runner can load it.
         tmp_cfg.write_text(json.dumps(run_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        print(f"🚀 [{i+1}/{num_runs}] Generating+executing: {run_name}")
+        print(f"🚀 [{i+1}/{num_runs}] Generating+executing: {run_name} (Seed: {seed})")
+        # [MODIFIED] run_pipeline_basic will handle loading config + prompts
         executed_path = run_pipeline_basic(str(tmp_cfg), phase_name="task_analysis")
+        
         # [AUTO-FIX per-run]
+        # [MODIFIED] Pass the full run_cfg (which contains prompts)
         final_exec = _auto_fix_notebook(executed_path, run_cfg)
         exec_p = Path(final_exec)
         unexec_p = Path(run_cfg["phases"]["task_analysis"]["llm_notebook"]["paths"]["out"])
@@ -170,9 +187,10 @@ def orchestrate(cfg_path: str):
     if review_cfg.get("enabled"):
         threshold = float(review_cfg.get("threshold", 0.7))
         print(f"🧪 [REVIEW] Auto-review enabled. threshold={threshold}")
-        expert_review_hypergraph(str(hp_path), threshold=threshold, cfg_path=cfg_path)
+        # [MODIFIED] Pass prompts_dir_path to review/export functions
+        expert_review_hypergraph(str(hp_path), threshold=threshold, cfg_path=cfg_path, prompts_dir_path=prompts_dir_path)
         # Then reference export if configured
-        select_and_export_reference(str(hp_path), cfg_path)
+        select_and_export_reference(str(hp_path), cfg_path, prompts_dir_path=prompts_dir_path)
 
 # ============================
 # Expert Agent (review)
@@ -223,6 +241,7 @@ def _heuristic_scores_from_cells(cells):
 
 def _llm_critique(edge_meta: dict, cells, llm_cfg: Optional[dict] = None) -> dict:
     # Placeholder (plug your own client using llm_cfg)
+    # [MODIFIED] llm_cfg passed here now contains the prompts from config_loader
     return {
         "pros": ["Clear pipeline structure detected"] if cells else [],
         "cons": [] if cells else ["Notebook empty or failed to load"],
@@ -234,10 +253,15 @@ def _llm_critique(edge_meta: dict, cells, llm_cfg: Optional[dict] = None) -> dic
             "Discuss limitations and potential confounders"
         ],
         "llm_used": bool(llm_cfg),
-        "llm_cfg": llm_cfg or {}
+        "llm_cfg": llm_cfg or {} # This cfg now contains the loaded review prompts
     }
 
-def expert_review_hypergraph(hypergraph_path: str, threshold: float = 0.7, cfg_path: Optional[str] = None) -> dict:
+def expert_review_hypergraph(
+    hypergraph_path: str, 
+    threshold: float = 0.7, 
+    cfg_path: Optional[str] = None,
+    prompts_dir_path: Optional[str] = None # [MODIFIED]
+) -> dict:
     hp = Path(hypergraph_path)
     if not hp.exists():
         raise FileNotFoundError(f"hypergraph not found: {hp}")
@@ -246,9 +270,11 @@ def expert_review_hypergraph(hypergraph_path: str, threshold: float = 0.7, cfg_p
     review_llm_cfg = None
     if cfg_path:
         try:
-            _cfg_all = _load_cfg(cfg_path)
+            # [MODIFIED] _load_cfg now loads the prompts into the config dict
+            _cfg_all = _load_cfg(cfg_path, prompts_dir_path)
             _nb_cfg = (((_cfg_all.get("phases") or {}).get("task_analysis") or {}).get("llm_notebook") or {})
             _review = (_nb_cfg.get("multi") or {}).get("review") or {}
+            # [MODIFIED] review_llm_cfg now contains system_prompt and critique_prompt_template
             review_llm_cfg = _review.get("llm") or None
         except Exception:
             review_llm_cfg = None
@@ -262,6 +288,7 @@ def expert_review_hypergraph(hypergraph_path: str, threshold: float = 0.7, cfg_p
         ip = attrs.get("executed_ipynb")
         cells = _extract_nb_cells(ip) if ip else []
         scores = _heuristic_scores_from_cells(cells)
+        # [MODIFIED] The full review_llm_cfg (with prompts) is passed
         critique = _llm_critique(attrs, cells, review_llm_cfg)
 
         attrs["expert"] = {"scores": scores, "critique": critique}
@@ -305,9 +332,10 @@ def expert_review_hypergraph(hypergraph_path: str, threshold: float = 0.7, cfg_p
 # ============================
 # Reference selection & export
 # ============================
-def _ref_cfg(cfg_path: str):
+def _ref_cfg(cfg_path: str, prompts_dir_path: Optional[str] = None): # [MODIFIED]
     try:
-        cfg = _load_cfg(cfg_path)
+        # [MODIFIED] _load_cfg gets the config with prompts
+        cfg = _load_cfg(cfg_path, prompts_dir_path)
         nb_cfg = (((cfg.get("phases") or {}).get("task_analysis") or {}).get("llm_notebook") or {})
         multi = nb_cfg.get("multi") or {}
         review = multi.get("review") or {}
@@ -337,7 +365,11 @@ def _score_edge_for_reference(attrs: dict, weights: dict) -> float:
         base += 0.02
     return base
 
-def select_and_export_reference(hypergraph_path: str, cfg_path: str):
+def select_and_export_reference(
+    hypergraph_path: str, 
+    cfg_path: str, 
+    prompts_dir_path: Optional[str] = None # [MODIFIED]
+):
     hp = Path(hypergraph_path)
     if not hp.exists():
         print("[REFERENCE] hypergraph not found; skip")
@@ -349,7 +381,8 @@ def select_and_export_reference(hypergraph_path: str, cfg_path: str):
         print("[REFERENCE] no edges; skip")
         return None
 
-    multi, review, ref_cfg = _ref_cfg(cfg_path)
+    # [MODIFIED]
+    multi, review, ref_cfg = _ref_cfg(cfg_path, prompts_dir_path)
     if not (ref_cfg.get("enabled", False)):
         print("[REFERENCE] disabled in config; skip")
         return None
@@ -406,11 +439,15 @@ def select_and_export_reference(hypergraph_path: str, cfg_path: str):
 # ============================
 # Closed loop (optional)
 # ============================
-def closed_loop_orchestrate(cfg_path: str, max_cycles: int = 1):
+def closed_loop_orchestrate(
+    cfg_path: str, 
+    prompts_dir_path: str, # [MODIFIED]
+    max_cycles: int = 1
+):
     """Run orchestrate → review → if continue, append prompt variants from directives and repeat;
        After final review, export a reference notebook if configured.
     """
-    cfg = _load_cfg(cfg_path)
+    cfg = _load_cfg(cfg_path, prompts_dir_path) # [MODIFIED]
     nb_cfg = (((cfg.get("phases") or {}).get("task_analysis") or {}).get("llm_notebook") or {})
     multi = nb_cfg.get("multi") or {}
     review = (multi.get("review") or {})
@@ -418,30 +455,39 @@ def closed_loop_orchestrate(cfg_path: str, max_cycles: int = 1):
     per_cycle_runs = int(review.get("per_cycle_runs", 2))
 
     # First batch
-    orchestrate(cfg_path)
+    orchestrate(cfg_path, prompts_dir_path) # [MODIFIED]
     out_dir = (nb_cfg.get("multi") or {}).get("out_dir") or "/mnt/data/hypergraph_runs"
     hp = Path(out_dir) / "hypergraph.json"
-    rv = expert_review_hypergraph(str(hp), threshold=threshold, cfg_path=cfg_path)
+    rv = expert_review_hypergraph(str(hp), threshold=threshold, cfg_path=cfg_path, prompts_dir_path=prompts_dir_path) # [MODIFIED]
 
     cycles = 0
     while rv.get("decision") == "continue" and cycles < max_cycles:
         cycles += 1
         directives = rv.get("directives") or []
         add_variants = [f"[ExpertCycle{cycles}] {d}" for d in directives][:per_cycle_runs]
-        nb_cfg.setdefault("multi", {}).setdefault("prompt_variants", [])
-        nb_cfg["multi"]["prompt_variants"].extend(add_variants)
-        nb_cfg["multi"]["num_runs"] = len(nb_cfg["multi"]["prompt_variants"])
+        
+        # [MODIFIED] Load config again to ensure we have the fresh state
+        cfg_cycle = _load_cfg(cfg_path, prompts_dir_path)
+        nb_cfg_cycle = (((cfg_cycle.get("phases") or {}).get("task_analysis") or {}).get("llm_notebook") or {})
+        
+        nb_cfg_cycle.setdefault("multi", {}).setdefault("prompt_variants", [])
+        nb_cfg_cycle["multi"]["prompt_variants"].extend(add_variants)
+        # [MODIFIED] Adaptive logic will handle num_runs, but we update the config for the temp file
+        nb_cfg_cycle["multi"]["num_runs"] = len(nb_cfg_cycle["multi"]["prompt_variants"])
 
         # write a temp cfg (in out_dir) and run again
         tmp_cfg = Path(out_dir) / f"config.cycle{cycles}.json"
-        cfg["phases"]["task_analysis"]["llm_notebook"] = nb_cfg
-        tmp_cfg.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        
+        # [MODIFIED] Must update the main config dict, not just the local nb_cfg
+        cfg_cycle["phases"]["task_analysis"]["llm_notebook"] = nb_cfg_cycle
+        
+        tmp_cfg.write_text(json.dumps(cfg_cycle, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"🔁 [CLOSED_LOOP] Cycle {cycles}: adding {len(add_variants)} variants and re-running")
-        orchestrate(str(tmp_cfg))
-        rv = expert_review_hypergraph(str(hp), threshold=threshold, cfg_path=cfg_path)
+        orchestrate(str(tmp_cfg), prompts_dir_path) # [MODIFIED]
+        rv = expert_review_hypergraph(str(hp), threshold=threshold, cfg_path=str(tmp_cfg), prompts_dir_path=prompts_dir_path) # [MODIFIED]
 
     # final export
-    select_and_export_reference(str(hp), cfg_path)
+    select_and_export_reference(str(hp), cfg_path, prompts_dir_path) # [MODIFIED]
     print(f"🏁 [CLOSED_LOOP] Finished after {cycles} cycle(s). Decision={rv.get('decision')}")
     return rv
 
@@ -450,8 +496,15 @@ def closed_loop_orchestrate(cfg_path: str, max_cycles: int = 1):
 # --------------------
 if __name__ == "__main__":
     import sys
-    cfg_path = sys.argv[1] if len(sys.argv) > 1 else str(Path(__file__).with_name("config.json"))
-    orchestrate(cfg_path)  # single orchestration (auto-review + reference export depend on config)
+    # [MODIFIED] Default config path and prompts path updated to root
+    THIS_DIR = Path(__file__).parent
+    cfg_path = sys.argv[1] if len(sys.argv) > 1 else str(THIS_DIR / "design_analysis_config.json")
+    prompts_path = str(THIS_DIR / "prompts")
+    if len(sys.argv) > 1:
+        # Guess prompts dir is relative to config's parent dir
+        prompts_path = str(Path(cfg_path).parent / "prompts")
+        
+    orchestrate(cfg_path, prompts_path)  # single orchestration (auto-review + reference export depend on config)
 
 
 # =============== [META] helpers ===============
@@ -494,7 +547,7 @@ def _extract_semantic_layer(
 
     patt_effect = re.compile(r"(?:effect|impact|influence)\s+of\s+([A-Za-z0-9_./-]+)\s+on\s+([A-Za-z0-9_./-]+)", re.I)
     patt_corr   = re.compile(r"(?:correlation|association)\s+(?:between|of)\s+([A-Za-z0-9_./-]+)\s+(?:and|&)\s+([A-Za-z0-9_./-]+)", re.I)
-    patt_arrow  = re.compile(r"([A-Za-z0-9_./-]+)\s*->\s*([A-Za-z0-9_./-]+)")
+    patt_arrow  = re.compile(r"([A_Za-z0-9_./-]+)\s*->\s*([A-Za-z0-9_./-]+)")
 
     for idx, txt in text_blocks:
         for m in patt_effect.finditer(txt):
@@ -562,20 +615,34 @@ def _auto_fix_notebook(executed_path: str, run_cfg: dict) -> str:
     data_path = paths.get("data") or ""
     csv_preview = None
     paper_excerpt = None
+    
+    # [MODIFIED] Get the autofix prompt from the full cfg['prompts'] dict
+    autofix_prompt = (run_cfg.get('prompts', {}).get('autofix', {}).get('system_prompt'))
+    if not autofix_prompt:
+        autofix_prompt = (
+            "You are a senior Python engineer and Jupyter expert.\n"
+            "Given Jupyter cell errors, return ONLY a MINIFIED JSON object with key 'edits'.\n"
+            "Each edit MUST be {\"cell_index\": int, \"source\": str} replacing the WHOLE code cell.\n"
+            "You MUST cover ALL indices listed in 'target_cell_indices' (one edit per index). Do not add new cells.\n"
+            "Do not modify markdown cells. No markdown fences or extra text.\n"
+        ) # Fallback just in case
+        print("Warning: Autofix prompt not found in config, using fallback.")
 
     round_idx = 0
     while errors and round_idx < max_fix_rounds:
         round_idx += 1
         print(f"🛠  [AUTO-FIX] round {round_idx}: targets={[e['cell_index'] for e in errors]}")
 
+        # [MODIFIED] Pass the loaded autofix_prompt to build_fix_messages
         messages = build_fix_messages(
             language, data_path, csv_preview, paper_excerpt, errors,
-            nb_cfg.get("headings") or ["Introduction", "Methods", "Results"]
+            nb_cfg.get("headings") or ["Introduction", "Methods", "Results"],
+            autofix_prompt_str=autofix_prompt
         )
         spec = chat_json(
             messages,
             api_key=os.environ.get(api_key_env),
-            base_url=os.environ.get(base_url_env, "https://api.openai.com/v1"),
+            base_url=os.environ.get(base_url_env, "[https://api.openai.com/v1](https://api.openai.com/v1)"),
             model=model,
             temperature=0.0,
             max_tokens=1024
@@ -619,4 +686,3 @@ def _auto_fix_notebook(executed_path: str, run_cfg: dict) -> str:
     final = str(nb_path if round_idx == 0 else nb_path.with_name(nb_path.stem + f"_r{round_idx}_executed.ipynb"))
     print(f"🏁 [AUTO-FIX] final={final}")
     return final
-

@@ -1,30 +1,7 @@
 # [NEW] Note: Auto-fix loop is implemented in run_llm_nb.py; this runner remains unchanged for stability.
 """
 LLM-driven Jupyter Notebook generator & runner for Task_Analysis.
-
-Workflow
---------
-1) Summarize prior assets (CSV preview, optional paper PDF excerpt, user prompt)
-2) Call an OpenAI-compatible LLM to RETURN a JSON spec for a notebook:
-   {
-     "title": "str",
-     "cells": [{"type": "markdown"|"code", "source": "str"}, ...]
-   }
-   The LLM generates all code; nothing is hard-coded here.
-3) Save .ipynb and execute it cell-by-cell (nbclient) to produce an executed notebook.
-
-Configuration
--------------
-All hyper-parameters can be provided via:
-- A phase-scoped config (dict) under: phases.task_analysis.llm_notebook
-- Or function args to `run_llm_notebook(...)`
-- Environment variables for LLM credentials:
-    OPENAI_API_KEY   (required)
-    OPENAI_BASE_URL  (optional; for Azure or self-hosted/vLLM gateways)
-    OPENAI_MODEL     (optional; used if model not provided in config/args)
-
-This module does NOT require internet during notebook execution;
-the generated code must rely on local data and standard python packages.
+...
 """
 
 from __future__ import annotations
@@ -37,6 +14,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import nbformat as nbf
+
+# [NEW] Use the centralized config loader
+from config_loader import load_app_config
 
 # ---------------- Utilities ----------------
 
@@ -175,7 +155,7 @@ def _resolve_llm_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
             base_url = os.environ.get(base_url_env)
         else:
             # Final fallback: your default gateway (OpenAI-compatible)
-            base_url = os.environ.get("OPENAI_BASE_URL") or "https://vip.yi-zhan.top/v1"
+            base_url = os.environ.get("OPENAI_BASE_URL") or "[https://vip.yi-zhan.top/v1](https://vip.yi-zhan.top/v1)"
 
     if not model:
         model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
@@ -245,154 +225,15 @@ class OpenAICompatClient:
 
 # ---------------- High-level Runner ----------------
 
-_BASE_SYSTEM_PROMPT = """You are an expert computational biologist and ML engineer.
-Return ONLY a JSON object describing a runnable Jupyter Notebook with keys:
-- "title": string
-- "cells": array of {{"type": "markdown"|"code", "source": "string"}}
+# [REMOVED] _BASE_SYSTEM_PROMPT is now loaded from prompts/notebook_generation.yml
 
-Constraints:
-- Language: {language_label}.
-- Alternate markdown and code logically; each code cell MUST be preceded by a markdown explanation.
-- Code must be executable offline (no internet), using the given dataset path exactly as received.
-- The Notebook must explicitly connect data analysis with the scientific context of the provided paper.
-- Include the following section headings (in order), using them exactly:
-{headings_bulleted}
-
-Section expectations:
-1. **Data Loading & Initial Exploration**
-
-    **Input:** a CSV file named XXX containing columns `dose`, `SMILES`, `Metadata_Plate`; all other columns are cell-morphology features.
-    **Goal:** produce one compressed HDF5 file containing drug-morphology pairs ready for downstream ML/DL.
-
-    **Required HDF5 schema (exact names):**
-
-    ```
-    /
-    ├─ smiles           : str         – drug SMILES
-    ├─ morphology_pre   : float32 (N, F) – Control (DMSO) morphology vector
-    ├─ morphology_post  : float32 (N, F) – drug-treated morphology vector
-    ├─ dose             : float32    – concentration
-    └─ plate_id         : str         – plate identifier
-    ```
-
-    **4-step pipeline (must appear in order):**
-
-    **(1) Inspect data**
-
-    * Load raw file (use given path verbatim).
-    * Separate morphology feature columns vs metadata columns (`dose`, `SMILES`, `Metadata_Plate`).
-    * Report original shape, initial missingness summary, and counts of doses/plates.
-
-    **(2) Clean features**
-
-    * Force all morphology columns to numeric; set `±inf` to `NaN`.
-    * Drop feature columns with \>95% missing values or near-zero variance; log the names of dropped columns.
-    * Median-impute any remaining `NaN` values in the feature matrix.
-    * Apply `sklearn.preprocessing.RobustScaler` to the feature matrix (to handle heavy tails/outliers).
-
-    **(3) Pairing & Control Aggregation**
-
-
-    * **Identify control wells** (assume `SMILES == 'DMSO'`) and **treatment wells** (all other `SMILES`).
-    * For each unique `Metadata_Plate`:
-        1.  Calculate a **robust center-tendency vector** of all morphology features from the *control (DMSO) wells* on that specific plate. **This vector should be statistically sound and resistant to outliers (e.g., using the median or a similar robust measure).** This single vector is the `morphology_pre` baseline for the plate.
-        2.  Identify all *treatment (drug-treated) wells* on that same plate.
-    * **Create the final paired dataset:** For each treatment well, store its features as `morphology_post` and its corresponding plate's center-tendency control vector as `morphology_pre`.
-    * Discard any treatment wells from plates that had *zero* control (DMSO) wells.
-    * Log the number of plates dropped (if any) and the final total number of (treatment, control\_center\_tendency) pairs.
-
-    **(4) Build H5**
-
-    * Create a 5-key dictionary matching the HDF5 schema.
-    * Define `OUTPUT_DIR` as the absolute parent directory of the input CSV path.
-    * Save the HDF5 file into `OUTPUT_DIR` using the CSV basename with a `.h5` extension (e.g., `input.csv` -\> `input.h5`).
-    * Use `h5py` for writing, enabling `gzip` compression (level 4).
-    * Read-back check: Assert the shapes of the saved arrays match the data and that no `NaN` values exist in the final feature arrays.
-    * PRINT the absolute `OUTPUT_DIR` path, the final file path, N-samples, N-features, and a "Done" message.
-
-    **Code rules:**
-
-    * Alternate markdown/code; every code cell must be preceded by a one-sentence explanation of its purpose.
-    * Assume control wells are identified by `SMILES == 'DMSO'`.
-    * Keep code concise and efficient.
-
-    **Final markdown cell (mandatory):**
-
-    ```markdown
-    ## ML-Ready Data Summary
-    - Rows = paired samples (drug ↔ plate-control)
-    - Columns = morphology features (Robust-scaled)
-    - Pairing strategy: **Many-to-one (within-plate)**. All treatments on a plate are paired against the **median or a similar robust measure of all DMSO controls** from that same plate.
-    - Final counts: N-samples samples, F features, N-unique-drugs unique compounds, N-plates plates
-    - File location: ready for a PyTorch data-loader.
-
-2. **Data Patterns**
-   - Build directly on the processed matrix from Step 1.
-   - Perform bio-oriented EDA with **advanced visualizations** (prefer these, with graceful fallbacks):
-     * **Heatmap + clustering dendrogram** of top-variable features across samples/conditions.
-       - Preferred: seaborn.clustermap; Fallback: matplotlib + scipy (linkage + dendrogram).
-     * **Distribution & correlation views**: KDE/violin or histogram for representative features; correlation matrix and top correlated pairs.
-     * **Dimensionality reduction**: PCA (required); optionally UMAP/t-SNE if available. Color by condition/dose/plate; overlay point density if feasible.
-     * **Batch & dose effects**: ANOVA or linear/mixed-effects models (statsmodels) with concise result tables.
-   - Provide biological interpretations of observed trends (e.g., heterogeneity, dose-dependent morphological shifts, plate/batch structure).
-   - Expected figures (names in captions): Fig-Heatmap-Dendro, Fig-PCA, Fig-CorrMatrix, Fig-DoseEffect.
-
-3. **Hidden Information**
-   - Leverage signals from Step 2 and integrate with the paper context to hypothesize hidden biology.
-   - Use at least two of the following **advanced analyses** (choose what the data supports; keep offline):
-     * **Marker identification** across conditions/groups with effect sizes and multiple-testing notes; visualize a **Volcano Plot** (log2FC vs -log10 p) for top features.
-     * **Functional/Pathway enrichment (reasoned offline)**: if gene IDs/sets are available, perform simple over-representation using provided sets; otherwise provide **mechanistic reasoning** and a ranked feature-set summary. Visualize an **Enrichment Bubble Plot** (bubble size = set size, color = significance or effect).
-     * **Network/module structure**: build a **feature correlation network** (NetworkX optional; fallback: adjacency threshold table + degree histogram) or at minimum a top-module correlation heatmap.
-     * **Phenotype association**: regression/logistic models linking PCs or feature modules to dose/condition; report coefficients, CIs, and calibration notes.
-     * **Model interpretability** (if a baseline is fit): show **feature importance**; if SHAP is not available, fall back to standardized coefficients or permutation importance.
-   - Support hypotheses with appropriate tests (t/Wilcoxon/regression) and report effect sizes + 95% CIs where feasible.
-   - Expected figures (names in captions): Fig-Volcano, Fig-Enrichment, Fig-NetworkOrModule, Fig-Association.
-
-4. **Innovation Motivation**
-   - Start with a concise Markdown summary of the key findings from Step 2 (Data Patterns) and Step 3 (Hidden Information).
-     * Describe in natural language what the analyses revealed: e.g., distributional skew, hidden clusters, feature correlations, inferred biological mechanisms.
-     * This summary acts as a bridge to motivate the next discussion.
-   - Then, in Markdown, discuss:
-     * Limitations of current methods (mapped to observed failure modes: instability due to outliers, plate leakage, poor dose-response fitting, etc.).
-     * Unresolved questions revealed by the dataset (hidden subgroups, confounders, nonlinear responses).
-     * Opportunities for innovation (methodological or biological).
-   - Explicitly connect these insights back to the data-driven findings.
-   - (Optional) Provide a baseline model in code (classification/regression, with leakage-safe splitting) to illustrate current performance and motivate improvements.
-
-5. **Experiment & Validation Suggestions**
-   - Extend logically from the innovation motivations in Step 4, with a tight integration of biological findings and computational model design.
-   - In Markdown, propose next-step experiments that explicitly link:
-     * **Biological discovery → Computational modeling**: e.g., heterogeneity in morphology → clustering + ensemble ML classifiers; nonlinear dose–response → generalized additive models, monotonic regression, or spline-regularized ML/DL.
-     * **Mechanistic priors in modeling**: incorporate pathway/group priors into feature engineering, hierarchical models, or biologically-informed regularization.
-     * **Cross-modal integration**: combine morphology with chemical descriptors/omics using multi-view learning (e.g., CCA, multimodal autoencoders, graph-based fusion).
-     * **Generalization & robustness**: explicitly test whether models trained on one plate/dose/compound generalize to unseen conditions, with leakage-safe splits (plate-holdout, dose-stratified).
-   - Define tasks & success criteria:
-
-     Evaluation Metrics:
-     - Mean Squared Error (MSE): Measures the average squared difference between predicted and observed cell morphology profiles
-     - Pearson Correlation Coefficient (PCC): Quantifies linear correlation between predicted and observed morphology profiles
-     - R² (Coefficient of Determination): Represents the proportion of variance in the observed morphology explained by the predicted values
-     - MSE for Differentially Morphological Features (MSE_DM): Same as MSE but computed specifically on morphology features that show significant change after treatment
-     - PCC for Differentially Morphological Features (PCC_DM): Same as PCC but computed specifically on differentially changed morphology features
-     - R² for Differentially Morphological Features (R²_DM): Same as R² but computed specifically on differentially changed morphology features
-
-   - In code, provide a prototype pipeline skeleton (scikit-learn, XGBoost, or PyTorch) that illustrates how the processed data could be modeled:
-     * Baseline: logistic regression or random forest.
-     * Advanced: biologically-motivated model (e.g., monotonic regressor, graph-based model, multimodal fusion).
-     * Training: leakage-safe split + evaluation with both ML metrics and biological interpretability checks.
-
-General rules:
-- Every code cell must be explained by a Markdown cell immediately before it.  
-- Markdown must include clear subheadings (## Data Patterns, ## Hidden Information, etc.).  
-- Keep all code concise and runnable, avoid heavy external dependencies.  
-- The Notebook should demonstrate a flow from **data exploration → hidden insights → research motivation → proposed methods**, grounded in the paper’s context.
-"""
-
-
-def _system_prompt(language: str, headings: List[str]) -> str:
+def _system_prompt(language: str, headings: List[str], base_prompt_str: str) -> str:
+    # [MODIFIED] Function now accepts base_prompt_str from the loaded config
+    if not base_prompt_str:
+        raise ValueError("Base system prompt is empty. Check prompts/notebook_generation.yml")
     lang_label = "English" if language.startswith("en") else language
     headings_bulleted = "\n".join([f"  {h}" for h in headings])
-    return _BASE_SYSTEM_PROMPT.format(language_label=lang_label, headings_bulleted=headings_bulleted)
+    return base_prompt_str.format(language_label=lang_label, headings_bulleted=headings_bulleted)
 
 def make_messages(
     user_prompt: str,
@@ -401,6 +242,7 @@ def make_messages(
     csv_preview: Dict[str, Any],
     language: str,
     headings: List[str],
+    base_system_prompt_str: str, # [MODIFIED] Accept loaded system prompt
 ) -> List[Dict[str, str]]:
     """Compose the system+user messages for the LLM."""
     context = {
@@ -417,7 +259,8 @@ def make_messages(
         }
     }
     return [
-        {"role": "system", "content": _system_prompt(language, headings)},
+        # [MODIFIED] Pass the base_system_prompt_str
+        {"role": "system", "content": _system_prompt(language, headings, base_system_prompt_str)},
         {"role": "user", "content": json.dumps(context, ensure_ascii=False, indent=2)},
     ]
 
@@ -427,6 +270,7 @@ def run_llm_notebook(
     preprocess_nb: Optional[str],
     user_prompt: str,
     out_path: str,
+    base_system_prompt_str: str, # [MODIFIED] Accept loaded system prompt
     executed_path: Optional[str] = None,
     model: Optional[str] = None,
     timeout_seconds: int = 1800,
@@ -459,7 +303,12 @@ def run_llm_notebook(
     paper_excerpt = read_pdf_excerpt(paper_pdf, max_pages=pdf_max_pages)
 
     # LLM messages
-    messages = make_messages(user_prompt, data_path, paper_excerpt, csv_preview, language=language, headings=headings)
+    # [MODIFIED] Pass the base_system_prompt_str
+    messages = make_messages(
+        user_prompt, data_path, paper_excerpt, csv_preview, 
+        language=language, headings=headings, 
+        base_system_prompt_str=base_system_prompt_str
+    )
 
     # LLM config (explicit > env)
     model_final = model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
@@ -517,8 +366,23 @@ def run_llm_notebook_with_config(config: Dict[str, Any], phase_name: str = "task
 
     nb_cfg = _get_phase_llm_nb_cfg(config, phase_name=phase_name)
 
-    # prompt & language/headings
-    prompt = nb_cfg.get("prompt") or "Please generate an English analysis notebook following the required structure."
+    # [MODIFIED] user_prompt and base_system_prompt_str are now loaded by config_loader
+    # 'prompt' is the user prompt, injected by config_loader
+    prompt = nb_cfg.get("prompt") 
+    # System prompt is from the loaded dict
+    base_system_prompt_str = (config.get('prompts', {}).get('notebook_generation', {}).get('system_prompt'))
+    
+    if not prompt or not base_system_prompt_str:
+        print("Warning: Prompts not found in config. Check config_loader and prompts/ dir.", flush=True)
+        # Add a fallback for user_prompt just in case
+        if not prompt:
+            prompt = "Please generate an English analysis notebook following the required structure."
+        # Add a fallback for system_prompt just in case
+        if not base_system_prompt_str:
+            base_system_prompt_str = "You are an expert computational biologist. Return ONLY a JSON object..."
+            print("ERROR: Using fallback system prompt. Check prompts/notebook_generation.yml", flush=True)
+
+
     language, headings = _resolve_language_and_headings(nb_cfg)
 
     # paths / exec / llm
@@ -527,6 +391,7 @@ def run_llm_notebook_with_config(config: Dict[str, Any], phase_name: str = "task
     llm_basic = _resolve_llm_cfg(nb_cfg)
 
     # Run
+    # [MODIFIED] Pass the loaded base_system_prompt_str
     return run_llm_notebook(
         data_path=data,
         paper_pdf=paper,
@@ -534,6 +399,7 @@ def run_llm_notebook_with_config(config: Dict[str, Any], phase_name: str = "task
         user_prompt=prompt,
         out_path=out,
         executed_path=out_exec,
+        base_system_prompt_str=base_system_prompt_str,
         model=llm_basic["model"],
         timeout_seconds=exec_cfg["timeout_seconds"],
         force_json_mode=exec_cfg["force_json_mode"],
@@ -548,7 +414,12 @@ def run_llm_notebook_with_config(config: Dict[str, Any], phase_name: str = "task
         allow_errors=bool(exec_cfg.get("allow_errors", True)),
     )
 
-def run_llm_notebook_from_file(config_path: str, phase_name: str = "task_analysis") -> str:
+def run_llm_notebook_from_file(
+    config_path: str, 
+    prompts_dir_path: str, # [MODIFIED]
+    phase_name: str = "task_analysis"
+) -> str:
     """Load a JSON config file and run the phase-scoped notebook generation/execution."""
-    cfg = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    # [MODIFIED] Use centralized loader with both paths
+    cfg = load_app_config(config_path, prompts_dir_path)
     return run_llm_notebook_with_config(cfg, phase_name=phase_name)
