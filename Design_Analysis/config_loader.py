@@ -76,15 +76,7 @@ def load_app_config(config_path: str, prompts_dir_path: str) -> Dict[str, Any]:
         if 'user_prompt' in prompts_data['notebook_generation']:
             nb_cfg.setdefault('prompt', prompts_data['notebook_generation'].get('user_prompt'))
 
-    # - Review prompts
-    if 'review' in prompts_data:
-        review_cfg = (nb_cfg.get('multi') or {}).get('review') or {}
-        review_llm_cfg = review_cfg.get('llm') or {}
-        if 'system_prompt' in prompts_data['review']:
-            review_llm_cfg.setdefault('system_prompt', prompts_data['review'].get('system_prompt'))
-        if 'critique_template' in prompts_data['review']:
-            review_llm_cfg.setdefault('critique_prompt_template', prompts_data['review'].get('critique_template'))
-        review_cfg['llm'] = review_llm_cfg
+    # - [REMOVED] Review prompt injection logic removed.
 
     # 5. Resolve placeholders (must be done after all injections)
     cfg = _resolve_placeholders(cfg)

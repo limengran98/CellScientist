@@ -100,21 +100,21 @@ def _mk_run_prompt(base_cfg: Dict[str, Any], idx: int, prompt_variant: str, seed
 # --------------------
 def orchestrate(cfg_path: str, prompts_dir_path: Optional[str] = None):
     """Generate/execute multiple notebooks and emit hypergraph.json.
-       If multi.review.enabled=true, run expert_review_hypergraph() then select_and_export_reference().
+       If multi.review.reference.enabled=true, run calculate_run_heuristics() then select_and_export_reference().
     """
     cfg = _load_cfg(cfg_path, prompts_dir_path) # [MODIFIED] _load_cfg now loads prompts too
     nb_cfg = (((cfg.get("phases") or {}).get("task_analysis") or {}).get("llm_notebook") or {})
-    multi = nb_cfg.get("multi") or {}
-    if not multi.get("enabled", False):
+    multi_cfg = nb_cfg.get("multi") or {}
+    if not multi_cfg.get("enabled", False):
         raise SystemExit("Multi-run disabled. Set phases.task_analysis.llm_notebook.multi.enabled=true")
 
     # [MODIFIED] ### Adaptive Run Logic (Using MIN as requested) ###
-    prompt_variants = multi.get("prompt_variants") or []
-    seeds = multi.get("seeds") or []
+    prompt_variants = multi_cfg.get("prompt_variants") or []
+    seeds = multi_cfg.get("seeds") or []
     
     # 运行次数将是 num_runs、seeds 长度、variants 长度三者中的最小值
     # 这实现了您要的 "自适应调节"
-    num_runs_config = int(multi.get("num_runs", 1)) # 1 is fallback if key missing
+    num_runs_config = int(multi_cfg.get("num_runs", 1)) # 1 is fallback if key missing
     
     # [USER REQUEST] Set num_runs to the minimum of the three values
     # Note: If lists are empty, len() is 0, min() will be 0 (if num_runs_config=0) or 1.
@@ -129,14 +129,14 @@ def orchestrate(cfg_path: str, prompts_dir_path: Optional[str] = None):
     # ### End Adaptive Run Logic ###
 
 
-    node_names = multi.get("node_names") or [
+    node_names = multi_cfg.get("node_names") or [
         "Data Loading & Initial Exploration",
         "Data Patterns",
         "Hidden Information",
         "Innovation Motivation",
         "Experiment & Validation Suggestions"
     ]
-    hypergraph_name = multi.get("hypergraph_name") or "CellForge-HyperGraph"
+    hypergraph_name = multi_cfg.get("hypergraph_name") or "CellForge-HyperGraph"
 
     edges: List[Dict[str, Any]] = []
     t0 = datetime.utcnow().isoformat() + "Z"
@@ -202,18 +202,23 @@ def orchestrate(cfg_path: str, prompts_dir_path: Optional[str] = None):
     print(f"✅ Hypergraph emitted → {hp_path}")
     print("🎯 Orchestration done.")
 
-    # ---- Auto-review then reference export
-    review_cfg = (multi.get("review") or {})
-    if review_cfg.get("enabled"):
-        threshold = float(review_cfg.get("threshold", 0.7))
-        print(f"🧪 [REVIEW] Auto-review enabled. threshold={threshold}")
-        # [MODIFIED] Pass prompts_dir_path to review/export functions
-        expert_review_hypergraph(str(hp_path), threshold=threshold, cfg_path=cfg_path, prompts_dir_path=prompts_dir_path)
-        # Then reference export if configured
+    # ---- [MODIFIED] Heuristic calculation then reference export
+    review_cfg = (multi_cfg.get("review") or {})
+    ref_cfg = (review_cfg.get("reference") or {})
+
+    if ref_cfg.get("enabled", False):
+        print(f"🧪 [HEURISTICS] Calculating notebook heuristics...")
+        # [MODIFIED] Pass prompts_dir_path
+        calculate_run_heuristics(str(hp_path), cfg_path=cfg_path, prompts_dir_path=prompts_dir_path)
+        
+        print(f"🏆 [REFERENCE] Selecting best notebook...")
         select_and_export_reference(str(hp_path), cfg_path, prompts_dir_path=prompts_dir_path)
+    else:
+        print(f"ℹ️  Reference selection disabled. Skipping heuristic calculation and export.")
+
 
 # ============================
-# Expert Agent (review)
+# Heuristic Calculation
 # ============================
 import nbformat as _nbf
 from nbformat.reader import reads as _nb_reads
@@ -259,95 +264,44 @@ def _heuristic_scores_from_cells(cells):
 
     return dict(scientific=scientific, novelty=novelty, reproducibility=reproducibility, interpretability=interpretability)
 
-def _llm_critique(edge_meta: dict, cells, llm_cfg: Optional[dict] = None) -> dict:
-    # Placeholder (plug your own client using llm_cfg)
-    # [MODIFIED] llm_cfg passed here now contains the prompts from config_loader
-    return {
-        "pros": ["Clear pipeline structure detected"] if cells else [],
-        "cons": [] if cells else ["Notebook empty or failed to load"],
-        "risks": ["Potential data leakage if splits are not stratified"],
-        "suggestions": [
-            "Report effect sizes alongside p-values",
-            "Add seed control and environment versions for reproducibility",
-            "Include volcano/box/violin plots where appropriate",
-            "Discuss limitations and potential confounders"
-        ],
-        "llm_used": bool(llm_cfg),
-        "llm_cfg": llm_cfg or {} # This cfg now contains the loaded review prompts
-    }
+# [REMOVED] _llm_critique function removed.
 
-def expert_review_hypergraph(
+def calculate_run_heuristics(
     hypergraph_path: str, 
-    threshold: float = 0.7, 
     cfg_path: Optional[str] = None,
     prompts_dir_path: Optional[str] = None # [MODIFIED]
-) -> dict:
+) -> None:
+    """
+    [MODIFIED] This function now only calculates heuristic scores based on
+    notebook content and saves them to the hypergraph.json.
+    It no longer performs LLM-based review or makes decisions.
+    """
     hp = Path(hypergraph_path)
     if not hp.exists():
         raise FileNotFoundError(f"hypergraph not found: {hp}")
 
-    # Load review LLM cfg if present
-    review_llm_cfg = None
-    if cfg_path:
-        try:
-            # [MODIFIED] _load_cfg now loads the prompts into the config dict
-            _cfg_all = _load_cfg(cfg_path, prompts_dir_path)
-            _nb_cfg = (((_cfg_all.get("phases") or {}).get("task_analysis") or {}).get("llm_notebook") or {})
-            _review = (_nb_cfg.get("multi") or {}).get("review") or {}
-            # [MODIFIED] review_llm_cfg now contains system_prompt and critique_prompt_template
-            review_llm_cfg = _review.get("llm") or None
-        except Exception:
-            review_llm_cfg = None
-
+    # [MODIFIED] No LLM review config loading needed.
+    
     data = json.loads(hp.read_text(encoding="utf-8"))
     edges = data.get("hyperedges", [])
 
-    study_scores = []
     for e in edges:
         attrs = e.get("attrs", {})
         ip = attrs.get("executed_ipynb")
         cells = _extract_nb_cells(ip) if ip else []
         scores = _heuristic_scores_from_cells(cells)
-        # [MODIFIED] The full review_llm_cfg (with prompts) is passed
-        critique = _llm_critique(attrs, cells, review_llm_cfg)
-
-        attrs["expert"] = {"scores": scores, "critique": critique}
+        
+        # [MODIFIED] Only store heuristic scores. Removed LLM critique.
+        attrs["expert_heuristic_scores"] = scores
         e["attrs"] = attrs
-        study_scores.append(scores)
 
-    # aggregate
-    def avg(key):
-        vals = [s.get(key,0.0) for s in study_scores] or [0.0]
-        return sum(vals)/len(vals)
-
-    summary = {
-        "mean_scores": {
-            "scientific": avg("scientific"),
-            "novelty": avg("novelty"),
-            "reproducibility": avg("reproducibility"),
-            "interpretability": avg("interpretability")
-        }
-    }
-    overall = sum(summary["mean_scores"].values())/4.0
-    decision = "stop" if overall >= threshold else "continue"
-    directives = [] if decision == "stop" else [
-        "Increase statistical rigor (ANOVA / nonparam tests)",
-        "Add seed controls and record library versions",
-        "Enrich visualizations (volcano, violin, heatmap)",
-        "Write a concise Discussion section (limitations/confounders)"
-    ]
-
-    data["expert_review"] = {
-        "threshold": threshold,
-        "overall": overall,
-        "decision": decision,
-        "directives": directives,
-        "reviewed_utc": datetime.utcnow().isoformat() + "Z"
-    }
+    # [MODIFIED] Removed all aggregation, decision, and threshold logic.
+    # Just write the scores back to the file.
+    data["heuristics_calculated_utc"] = datetime.utcnow().isoformat() + "Z"
 
     hp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"🧠 [REVIEW] Review complete. Decision: {decision}, overall={overall:.3f}")
-    return data["expert_review"]
+    print(f"🧠 [HEURISTICS] Heuristic scores calculated and saved.")
+    # [MODIFIED] No return value.
 
 # ============================
 # Reference selection & export
@@ -365,8 +319,8 @@ def _ref_cfg(cfg_path: str, prompts_dir_path: Optional[str] = None): # [MODIFIED
         return {}, {}, {}
 
 def _score_edge_for_reference(attrs: dict, weights: dict) -> float:
-    expert = attrs.get("expert") or {}
-    s = (expert.get("scores") or {})
+    # [MODIFIED] Read from new 'expert_heuristic_scores' key
+    s = attrs.get("expert_heuristic_scores") or {}
     sci = float(s.get("scientific", 0.0))
     nov = float(s.get("novelty", 0.0))
     rep = float(s.get("reproducibility", 0.0))
@@ -480,70 +434,8 @@ def select_and_export_reference(
 # ============================
 # Closed loop (optional)
 # ============================
-def closed_loop_orchestrate(
-    cfg_path: str, 
-    prompts_dir_path: str, # [MODIFIED]
-    max_cycles: int = 1
-):
-    """Run orchestrate → review → if continue, append prompt variants from directives and repeat;
-       After final review, export a reference notebook if configured.
-    """
-    cfg = _load_cfg(cfg_path, prompts_dir_path) # [MODIFIED]
-    nb_cfg = (((cfg.get("phases") or {}).get("task_analysis") or {}).get("llm_notebook") or {})
-    multi = nb_cfg.get("multi") or {}
-    review = (multi.get("review") or {})
-    threshold = float(review.get("threshold", 0.7))
-    per_cycle_runs = int(review.get("per_cycle_runs", 2))
 
-    # First batch
-    orchestrate(cfg_path, prompts_dir_path) # [MODIFIED]
-    out_dir = (nb_cfg.get("multi") or {}).get("out_dir") or "/mnt/data/hypergraph_runs"
-    hp = Path(out_dir) / "hypergraph.json"
-    rv = expert_review_hypergraph(str(hp), threshold=threshold, cfg_path=cfg_path, prompts_dir_path=prompts_dir_path) # [MODIFIED]
-
-    cycles = 0
-    while rv.get("decision") == "continue" and cycles < max_cycles:
-        cycles += 1
-        directives = rv.get("directives") or []
-        add_variants = [f"[ExpertCycle{cycles}] {d}" for d in directives][:per_cycle_runs]
-        
-        # [MODIFIED] Load config again to ensure we have the fresh state
-        cfg_cycle = _load_cfg(cfg_path, prompts_dir_path)
-        nb_cfg_cycle = (((cfg_cycle.get("phases") or {}).get("task_analysis") or {}).get("llm_notebook") or {})
-        # [MODIFIED] Need to get 'multi' from the fresh config
-        multi_cycle = (nb_cfg_cycle.get("multi") or {})
-
-        
-        nb_cfg_cycle.setdefault("multi", {}).setdefault("prompt_variants", [])
-        # [FIX] Load existing variants from the *original* config
-        base_variants = (multi.get("prompt_variants") or [])
-        nb_cfg_cycle["multi"]["prompt_variants"] = base_variants + add_variants
-        
-        # [FIX] Add dummy seeds to match the new variants, to allow min() logic to work
-        base_seeds = (multi.get("seeds") or [])
-        if base_seeds: # Only add seeds if they existed
-            # Add dummy seeds (e.g., 0, or reuse first)
-            new_seeds = [base_seeds[0] if base_seeds else 0] * len(add_variants)
-            nb_cfg_cycle["multi"]["seeds"] = base_seeds + new_seeds
-        
-        # [REMOVED] Do NOT explicitly set num_runs. Let the orchestrate() 'min' logic handle it.
-        # nb_cfg_cycle["multi"]["num_runs"] = len(nb_cfg_cycle["multi"]["prompt_variants"])
-
-        # write a temp cfg (in out_dir) and run again
-        tmp_cfg = Path(out_dir) / f"config.cycle{cycles}.json"
-        
-        # [MODIFIED] Must update the main config dict, not just the local nb_cfg
-        cfg_cycle["phases"]["task_analysis"]["llm_notebook"] = nb_cfg_cycle
-        
-        tmp_cfg.write_text(json.dumps(cfg_cycle, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"🔁 [CLOSED_LOOP] Cycle {cycles}: adding {len(add_variants)} variants and re-running")
-        orchestrate(str(tmp_cfg), prompts_dir_path) # [MODIFIED]
-        rv = expert_review_hypergraph(str(hp), threshold=threshold, cfg_path=str(tmp_cfg), prompts_dir_path=prompts_dir_path) # [MODIFIED]
-
-    # final export
-    select_and_export_reference(str(hp), cfg_path, prompts_dir_path) # [MODIFIED]
-    print(f"🏁 [CLOSED_LOOP] Finished after {cycles} cycle(s). Decision={rv.get('decision')}")
-    return rv
+# [REMOVED] closed_loop_orchestrate function removed as it depends on review decisions.
 
 # --------------------
 # CLI
@@ -579,6 +471,7 @@ def _jaccard_overlap(a: list, b: list) -> float:
 
 
 # =============== [SEMANTIC] extraction ===============
+# [NOTE] This function is uncalled, but harmless. Left as-is.
 def _extract_semantic_layer(
     cells,
     export_dir: Optional[Path] = None,
@@ -646,10 +539,40 @@ def _auto_fix_notebook(executed_path: str, run_cfg: dict) -> str:
     from pathlib import Path
     nb_cfg = (((run_cfg.get("phases") or {}).get("task_analysis") or {}).get("llm_notebook") or {})
     exec_cfg = nb_cfg.get("exec", {}) or {}
+    
+    # [START MODIFICATION]
+    # llm_cfg = nb_cfg.get("llm", {}) or {}
+    # api_key_env = llm_cfg.get("api_key_env", "OPENAI_API_KEY")
+    # base_url_env = llm_cfg.get("base_url_env", "OPENAI_BASE_URL")
+    # model = llm_cfg.get("model") or os.environ.get("OPENAI_MODEL", "gpt-4o")
+    
+    # [FIX] Correctly load LLM config for auto-fix to match generation config
     llm_cfg = nb_cfg.get("llm", {}) or {}
-    api_key_env = llm_cfg.get("api_key_env", "OPENAI_API_KEY")
-    base_url_env = llm_cfg.get("base_url_env", "OPENAI_BASE_URL")
-    model = llm_cfg.get("model") or os.environ.get("OPENAI_MODEL", "gpt-4o")
+
+    # 1. Get Model
+    model_final = llm_cfg.get("model") or os.environ.get("OPENAI_MODEL", "gpt-4o")
+    
+    # 2. Get API Key (Prioritize hardcoded config key > env var from config > default env var)
+    api_key_final = llm_cfg.get("api_key") or os.environ.get(llm_cfg.get("api_key_env") or "OPENAI_API_KEY")
+    
+    # 3. Get Base URL
+    # Replicate fallback logic from llm_notebook_runner._resolve_llm_cfg
+    # Note: This does not include provider.json logic, but handles config/env fallbacks
+    base_url_final = None
+    base_url_env_key = llm_cfg.get("base_url_env") # e.g., "OPENAI_BASE_URL"
+    
+    if base_url_env_key and os.environ.get(base_url_env_key):
+        base_url_final = os.environ.get(base_url_env_key)
+    else:
+        # Fallback to the hardcoded default from llm_notebook_runner.py
+        # (which might be the "yizhan" provider URL)
+        base_url_final = os.environ.get("OPENAI_BASE_URL") or "[https://vip.yi-zhan.top/v1](https://vip.yi-zhan.top/v1)"
+
+    # [FIX] Handle the incorrect markdown-link format in the default URL
+    if base_url_final and base_url_final.startswith("[") and base_url_final.endswith(")"):
+        base_url_final = re.sub(r"\[(.*?)\]\((.*?)\)", r"\2", base_url_final)
+    # [END MODIFICATION]
+
 
     nb_path = Path(executed_path)
     if not nb_path.exists():
@@ -693,11 +616,13 @@ def _auto_fix_notebook(executed_path: str, run_cfg: dict) -> str:
             nb_cfg.get("headings") or ["Introduction", "Methods", "Results"],
             autofix_prompt_str=autofix_prompt
         )
+        
+        # [MODIFICATION] Call chat_json with the correctly resolved config
         spec = chat_json(
             messages,
-            api_key=os.environ.get(api_key_env),
-            base_url=os.environ.get(base_url_env, "https://api.openai.com/v1"),
-            model=model,
+            api_key=api_key_final,
+            base_url=base_url_final,
+            model=model_final,
             temperature=0.0,
             max_tokens=1024
         )
@@ -740,4 +665,3 @@ def _auto_fix_notebook(executed_path: str, run_cfg: dict) -> str:
     final = str(nb_path if round_idx == 0 else nb_path.with_name(nb_path.stem + f"_r{round_idx}_executed.ipynb"))
     print(f"🏁 [AUTO-FIX] final={final}")
     return final
-

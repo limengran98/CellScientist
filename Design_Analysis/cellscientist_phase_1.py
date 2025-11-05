@@ -72,16 +72,12 @@ def main():
     print('🌐 Base URL:', os.environ.get(base_url_env, 'default'), flush=True)
     print('ℹ️  Mode: MULTI orchestration only (set num_runs=1 to behave like single).', flush=True)
 
-    from hypergraph_orchestrator import orchestrate, closed_loop_orchestrate
+    # [MODIFIED] Removed closed_loop_orchestrate
+    from hypergraph_orchestrator import orchestrate
     
-    # [MODIFIED] Pass prompts_dir to orchestrator functions
-    if bool(review.get('closed_loop') or review.get('closed_loop_enabled', False)):
-        max_cycles = int(review.get('max_cycles', 1))
-        print(f'🧠 Closed-loop enabled → cycles={max_cycles}', flush=True)
-        closed_loop_orchestrate(cfg_path, prompts_path, max_cycles=max_cycles)
-    else:
-        print('🧪 Single-pass orchestration (review/export handled inside orchestrator if enabled)', flush=True)
-        orchestrate(cfg_path, prompts_path)
+    # [MODIFIED] Removed closed-loop logic, always run standard orchestration
+    print('🧪 Running single-pass orchestration (heuristic calculation + reference export handled inside orchestrator if enabled)', flush=True)
+    orchestrate(cfg_path, prompts_path)
 
 if __name__ == '__main__':
     # Unbuffered output to ensure logs appear
