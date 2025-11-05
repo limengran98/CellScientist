@@ -16,14 +16,14 @@ python cellscientist_phase_1.py design_analysis_config.json
 
 ## Paths
 - Input data: `../data/${dataset_name}/`  
-- Output results: `../results/${dataset_name}/`
+- Output results: `../results/${dataset_name}/design_analysis/`
 
 ## Key Config Parameters (`config.json`)
 
 ### Top-level
 
 * **dataset_name** — used in all paths.
-  Example: `"BBBC036"` → input `../data/BBBC036/`, output `../results/BBBC036/`.
+  Example: `"BBBC036"` → input `../data/BBBC036/`, output `../results/BBBC036/design_analysis/`.
 
 ### llm_notebook
 
