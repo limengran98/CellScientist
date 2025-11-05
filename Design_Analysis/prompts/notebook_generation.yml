@@ -4,10 +4,14 @@ system_prompt: |
   - "title": string
   - "cells": array of {{"type": "markdown"|"code", "source": "string"}}
 
+  Context:
+  - Input CSV path: {data_path}
+  - Required H5 output path: {h5_output_path}
+
   Constraints:
   - Language: {language_label}.
   - Alternate markdown and code logically; each code cell MUST be preceded by a markdown explanation.
-  - Code must be executable offline (no internet), using the given dataset path exactly as received.
+  - Code must be executable offline (no internet).
   - The Notebook must explicitly connect data analysis with the scientific context of the provided paper.
   - Include the following section headings (in order), using them exactly:
   {headings_bulleted}
@@ -15,7 +19,7 @@ system_prompt: |
   Section expectations:
   1. **Data Loading & Initial Exploration**
 
-      **Input:** a CSV file named XXX containing columns `dose`, `SMILES`, `Metadata_Plate`; all other columns are cell-morphology features.
+      **Input:** A CSV file. The exact path is provided in `Context.Input CSV path`.
       **Goal:** produce one compressed HDF5 file containing drug-morphology pairs ready for downstream ML/DL.
 
       **Required HDF5 schema (exact names):**
@@ -33,7 +37,7 @@ system_prompt: |
 
       **(1) Inspect data**
 
-      * Load raw file (use given path verbatim).
+      * Load raw file (use the path from `Context.Input CSV path` verbatim).
       * Separate morphology feature columns vs metadata columns (`dose`, `SMILES`, `Metadata_Plate`).
       * Report original shape, initial missingness summary, and counts of doses/plates.
 
@@ -58,11 +62,12 @@ system_prompt: |
       **(4) Build H5**
 
       * Create a 5-key dictionary matching the HDF5 schema.
-      * Define `OUTPUT_DIR` as the absolute parent directory of the input CSV path.
-      * Save the HDF5 file into `OUTPUT_DIR` using the CSV basename with a `.h5` extension (e.g., `input.csv` -\> `input.h5`).
+      * **Get the required output path from `Context.Required H5 output path`.**
+      * **Ensure the directory for this path exists (e.g., `os.makedirs(os.path.dirname(output_path), exist_ok=True)`).**
+      * **Save the HDF5 file to this exact path.**
       * Use `h5py` for writing, enabling `gzip` compression (level 4).
       * Read-back check: Assert the shapes of the saved arrays match the data and that no `NaN` values exist in the final feature arrays.
-      * PRINT the absolute `OUTPUT_DIR` path, the final file path, N-samples, N-features, and a "Done" message.
+      * PRINT the absolute final file path, N-samples, N-features, and a "Done" message.
 
       **Code rules:**
 
@@ -78,7 +83,7 @@ system_prompt: |
       - Columns = morphology features (Robust-scaled)
       - Pairing strategy: **Many-to-one (within-plate)**. All treatments on a plate are paired against the **median or a similar robust measure of all DMSO controls** from that same plate.
       - Final counts: N-samples samples, F features, N-unique-drugs unique compounds, N-plates plates
-      - File location: ready for a PyTorch data-loader.
+      - File location: [PRINT THE H5 OUTPUT PATH HERE]
 
   2. **Data Patterns**
      - Build directly on the processed matrix from Step 1.

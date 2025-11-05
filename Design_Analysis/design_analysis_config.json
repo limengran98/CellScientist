@@ -20,7 +20,7 @@
           "force_json_mode": true,
           "save_intermediate": true,
           "allow_errors": false,
-          "max_fix_rounds": 3
+          "max_fix_rounds": 5
         },
         "llm": {
           "provider": "yizhan",
@@ -62,7 +62,7 @@
             "threshold": 0.72,
             "per_cycle_runs": 1,
             "closed_loop": true,
-            "max_cycles": 1,
+            "max_cycles": 2,
             "llm": {
               "provider": "yizhan",
               "model": "gpt-5",

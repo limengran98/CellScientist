@@ -104,14 +104,17 @@ def _phase_enabled(config: Dict[str, Any], phase_name: str = "task_analysis") ->
 def _get_phase_llm_nb_cfg(config: Dict[str, Any], phase_name: str = "task_analysis") -> Dict[str, Any]:
     return ((config.get("phases") or {}).get(phase_name) or {}).get("llm_notebook") or {}
 
-def _resolve_paths(cfg: Dict[str, Any]) -> Tuple[str, str, str, str, str]:
+def _resolve_paths(cfg: Dict[str, Any]) -> Tuple[str, str, str, str, str, str]:
+    # [MODIFIED] Added h5_out
     paths = cfg.get("paths") or {}
     data = paths.get("data") or "/mnt/data/CP_data.csv"
     paper = paths.get("paper") or "/mnt/data/BBBC036.pdf"
     preprocess = paths.get("preprocess") or "/mnt/data/BBBC036_data_process.ipynb"
     out = paths.get("out") or "/mnt/data/CP_llm.ipynb"
     out_exec = paths.get("out_exec") or paths.get("out-exec") or "/mnt/data/CP_llm_executed.ipynb"
-    return data, paper, preprocess, out, out_exec
+    # [MODIFIED] Add h5_out path. Default to a reasonable value if not present.
+    h5_out = paths.get("h5_out") or (str(Path(out).parent / "preprocessed_data.h5"))
+    return data, paper, preprocess, out, out_exec, h5_out
 
 def _resolve_exec_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     d = cfg.get("exec") or {}
@@ -225,15 +228,20 @@ class OpenAICompatClient:
 
 # ---------------- High-level Runner ----------------
 
-# [REMOVED] _BASE_SYSTEM_PROMPT is now loaded from prompts/notebook_generation.yml
-
-def _system_prompt(language: str, headings: List[str], base_prompt_str: str) -> str:
-    # [MODIFIED] Function now accepts base_prompt_str from the loaded config
+def _system_prompt(language: str, headings: List[str], base_prompt_str: str, data_path: str, h5_output_path: str) -> str:
+    # [MODIFIED] Function now accepts base_prompt_str and paths
     if not base_prompt_str:
         raise ValueError("Base system prompt is empty. Check prompts/notebook_generation.yml")
     lang_label = "English" if language.startswith("en") else language
     headings_bulleted = "\n".join([f"  {h}" for h in headings])
-    return base_prompt_str.format(language_label=lang_label, headings_bulleted=headings_bulleted)
+    
+    # [MODIFIED] Inject paths into the prompt string
+    return base_prompt_str.format(
+        language_label=lang_label, 
+        headings_bulleted=headings_bulleted,
+        data_path=data_path,
+        h5_output_path=h5_output_path
+    )
 
 def make_messages(
     user_prompt: str,
@@ -243,12 +251,17 @@ def make_messages(
     language: str,
     headings: List[str],
     base_system_prompt_str: str, # [MODIFIED] Accept loaded system prompt
+    h5_output_path: str, # [MODIFIED] Accept H5 output path
 ) -> List[Dict[str, str]]:
     """Compose the system+user messages for the LLM."""
     context = {
+        # [MODIFIED] user_prompt is now from the prompt YAML, not the config
         "user_prompt": user_prompt,
         "language": language,
+        # [MODIFIED] These paths are now injected into the system prompt,
+        # but we can keep them here for the user message context if needed.
         "data_path": data_path,
+        "h5_output_path": h5_output_path,
         "paper_excerpt": (paper_excerpt or "")[:2000],
         "csv_preview": csv_preview,
         "constraints": {
@@ -259,8 +272,10 @@ def make_messages(
         }
     }
     return [
-        # [MODIFIED] Pass the base_system_prompt_str
-        {"role": "system", "content": _system_prompt(language, headings, base_system_prompt_str)},
+        # [MODIFIED] Pass all required args to _system_prompt
+        {"role": "system", "content": _system_prompt(
+            language, headings, base_system_prompt_str, data_path, h5_output_path
+        )},
         {"role": "user", "content": json.dumps(context, ensure_ascii=False, indent=2)},
     ]
 
@@ -271,6 +286,7 @@ def run_llm_notebook(
     user_prompt: str,
     out_path: str,
     base_system_prompt_str: str, # [MODIFIED] Accept loaded system prompt
+    h5_out_path: str, # [MODIFIED] Accept H5 output path
     executed_path: Optional[str] = None,
     model: Optional[str] = None,
     timeout_seconds: int = 1800,
@@ -303,11 +319,12 @@ def run_llm_notebook(
     paper_excerpt = read_pdf_excerpt(paper_pdf, max_pages=pdf_max_pages)
 
     # LLM messages
-    # [MODIFIED] Pass the base_system_prompt_str
+    # [MODIFIED] Pass the base_system_prompt_str and h5_out_path
     messages = make_messages(
         user_prompt, data_path, paper_excerpt, csv_preview, 
         language=language, headings=headings, 
-        base_system_prompt_str=base_system_prompt_str
+        base_system_prompt_str=base_system_prompt_str,
+        h5_output_path=h5_out_path
     )
 
     # LLM config (explicit > env)
@@ -368,7 +385,7 @@ def run_llm_notebook_with_config(config: Dict[str, Any], phase_name: str = "task
 
     # [MODIFIED] user_prompt and base_system_prompt_str are now loaded by config_loader
     # 'prompt' is the user prompt, injected by config_loader
-    prompt = nb_cfg.get("prompt") 
+    prompt = (config.get('prompts', {}).get('notebook_generation', {}).get('user_prompt'))
     # System prompt is from the loaded dict
     base_system_prompt_str = (config.get('prompts', {}).get('notebook_generation', {}).get('system_prompt'))
     
@@ -386,12 +403,13 @@ def run_llm_notebook_with_config(config: Dict[str, Any], phase_name: str = "task
     language, headings = _resolve_language_and_headings(nb_cfg)
 
     # paths / exec / llm
-    data, paper, preprocess, out, out_exec = _resolve_paths(nb_cfg)
+    # [MODIFIED] Added h5_out
+    data, paper, preprocess, out, out_exec, h5_out = _resolve_paths(nb_cfg)
     exec_cfg = _resolve_exec_cfg(nb_cfg)
     llm_basic = _resolve_llm_cfg(nb_cfg)
 
     # Run
-    # [MODIFIED] Pass the loaded base_system_prompt_str
+    # [MODIFIED] Pass the loaded base_system_prompt_str and h5_out
     return run_llm_notebook(
         data_path=data,
         paper_pdf=paper,
@@ -400,6 +418,7 @@ def run_llm_notebook_with_config(config: Dict[str, Any], phase_name: str = "task
         out_path=out,
         executed_path=out_exec,
         base_system_prompt_str=base_system_prompt_str,
+        h5_out_path=h5_out,
         model=llm_basic["model"],
         timeout_seconds=exec_cfg["timeout_seconds"],
         force_json_mode=exec_cfg["force_json_mode"],

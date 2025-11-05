@@ -8,6 +8,7 @@ def _load_runner_clean():
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
         mod = importlib.import_module("cellscientist.Design_Analysis.llm_notebook_runner")
     # The original function should return a path to the executed notebook
+    # [MODIFIED] Update function name to match what is exported
     return getattr(mod, "run_llm_notebook_from_file")
 
 # --- LLM helper ---
@@ -150,15 +151,24 @@ def execute_notebook(nb, *, timeout=1800, allow_errors=True):
     return nb, errors_summary
 
 
-def build_fix_messages(language, data_path, csv_preview, paper_excerpt, errors, headings):
+# [MODIFIED] Added 'autofix_prompt_str' to the function definition
+def build_fix_messages(
+    language, data_path, csv_preview, paper_excerpt, errors, headings,
+    autofix_prompt_str: str 
+):
     """Build structured chat messages for LLM-based notebook auto-fix."""
-    sys_prompt = (
+    
+    # [MODIFIED] Use the passed-in prompt string, with a fallback
+    sys_prompt = ( autofix_prompt_str or 
+        (
         "You are a senior Python engineer and Jupyter expert.\n"
         "Given Jupyter cell errors, return ONLY a MINIFIED JSON object with key 'edits'.\n"
         "Each edit MUST be {\"cell_index\": int, \"source\": str} replacing the WHOLE code cell.\n"
         "You MUST cover ALL indices listed in 'target_cell_indices' (one edit per index). Do not add new cells.\n"
         "Do not modify markdown cells. No markdown fences or extra text.\n"
+        ) # Fallback
     )
+    
     target_indices = [e.get("cell_index") for e in (errors or [])]
     user_obj = {
         "language": language,

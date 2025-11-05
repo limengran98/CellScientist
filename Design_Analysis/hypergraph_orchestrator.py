@@ -67,16 +67,22 @@ def _mk_run_prompt(base_cfg: Dict[str, Any], idx: int, prompt_variant: str, seed
     run_dir = out_dir / run_name
     _ensure_dir(run_dir)
 
-    # augment prompt
-    # [MODIFIED] base_prompt is now pre-loaded by config_loader from prompts/
-    base_prompt = nb_cfg.get("prompt") or "" # This is the 'user_prompt'
-    extra = f"\\n\\n[Hyperedge Variant {idx+1}] {prompt_variant}".strip() if prompt_variant else ""
-    nb_cfg["prompt"] = (base_prompt + extra).strip() # This remains the user prompt
-
+    # [MODIFIED] Inject focus instruction instead of appending to prompt
+    # base_prompt remains clean
+    base_prompt = (cfg.get('prompts', {}).get('notebook_generation', {}).get('user_prompt'))
+    nb_cfg["prompt"] = base_prompt # Set the base user prompt
+    
+    # [NEW] Store the variant as a separate "focus_instruction"
+    # This will be read by llm_notebook_runner
+    nb_cfg["focus_instruction"] = prompt_variant or "Standard analysis. No special focus."
+    
     # distinct outputs
     nb_cfg.setdefault("paths", {})
     nb_cfg["paths"]["out"] = str(run_dir / "CP_llm.ipynb")
     nb_cfg["paths"]["out_exec"] = str(run_dir / "CP_llm_executed.ipynb")
+    
+    # [NEW] Define unique H5 output path for this run
+    nb_cfg["paths"]["h5_out"] = str(run_dir / "preprocessed_data.h5")
 
     # optional seed passthrough
     llm = nb_cfg.get("llm", {}) or {}
@@ -102,17 +108,26 @@ def orchestrate(cfg_path: str, prompts_dir_path: Optional[str] = None):
     if not multi.get("enabled", False):
         raise SystemExit("Multi-run disabled. Set phases.task_analysis.llm_notebook.multi.enabled=true")
 
-    # [MODIFIED] ### Adaptive Run Logic ###
+    # [MODIFIED] ### Adaptive Run Logic (Using MIN as requested) ###
     prompt_variants = multi.get("prompt_variants") or []
     seeds = multi.get("seeds") or []
     
     # 运行次数将是 num_runs、seeds 长度、variants 长度三者中的最小值
     # 这实现了您要的 "自适应调节"
     num_runs_config = int(multi.get("num_runs", 1)) # 1 is fallback if key missing
-    num_runs = min(num_runs_config, len(seeds), len(prompt_variants))
+    
+    # [USER REQUEST] Set num_runs to the minimum of the three values
+    # Note: If lists are empty, len() is 0, min() will be 0 (if num_runs_config=0) or 1.
+    if not seeds or not prompt_variants:
+         num_runs = 0 # No runs possible if lists are empty
+         print(f"⚠️  [Adaptive] Seeds or Variants list empty. Setting runs to 0.")
+    else:
+        # Only apply min if lists are populated
+        num_runs = min(num_runs_config, len(seeds), len(prompt_variants))
     
     print(f"ℹ️  [Adaptive] Runs logic: min(config_num_runs={num_runs_config}, seeds={len(seeds)}, variants={len(prompt_variants)}) = {num_runs} runs")
     # ### End Adaptive Run Logic ###
+
 
     node_names = multi.get("node_names") or [
         "Data Loading & Initial Exploration",
@@ -127,9 +142,9 @@ def orchestrate(cfg_path: str, prompts_dir_path: Optional[str] = None):
     t0 = datetime.utcnow().isoformat() + "Z"
 
     for i in range(num_runs):
-        # [MODIFIED] Use modulo to safely cycle through lists if num_runs is larger
-        variant = prompt_variants[i % len(prompt_variants)] if prompt_variants else ""
-        seed = seeds[i % len(seeds)] if seeds else None
+        # [MODIFIED] Use direct indexing (i) because num_runs is now guaranteed to be <= len
+        variant = prompt_variants[i]
+        seed = seeds[i]
         
         run_cfg, run_name, run_dir = _mk_run_prompt(cfg, i, variant, seed)
 
@@ -148,13 +163,18 @@ def orchestrate(cfg_path: str, prompts_dir_path: Optional[str] = None):
         final_exec = _auto_fix_notebook(executed_path, run_cfg)
         exec_p = Path(final_exec)
         unexec_p = Path(run_cfg["phases"]["task_analysis"]["llm_notebook"]["paths"]["out"])
+        
+        # [NEW] Get path to the H5 file this run generated
+        h5_p = Path(run_cfg["phases"]["task_analysis"]["llm_notebook"]["paths"]["h5_out"])
 
         edges.append({
             "edge_id": run_name,
             "executed_ipynb": str(exec_p),
             "unexecuted_ipynb": str(unexec_p),
+            "generated_h5": str(h5_p) if h5_p.exists() else None, # [NEW] Store H5 path
             "executed_sha": _hash_file(exec_p),
             "unexecuted_sha": _hash_file(unexec_p),
+            "generated_h5_sha": _hash_file(h5_p), # [NEW] Store H5 hash
             "prompt_variant": variant,
             "llm_model": (run_cfg["phases"]["task_analysis"]["llm_notebook"].get("llm") or {}).get("model"),
             "seed": (run_cfg["phases"]["task_analysis"]["llm_notebook"].get("llm") or {}).get("seed"),
@@ -360,6 +380,8 @@ def _score_edge_for_reference(attrs: dict, weights: dict) -> float:
     base = sci*w_sci + nov*w_nov + rep*w_rep + intp*w_int
     if attrs.get("executed_sha"):
         base += 0.05
+    if attrs.get("generated_h5_sha"): # [NEW] Bonus if H5 was created
+        base += 0.05
     pv = (attrs.get("prompt_variant") or "").lower()
     if "enrichment" in pv or "volcano" in pv:
         base += 0.02
@@ -412,14 +434,30 @@ def select_and_export_reference(
         print("[REFERENCE] best edge has no valid notebook path")
         return None
 
+    # --- [NEW] Copy BEST Notebook ---
     ref_name = f"REFERENCE_{best.get('edge_id')}"
     dst_ipynb = export_dir / f"{ref_name}.ipynb"
     try:
         shutil.copyfile(src_ipynb, dst_ipynb)
-        print(f"📌 [REFERENCE] exported → {dst_ipynb}")
+        print(f"📌 [REFERENCE] exported Notebook → {dst_ipynb}")
     except Exception as e:
-        print("[REFERENCE] copy failed:", e)
+        print("[REFERENCE] Notebook copy failed:", e)
         return None
+        
+    # --- [NEW] Copy BEST H5 File ---
+    src_h5 = attrs.get("generated_h5")
+    dst_h5 = None
+    if src_h5 and Path(src_h5).exists():
+        dst_h5 = export_dir / "REFERENCE_DATA.h5"
+        try:
+            shutil.copyfile(src_h5, dst_h5)
+            print(f"📌 [REFERENCE] exported H5 Data → {dst_h5}")
+        except Exception as e:
+            print("[REFERENCE] H5 copy failed:", e)
+            dst_h5 = None # Failed copy
+    else:
+        print(f"⚠️ [REFERENCE] No H5 file found for best run at: {src_h5}")
+
 
     # write reference metadata
     ref_meta = {
@@ -427,12 +465,15 @@ def select_and_export_reference(
         "score": best_score,
         "executed_ipynb": attrs.get("executed_ipynb"),
         "unexecuted_ipynb": attrs.get("unexecuted_ipynb"),
+        "generated_h5": attrs.get("generated_h5"),
+        "exported_notebook_path": str(dst_ipynb),
+        "exported_h5_path": str(dst_h5) if dst_h5 else None,
         "weights": weights,
         "generated_utc": datetime.utcnow().isoformat() + "Z"
     }
     (export_dir / "reference.json").write_text(json.dumps(ref_meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    data["reference"] = {"edge_id": best.get("edge_id"), "score": best_score, "path": str(dst_ipynb), "export_dir": str(export_dir)}
+    data["reference"] = ref_meta # [MODIFIED] Store full metadata
     hp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return data["reference"]
 
@@ -469,11 +510,24 @@ def closed_loop_orchestrate(
         # [MODIFIED] Load config again to ensure we have the fresh state
         cfg_cycle = _load_cfg(cfg_path, prompts_dir_path)
         nb_cfg_cycle = (((cfg_cycle.get("phases") or {}).get("task_analysis") or {}).get("llm_notebook") or {})
+        # [MODIFIED] Need to get 'multi' from the fresh config
+        multi_cycle = (nb_cfg_cycle.get("multi") or {})
+
         
         nb_cfg_cycle.setdefault("multi", {}).setdefault("prompt_variants", [])
-        nb_cfg_cycle["multi"]["prompt_variants"].extend(add_variants)
-        # [MODIFIED] Adaptive logic will handle num_runs, but we update the config for the temp file
-        nb_cfg_cycle["multi"]["num_runs"] = len(nb_cfg_cycle["multi"]["prompt_variants"])
+        # [FIX] Load existing variants from the *original* config
+        base_variants = (multi.get("prompt_variants") or [])
+        nb_cfg_cycle["multi"]["prompt_variants"] = base_variants + add_variants
+        
+        # [FIX] Add dummy seeds to match the new variants, to allow min() logic to work
+        base_seeds = (multi.get("seeds") or [])
+        if base_seeds: # Only add seeds if they existed
+            # Add dummy seeds (e.g., 0, or reuse first)
+            new_seeds = [base_seeds[0] if base_seeds else 0] * len(add_variants)
+            nb_cfg_cycle["multi"]["seeds"] = base_seeds + new_seeds
+        
+        # [REMOVED] Do NOT explicitly set num_runs. Let the orchestrate() 'min' logic handle it.
+        # nb_cfg_cycle["multi"]["num_runs"] = len(nb_cfg_cycle["multi"]["prompt_variants"])
 
         # write a temp cfg (in out_dir) and run again
         tmp_cfg = Path(out_dir) / f"config.cycle{cycles}.json"
@@ -547,7 +601,7 @@ def _extract_semantic_layer(
 
     patt_effect = re.compile(r"(?:effect|impact|influence)\s+of\s+([A-Za-z0-9_./-]+)\s+on\s+([A-Za-z0-9_./-]+)", re.I)
     patt_corr   = re.compile(r"(?:correlation|association)\s+(?:between|of)\s+([A-Za-z0-9_./-]+)\s+(?:and|&)\s+([A-Za-z0-9_./-]+)", re.I)
-    patt_arrow  = re.compile(r"([A_Za-z0-9_./-]+)\s*->\s*([A-Za-z0-9_./-]+)")
+    patt_arrow  = re.compile(r"([A_Za-z0-9_./-]+)\s*->\s*([A_Za-z0-9_./-]+)")
 
     for idx, txt in text_blocks:
         for m in patt_effect.finditer(txt):
@@ -642,7 +696,7 @@ def _auto_fix_notebook(executed_path: str, run_cfg: dict) -> str:
         spec = chat_json(
             messages,
             api_key=os.environ.get(api_key_env),
-            base_url=os.environ.get(base_url_env, "[https://api.openai.com/v1](https://api.openai.com/v1)"),
+            base_url=os.environ.get(base_url_env, "https://api.openai.com/v1"),
             model=model,
             temperature=0.0,
             max_tokens=1024
@@ -686,3 +740,4 @@ def _auto_fix_notebook(executed_path: str, run_cfg: dict) -> str:
     final = str(nb_path if round_idx == 0 else nb_path.with_name(nb_path.stem + f"_r{round_idx}_executed.ipynb"))
     print(f"🏁 [AUTO-FIX] final={final}")
     return final
+
