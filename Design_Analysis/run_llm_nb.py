@@ -21,8 +21,10 @@ def chat_json(messages, *, api_key, base_url, model, temperature=0.2, max_tokens
     def _post(payload):
         url = (base_url or "https://api.openai.com/v1").rstrip("/") + "/chat/completions"
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        # [NEW LOGGING] 打印出它正在尝试连接的地址和模型
+        print(f"  [chat_json] ➡️  POST to {url} (model={payload.get('model')})")
         r = requests.post(url, headers=headers, json=payload, timeout=60)
-        r.raise_for_status()
+        r.raise_for_status()  # 这将对 4xx/5xx 错误引发异常
         return r.json()
 
     base_payload = {
@@ -32,6 +34,9 @@ def chat_json(messages, *, api_key, base_url, model, temperature=0.2, max_tokens
         "max_tokens": max_tokens,
         "response_format": {"type": "json_object"},
     }
+    
+    content = "" # 在循环外定义 content
+    data = {} # 在循环外定义 data
 
     for attempt in range(2):  # Two attempts: strict JSON → relaxed instruction
         payload = dict(base_payload)
@@ -43,14 +48,29 @@ def chat_json(messages, *, api_key, base_url, model, temperature=0.2, max_tokens
             payload["messages"] = nudged
 
         try:
-            data = _post(payload)
-        except Exception:
+            data = _post(payload) # [MODIFIED] 赋值给外部的 data
+
+            # [START ROBUST-FIX 1]
+            # 立即检查 API 是否返回了顶层错误 (例如: model_not_found)
+            if "error" in data:
+                error_details = data.get("error", {})
+                print(f"  [chat_json] ❌ API returned an error object (attempt {attempt+1}):")
+                print(f"      Message: {error_details.get('message')}")
+                print(f"      Type:    {error_details.get('type')}")
+                print(f"      Code:    {error_details.get('code')}")
+                time.sleep(0.4)
+                continue # 跳到下一次尝试 (如果还有)
+            # [END ROBUST-FIX 1]
+
+        except Exception as e:
+            # [MODIFIED] 打印出 API 调用的具体错误！
+            print(f"  [chat_json] ❌ API call failed (attempt {attempt+1}). Error: {e}")
             time.sleep(0.4)
             continue
 
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
-        content = (msg.get("content") or "").strip()
+        content = (msg.get("content") or "").strip() # [MODIFIED] 赋值给外部的 content
 
         # 1) Direct JSON
         if content:
@@ -91,9 +111,20 @@ def chat_json(messages, *, api_key, base_url, model, temperature=0.2, max_tokens
                 except Exception:
                     pass
 
+        # [START ROBUST-FIX 2]
+        # 如果即将失败，打印出 LLM 返回的原始（非 JSON）内容
+        if content:
+             print(f"  [chat_json] ⚠️ Failed to parse. Raw content preview: {content[:500]}...")
+        else:
+            # [NEW] 如果 content 都是空的，也打印出来
+            print(f"  [chat_json] ⚠️ Message content was empty. Full data received (preview): {str(data)[:500]}...")
+        # [END ROBUST-FIX 2]
+
         time.sleep(0.4)
 
     # Fallback: return empty edits to gracefully stop current fix round
+    # [NEW LOGGING] 明确指出 LLM 返回为空
+    print(f"  [chat_json] ⚠️ Could not get valid JSON response after 2 attempts. Returning empty edits.")
     return {"edits": []}
 
 
@@ -169,16 +200,41 @@ def build_fix_messages(
         ) # Fallback
     )
     
-    target_indices = [e.get("cell_index") for e in (errors or [])]
+    # [START ROBUST-FIX 1] 清理和截断错误信息，避免 LLM 上下文过载
+    cleaned_errors = []
+    target_indices = []
+    for e in (errors or []):
+        idx = e.get("cell_index")
+        if idx is None: continue
+        
+        if idx not in target_indices:
+            target_indices.append(idx)
+        
+        # 清理 traceback：只保留最后 15 行（最相关的部分）
+        tb_lines = (e.get("traceback") or "").strip().split("\n")
+        cleaned_tb = "\n".join(tb_lines[-15:]) 
+        
+        # 截断可能很长的错误值（evalue）
+        evalue = e.get("evalue", "")
+        cleaned_evalue = (evalue[:300] + "...") if len(evalue) > 300 else evalue
+        
+        cleaned_errors.append({
+            "cell_index": idx,
+            "ename": e.get("ename"),
+            "evalue": cleaned_evalue,
+            "traceback_summary": cleaned_tb, # 只发送清理后的摘要
+            "original_source_code": e.get("source", "") # 发送完整的原始代码
+        })
+    # [END ROBUST-FIX 1]
+    
     user_obj = {
         "language": language,
         "data_path": data_path,
         "csv_preview": csv_preview,
         "paper_excerpt": (paper_excerpt or "")[:1500] if paper_excerpt else "",
         "required_headings": headings,
-        "target_cell_indices": target_indices,
-        "errors": errors,
-        # [NEW] Example covers all listed indices
+        "target_cell_indices": sorted(list(set(target_indices))), # 确保索引列表唯一且排序
+        "errors": cleaned_errors, # [MODIFIED] 使用清理后的错误列表
         "example": {"edits": [{"cell_index": int(i), "source": "# fixed code here"} for i in target_indices] or [{"cell_index": 0, "source": "# fixed"}]}
     }
     return [

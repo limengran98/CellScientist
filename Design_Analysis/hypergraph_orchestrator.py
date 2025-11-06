@@ -48,6 +48,65 @@ def _hash_file(p: Path) -> str:
             h.update(chunk)
     return h.hexdigest()[:16]
 
+
+# [START NEW FUNCTION]
+def _resolve_llm_cfg_for_autofix(llm_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    [ROBUST-FIX] Helper to correctly resolve LLM config for auto-fix.
+    This logic is duplicated from llm_notebook_runner.py to avoid import issues
+    and ensure the auto-fix loop uses the exact same credentials.
+    """
+    llm = llm_cfg or {}
+    
+    # 1. Resolve API Key (Priority: config key > config env var > default env var)
+    api_key = llm.get("api_key") # 1. 优先使用 config 中写死的 api_key
+    if not api_key:
+        api_key_env = llm.get("api_key_env") or "OPENAI_API_KEY" # 2. 其次使用 config 指向的环境变量
+        api_key = os.environ.get(api_key_env)
+        
+    # 2. Resolve Model
+    model = llm.get("model") or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    
+    # 3. Resolve Base URL (Priority: provider file > config env var > default env var > hardcoded fallback)
+    base_url = None
+    
+    # 3a. Try provider file (if llm_providers.json exists)
+    try:
+        # __file__ is hypergraph_orchestrator.py. parents[1] is .../cellscientist
+        base_dir = Path(__file__).resolve().parents[1] 
+        prov_file = base_dir / "llm_providers.json"
+        prov_name = (llm.get("provider") or "").strip() or None
+        if prov_name and prov_file.exists():
+            data = json.loads(prov_file.read_text(encoding="utf-8"))
+            prov = data.get("providers", {}).get(prov_name)
+            if prov:
+                base_url = prov.get("base_url") or None
+                if not llm.get("model") and prov.get("models"): # Only use provider model if not set in config
+                    model = prov.get("models")[0]
+    except Exception:
+        pass # Ignore provider file errors
+    
+    # 3b. Fallback to env vars
+    if not base_url:
+        base_url_env = llm.get("base_url_env")
+        if base_url_env and os.environ.get(base_url_env):
+            base_url = os.environ.get(base_url_env)
+        else:
+            # Default env var or hardcoded fallback from llm_notebook_runner
+            base_url = os.environ.get("OPENAI_BASE_URL") or "[https://vip.yi-zhan.top/v1](https://vip.yi-zhan.top/v1)"
+    
+    # 3c. Clean up hardcoded markdown link if it's used
+    if base_url and base_url.startswith("[") and base_url.endswith(")"):
+        base_url = re.sub(r"\[(.*?)\]\((.*?)\)", r"\2", base_url)
+        
+    return {
+        "model": model,
+        "base_url": base_url,
+        "api_key": api_key,
+    }
+# [END NEW FUNCTION]
+
+
 # --------------------
 # Per-run config builder
 # --------------------
@@ -539,38 +598,27 @@ def _auto_fix_notebook(executed_path: str, run_cfg: dict) -> str:
     from pathlib import Path
     nb_cfg = (((run_cfg.get("phases") or {}).get("task_analysis") or {}).get("llm_notebook") or {})
     exec_cfg = nb_cfg.get("exec", {}) or {}
+
     
     # [START MODIFICATION]
-    # llm_cfg = nb_cfg.get("llm", {}) or {}
-    # api_key_env = llm_cfg.get("api_key_env", "OPENAI_API_KEY")
-    # base_url_env = llm_cfg.get("base_url_env", "OPENAI_BASE_URL")
-    # model = llm_cfg.get("model") or os.environ.get("OPENAI_MODEL", "gpt-4o")
-    
-    # [FIX] Correctly load LLM config for auto-fix to match generation config
+    # [ROBUST-FIX] Correctly load LLM config for auto-fix by
+    # replicating the logic from the llm_notebook_runner.
     llm_cfg = nb_cfg.get("llm", {}) or {}
-
-    # 1. Get Model
-    model_final = llm_cfg.get("model") or os.environ.get("OPENAI_MODEL", "gpt-4o")
+    resolved_llm_cfg = _resolve_llm_cfg_for_autofix(llm_cfg)
     
-    # 2. Get API Key (Prioritize hardcoded config key > env var from config > default env var)
-    api_key_final = llm_cfg.get("api_key") or os.environ.get(llm_cfg.get("api_key_env") or "OPENAI_API_KEY")
+    api_key_final = resolved_llm_cfg["api_key"]
+    base_url_final = resolved_llm_cfg["base_url"]
+    model_final = resolved_llm_cfg["model"]
     
-    # 3. Get Base URL
-    # Replicate fallback logic from llm_notebook_runner._resolve_llm_cfg
-    # Note: This does not include provider.json logic, but handles config/env fallbacks
-    base_url_final = None
-    base_url_env_key = llm_cfg.get("base_url_env") # e.g., "OPENAI_BASE_URL"
+    max_tokens_final = int(llm_cfg.get("max_tokens") or 10240)
     
-    if base_url_env_key and os.environ.get(base_url_env_key):
-        base_url_final = os.environ.get(base_url_env_key)
+    if not api_key_final:
+        print("⚠️ [AUTO-FIX] API key not resolved. Auto-fix will likely fail.")
     else:
-        # Fallback to the hardcoded default from llm_notebook_runner.py
-        # (which might be the "yizhan" provider URL)
-        base_url_final = os.environ.get("OPENAI_BASE_URL") or "[https://vip.yi-zhan.top/v1](https://vip.yi-zhan.top/v1)"
-
-    # [FIX] Handle the incorrect markdown-link format in the default URL
-    if base_url_final and base_url_final.startswith("[") and base_url_final.endswith(")"):
-        base_url_final = re.sub(r"\[(.*?)\]\((.*?)\)", r"\2", base_url_final)
+        # Mask the key for logging
+        print(f"ℹ️ [AUTO-FIX] Config loaded: model={model_final}, base_url={base_url_final}, api_key=...{api_key_final[-4:]}")
+    
+    print(f"ℹ️ [AUTO-FIX] Using max_tokens for fix loop: {max_tokens_final}")
     # [END MODIFICATION]
 
 
@@ -624,7 +672,7 @@ def _auto_fix_notebook(executed_path: str, run_cfg: dict) -> str:
             base_url=base_url_final,
             model=model_final,
             temperature=0.0,
-            max_tokens=1024
+            max_tokens=max_tokens_final # [FIXED] 使用 max_tokens_final
         )
         edits = spec.get("edits") or []
         if not edits:

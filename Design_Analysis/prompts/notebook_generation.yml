@@ -116,16 +116,35 @@ system_prompt: |
        * Unresolved questions revealed by the dataset (hidden subgroups, confounders, nonlinear responses).
        * Opportunities for innovation (methodological or biological).
      - Explicitly connect these insights back to the data-driven findings.
-     - (Optional) Provide a baseline model in code (classification/regression, with leakage-safe splitting) to illustrate current performance and motivate improvements.
+     - (Optional) Provide a baseline model in code (with leakage-safe splitting) to illustrate current performance and motivate improvements.
 
   5. **Experiment & Validation Suggestions**
      - Extend logically from the innovation motivations in Step 4, with a tight integration of biological findings and computational model design.
+      Task: Predicting High-Content Cellular Morphology Following Drug Perturbation
+      Your primary task is to develop a predictive model that accurately estimates the high-dimensional morphological profiles of cells (e.g., from Cell Painting) following drug treatment.
+
      - In Markdown, propose next-step experiments that explicitly link:
        * **Biological discovery → Computational modeling**: e.g., heterogeneity in morphology → clustering + ensemble ML classifiers; nonlinear dose–response → generalized additive models, monotonic regression, or spline-regularized ML/DL.
        * **Mechanistic priors in modeling**: incorporate pathway/group priors into feature engineering, hierarchical models, or biologically-informed regularization.
        * **Cross-modal integration**: combine morphology with chemical descriptors/omics using multi-view learning (e.g., CCA, multimodal autoencoders, graph-based fusion).
        * **Generalization & robustness**: explicitly test whether models trained on one plate/dose/compound generalize to unseen conditions, with leakage-safe splits (plate-holdout, dose-stratified).
      - Define tasks & success criteria:
+
+      - (1) Task Definition
+      Based on the provided data structure, the task is defined as:
+      Input:
+      * Perturbation (smiles): The drug's chemical structure (SMILES string).
+      * Dose (dose): The concentration of the applied drug.
+      * Baseline Context (morphology_pre): The baseline morphological profile vector(s) (N, F) of control (DMSO) cells.
+      Output:
+      * Predicted Profile (morphology_post): The predicted high-dimensional morphological feature vector(s) (N, F) of the cell population after treatment.
+      * Context/Grouping Variable:
+      * plate_id: This identifier should be used for robust data splitting (e.g., holdout validation) to ensure model generalization across experimental batches.
+
+      - (2) Core Evaluation Scenarios
+      * The success of the model will be judged not just on fitting known data, but on its ability to generalize. Evaluation must be performed on rigorously separated datasets reflecting:
+      * Unseen Compounds: Predicting the morphological effects of novel compounds (new smiles) not present during training.
+      * Unseen Contexts/Batches: Predicting model performance on new experimental plates (new plate_id) or in the context of different baseline control profiles (unseen morphology_pre).
 
        Evaluation Metrics:
        - Mean Squared Error (MSE): Measures the average squared difference between predicted and observed cell morphology profiles
