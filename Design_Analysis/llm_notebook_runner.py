@@ -129,44 +129,68 @@ def _resolve_exec_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 def _resolve_llm_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Resolve LLM connection settings with sensible precedence:
+    - API key: cfg.llm.api_key > env[cfg.llm.api_key_env] > env["OPENAI_API_KEY"] > None
+    - Base URL: cfg.llm.base_url > provider file > env[cfg.llm.base_url_env] > env["OPENAI_BASE_URL"] > hardcoded fallback
+    - Model: cfg.llm.model > provider default > env["OPENAI_MODEL"] or "gpt-4o-mini"
+    """
     llm = cfg.get("llm") or {}
-    # 1) Try provider-first via llm_providers.json (optional)
-    base_dir = Path(__file__).resolve().parents[1]  # .../cellscientist
-    prov_file = base_dir / "llm_providers.json"
-    prov_name = (llm.get("provider") or "").strip() or None
-    base_url = None
-    model = llm.get("model")
-    api_key = os.environ.get(llm.get("api_key_env") or "OPENAI_API_KEY")
+    base_url = llm.get("base_url") or None
+    model = llm.get("model") or None
 
-    if prov_name and prov_file.exists():
-        try:
+    # Provider file (optional)
+    try:
+        base_dir = Path(__file__).resolve().parents[1]  # .../cellscientist
+        prov_file = base_dir / "llm_providers.json"
+        prov_name = (llm.get("provider") or "").strip() or None
+        if (not base_url or not model) and prov_name and prov_file.exists():
             data = json.loads(prov_file.read_text(encoding="utf-8"))
-            prov = data.get("providers", {}).get(prov_name)
-            if prov:
+            prov = (data.get("providers") or {}).get(prov_name) or {}
+            if not base_url:
                 base_url = prov.get("base_url") or None
-                if not model:
-                    models = prov.get("models") or []
-                    model = models[0] if models else None
-        except Exception:
-            pass
+            if not model:
+                models = prov.get("models") or []
+                model = models[0] if models else None
+    except Exception:
+        pass
 
-    # 2) Fallbacks (env & defaults)
+    # Base URL env fallbacks
     if not base_url:
-        # Prefer explicit env var from config
         base_url_env = llm.get("base_url_env")
         if base_url_env and os.environ.get(base_url_env):
             base_url = os.environ.get(base_url_env)
         else:
-            # Final fallback: your default gateway (OpenAI-compatible)
-            base_url = os.environ.get("OPENAI_BASE_URL") or "[https://vip.yi-zhan.top/v1](https://vip.yi-zhan.top/v1)"
+            base_url = os.environ.get("OPENAI_BASE_URL") or "https://vip.yi-zhan.top/v1"
 
+    # Model env fallback
     if not model:
         model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
+    # API key precedence (include config hardcoded key)
+    api_key = llm.get("api_key") or None
+    if not api_key:
+        api_key_env = llm.get("api_key_env") or "OPENAI_API_KEY"
+        api_key = os.environ.get(api_key_env)
+
+    # Extra knobs
+    temperature = float(llm.get("temperature", 0.2))
+    max_tokens = int(llm.get("max_tokens", 8192))
+    top_p = float(llm.get("top_p", 1))
+    freq_pen = float(llm.get("frequency_penalty", 0))
+    pres_pen = float(llm.get("presence_penalty", 0))
+    force_json = bool(llm.get("force_json_mode", True))
+
     return {
-        "model": model,
         "base_url": base_url,
+        "model": model,
         "api_key": api_key,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "top_p": top_p,
+        "frequency_penalty": freq_pen,
+        "presence_penalty": pres_pen,
+        "force_json_mode": force_json,
     }
 
 

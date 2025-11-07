@@ -712,4 +712,13 @@ def _auto_fix_notebook(executed_path: str, run_cfg: dict) -> str:
 
     final = str(nb_path if round_idx == 0 else nb_path.with_name(nb_path.stem + f"_r{round_idx}_executed.ipynb"))
     print(f"🏁 [AUTO-FIX] final={final}")
-    return final
+    
+    # 🔧 OVERWRITE ORIGINAL executed notebook with the fixed one (T0 <- final)
+    try:
+        if final != str(nb_path) and Path(final).exists():
+            from shutil import copyfile
+            copyfile(final, str(nb_path))
+            print(f"✅ [AUTO-FIX] Overwrote original executed notebook: {nb_path.name}")
+    except Exception as e:
+        print(f"⚠️ [AUTO-FIX] Failed to overwrite original executed notebook: {e}")
+    return str(nb_path)
