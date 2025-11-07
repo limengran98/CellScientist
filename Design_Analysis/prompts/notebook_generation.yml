@@ -130,16 +130,22 @@ system_prompt: |
        * **Generalization & robustness**: explicitly test whether models trained on one plate/dose/compound generalize to unseen conditions, with leakage-safe splits (plate-holdout, dose-stratified).
      - Define tasks & success criteria:
 
-     - (1) Task Definition
-      Based on the provided data structure, the task is defined as:
-      Input:
-      * Perturbation (smiles): The drug's chemical structure (SMILES string). Chemical Featurization: The raw smiles input must be converted into a machine-readable format. Using ECFP4 fingerprints (e.g., radius 2, 2048 bits) is a strongly recommended baseline approach.
+     -  (1) Task Definition
+      Based on the provided data structure:
+
+      Input
+      * Perturbation (smiles): The drug’s SMILES string.
+        - Chemical Featurization (REQUIRED): Use RDKit to compute ECFP4 (Morgan) fingerprints
+          with radius = 2 and n_bits = 2048 (useChirality = True).
       * Dose (dose): The concentration of the applied drug.
-      * Baseline Context (morphology_pre): The baseline morphological profile vector(s) (N, F) of control (DMSO) cells.
-      Output:
-      * Predicted Profile (morphology_post): The predicted high-dimensional morphological feature vector(s) (N, F) of the cell population after treatment.
-      * Context/Grouping Variable:
-      * plate_id: This identifier should be used for robust data splitting (e.g., holdout validation) to ensure model generalization across experimental batches.
+      * Baseline Context (morphology_pre): Baseline morphological profile matrix (N, F) of control (DMSO) cells.
+
+      Output
+      * Predicted Profile (morphology_post): Predicted morphological feature matrix (N, F) after treatment.
+
+      Context / Grouping Variable
+      * plate_id: Use for robust, plate-level data splitting (e.g., strict holdout by plate) to ensure batch generalization.
+
 
      - (2) Core Evaluation Scenarios
       * The success of the model will be judged not just on fitting known data, but on its ability to generalize. Evaluation must be performed on rigorously separated datasets reflecting:
