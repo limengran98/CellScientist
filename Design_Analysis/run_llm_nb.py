@@ -23,7 +23,7 @@ def chat_json(messages, *, api_key, base_url, model, temperature=0.2, max_tokens
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         # [NEW LOGGING] 打印出它正在尝试连接的地址和模型
         print(f"  [chat_json] ➡️  POST to {url} (model={payload.get('model')})")
-        r = requests.post(url, headers=headers, json=payload, timeout=60)
+        r = requests.post(url, headers=headers, json=payload, timeout=600)
         r.raise_for_status()  # 这将对 4xx/5xx 错误引发异常
         return r.json()
 

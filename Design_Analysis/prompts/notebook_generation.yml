@@ -130,10 +130,10 @@ system_prompt: |
        * **Generalization & robustness**: explicitly test whether models trained on one plate/dose/compound generalize to unseen conditions, with leakage-safe splits (plate-holdout, dose-stratified).
      - Define tasks & success criteria:
 
-      - (1) Task Definition
+     - (1) Task Definition
       Based on the provided data structure, the task is defined as:
       Input:
-      * Perturbation (smiles): The drug's chemical structure (SMILES string).
+      * Perturbation (smiles): The drug's chemical structure (SMILES string). Chemical Featurization: The raw smiles input must be converted into a machine-readable format. Using ECFP4 fingerprints (e.g., radius 2, 2048 bits) is a strongly recommended baseline approach.
       * Dose (dose): The concentration of the applied drug.
       * Baseline Context (morphology_pre): The baseline morphological profile vector(s) (N, F) of control (DMSO) cells.
       Output:
@@ -141,7 +141,7 @@ system_prompt: |
       * Context/Grouping Variable:
       * plate_id: This identifier should be used for robust data splitting (e.g., holdout validation) to ensure model generalization across experimental batches.
 
-      - (2) Core Evaluation Scenarios
+     - (2) Core Evaluation Scenarios
       * The success of the model will be judged not just on fitting known data, but on its ability to generalize. Evaluation must be performed on rigorously separated datasets reflecting:
       * Unseen Compounds: Predicting the morphological effects of novel compounds (new smiles) not present during training.
       * Unseen Contexts/Batches: Predicting model performance on new experimental plates (new plate_id) or in the context of different baseline control profiles (unseen morphology_pre).
