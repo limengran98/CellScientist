@@ -50,6 +50,38 @@ def cmd_prompt_defined(
     cfg["prompt_branch"]["baseline_id"] = int(baseline_id)
     if inline_prompt_text:
         cfg["prompt_branch"]["inline_text"] = inline_prompt_text
+    # --- Stage-1 memory inheritance ---
+    try:
+        from design_execution.stage1_adapter import prepare_stage1_context
+        s1 = prepare_stage1_context(cfg, enable=bool(cfg["prompt_branch"]["use_stage1_ref"]))
+        if s1:
+            # store markdown for later insertion into the generated notebook
+            cfg["prompt_branch"]["stage1_markdown"] = s1.get("markdown", "")
+            # Ensure env var so prompt YAML can reference ${STAGE1_H5_PATH}
+            if s1.get("h5_path"):
+                os.environ["STAGE1_H5_PATH"] = s1["h5_path"]
+                print(f"[STAGE1] H5 override set to: {s1['h5_path']}")
+    except Exception as _e:
+        print(f"[STAGE1][WARN] Failed to prepare Stage-1 context: {_e}")
+    # --- End Stage-1 memory ---
+
+
+    # --- Stage-1 memory inheritance ---
+    try:
+        from design_execution.stage1_adapter import prepare_stage1_context
+        s1 = prepare_stage1_context(cfg, enable=bool(cfg["prompt_branch"]["use_stage1_ref"]))
+        if s1:
+            # store markdown for later insertion into the generated notebook
+            cfg["prompt_branch"]["stage1_markdown"] = s1.get("markdown", "")
+            # Ensure env var so prompt YAML can reference ${STAGE1_H5_PATH}
+            if s1.get("h5_path"):
+                os.environ["STAGE1_H5_PATH"] = s1["h5_path"]
+                print(f"[STAGE1] H5 override set to: {s1['h5_path']}")
+    except Exception as _e:
+        print(f"[STAGE1][WARN] Failed to prepare Stage-1 context: {_e}")
+    # --- End Stage-1 memory ---
+
+        cfg["prompt_branch"]["inline_text"] = inline_prompt_text
 
     if subcmd == "run":
         ret = _prompt_run(cfg, prompt_path)

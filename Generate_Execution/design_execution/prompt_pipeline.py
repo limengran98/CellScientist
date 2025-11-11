@@ -217,3 +217,14 @@ def run_prompt_pipeline(cfg: Dict[str, Any], spec_path: str) -> Dict[str, Any]:
         "metrics": merged_metrics,
         "report": a,
     }
+
+# === Stage-1 markdown injector (auto-appended) ===
+def _prepend_stage1_markdown_if_any(cfg: Dict[str, Any], nb: 'nbformat.NotebookNode') -> 'nbformat.NotebookNode':
+    try:
+        s1md = (cfg.get('prompt_branch') or {}).get('stage1_markdown') or ''
+        if s1md:
+            cell = nbformat.v4.new_markdown_cell(s1md)
+            nb['cells'] = [cell] + list(nb.get('cells') or [])
+    except Exception as _e:
+        print(f"[PROMPT][WARN] failed to inject Stage-1 markdown: {_e}")
+    return nb
