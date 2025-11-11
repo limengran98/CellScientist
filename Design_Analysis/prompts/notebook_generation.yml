@@ -128,37 +128,73 @@ system_prompt: |
        * **Mechanistic priors in modeling**: incorporate pathway/group priors into feature engineering, hierarchical models, or biologically-informed regularization.
        * **Cross-modal integration**: combine morphology with chemical descriptors/omics using multi-view learning (e.g., CCA, multimodal autoencoders, graph-based fusion).
        * **Generalization & robustness**: explicitly test whether models trained on one plate/dose/compound generalize to unseen conditions, with leakage-safe splits (plate-holdout, dose-stratified).
+     
      - Define tasks & success criteria:
 
-     -  (1) Task Definition
-      Based on the provided data structure:
+      task_definition:
 
-      Input
-      * Perturbation (smiles): The drug’s SMILES string.
-        - Chemical Featurization (REQUIRED): Use RDKit to compute ECFP4 (Morgan) fingerprints
-          with radius = 2 and n_bits = 2048 (useChirality = True).
-      * Dose (dose): The concentration of the applied drug.
-      * Baseline Context (morphology_pre): Baseline morphological profile matrix (N, F) of control (DMSO) cells.
-
-      Output
-      * Predicted Profile (morphology_post): Predicted morphological feature matrix (N, F) after treatment.
-
-      Context / Grouping Variable
-      * plate_id: Use for robust, plate-level data splitting (e.g., strict holdout by plate) to ensure batch generalization.
-
-
-     - (2) Core Evaluation Scenarios
-      * The success of the model will be judged not just on fitting known data, but on its ability to generalize. Evaluation must be performed on rigorously separated datasets reflecting:
-      * Unseen Compounds: Predicting the morphological effects of novel compounds (new smiles) not present during training.
-      * Unseen Contexts/Batches: Predicting model performance on new experimental plates (new plate_id) or in the context of different baseline control profiles (unseen morphology_pre).
-
-       Evaluation Metrics:
-       - Mean Squared Error (MSE): Measures the average squared difference between predicted and observed cell morphology profiles
-       - Pearson Correlation Coefficient (PCC): Quantifies linear correlation between predicted and observed morphology profiles
-       - R² (Coefficient of Determination): Represents the proportion of variance in the observed morphology explained by the predicted values
-       - MSE for Differentially Morphological Features (MSE_DM): Same as MSE but computed specifically on morphology features that show significant change after treatment
-       - PCC for Differentially Morphological Features (PCC_DM): Same as PCC but computed specifically on differentially changed morphology features
-       - R² for Differentially Morphological Features (R²_DM): Same as R² but computed specifically on differentially changed morphology features
+        problem_statement: >
+          Predict cellular morphological responses induced by chemical perturbations.
+          The task is formulated as a multi-output regression problem: given a compound,
+          dose level, and baseline cellular morphology, the goal is to predict the
+          post-treatment morphological profile.
+        inputs:
+          compound_structure (smiles):
+            description: SMILES string representing the administered chemical perturbation.
+            role: Encodes molecular identity; later transformed into a vector representation.
+          dose:
+            description: Drug concentration applied to cells.
+            role: Modulates strength of phenotypic response.
+          morphology_pre:
+            description: Baseline morphological profile of control (untreated) cells.
+            shape: (N, F)
+            role: Provides the cellular state before perturbation.
+        output:
+          morphology_post:
+            description: Morphological profile after compound treatment.
+            shape: (N, F)
+            role: Regression target representing phenotypic response.
+        grouping_variable:
+          plate_id:
+            description: Experimental plate identifier.
+            purpose: Enables plate-level data splitting to evaluate batch robustness.
+        formal_task:
+          type: multi_output_regression
+          mapping: >
+            f(compound_structure, dose, morphology_pre) -> morphology_post
+      evaluation_scenarios:
+        unseen_compounds:
+          description: Test on compounds not present in training.
+          goal: Evaluate structural generalization.
+        unseen_batches:
+          description: Test on new plate_id groups.
+          goal: Evaluate robustness to batch/context variation.
+      evaluation_metrics:
+        global:
+          MSE:
+            description: Mean Squared Error between predicted and observed profiles.
+            direction: lower_is_better
+          PCC:
+            description: Pearson Correlation Coefficient across samples.
+            direction: higher_is_better
+          R2:
+            description: Variance explained by predictions relative to ground truth.
+            direction: higher_is_better
+        differential_features:
+          MSE_DM:
+            description: MSE restricted to features significantly changed after perturbation.
+            direction: lower_is_better
+          PCC_DM:
+            description: PCC computed on differentially modulated features only.
+            direction: higher_is_better
+          R2_DM:
+            description: R² computed on differentially modulated features only.
+            direction: higher_is_better
+      Modeling Strategy (Fast & Stable First):
+          Start with simple, well-regularized models before MLP:
+          Ridge Regression (fast, stable, interpretable)
+          Random Forest Regressor (handles nonlinear patterns, robust)
+          Then optionally upgrade to multimodal MLP only if needed, where SMILES-derived embeddings and morphology_pre are combined as joint inputs.
 
      - In code, provide a prototype pipeline skeleton (scikit-learn, XGBoost, or PyTorch) that illustrates how the processed data could be modeled:
        * Baseline: logistic regression or random forest.
