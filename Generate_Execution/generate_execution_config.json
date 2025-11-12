@@ -7,13 +7,13 @@
   },
   "llm": {
     "provider": "yizhan",
-    "model": "claude-sonnet-4-5-20250929",
+    "model": "gpt-5",
     "timeout": 1800
   },
   "providers": {
     "yizhan": {
       "base_url": "https://vip.yi-zhan.top/v1",
-      "model": "gemini-pro-latest",
+      "model": "gpt-5",
       "max_tokens": 30000,
       "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835"
     },
@@ -26,7 +26,7 @@
   },
   "default_provider": "yizhan",
   "experiment": {
-    "primary_metric": "AUROC"
+    "primary_metric": "MSE"
   },
   "literature": {
     "query": "",
