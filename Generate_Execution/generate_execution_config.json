@@ -7,12 +7,12 @@
   },
   "llm": {
     "provider": "yizhan",
-    "model": "gpt-5"
+    "model": "gemini-3-pro-preview-thinking"
   },
   "providers": {
     "yizhan": {
       "base_url": "https://vip.yi-zhan.top/v1",
-      "model": "gpt-5",
+      "model": "gemini-3-pro-preview-thinking",
       "max_tokens": 40000,
       "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835"
     },
@@ -36,6 +36,7 @@
   "prompt_branch": {
     "output_type": "notebook",
     "prompt_file": "prompts/pipeline_prompt.yaml",
+    "idea_file": "idea.json",
     "temperature": 0.5,
     "max_tokens": 40000,
     "retries": 3,

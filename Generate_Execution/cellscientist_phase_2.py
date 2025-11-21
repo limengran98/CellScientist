@@ -3,10 +3,10 @@
 import warnings
 warnings.filterwarnings("ignore")
 
-import os, json, argparse, re
-from design_execution.report_builder import build_markdown_report
-
+import os, json, argparse, re, glob
 from design_execution.prompt_pipeline import run_prompt_pipeline as _prompt_run
+
+# Try imports
 try:
     from design_execution.prompt_pipeline import prompt_generate as _prompt_generate
     from design_execution.prompt_pipeline import prompt_execute as _prompt_execute
@@ -16,7 +16,6 @@ except Exception:
 
 
 def _expand_vars(obj, env):
-    """Expand ${VAR} placeholders in nested dict/list/str using env."""
     if isinstance(obj, dict):
         return {k: _expand_vars(v, env) for k, v in obj.items()}
     elif isinstance(obj, list):
@@ -25,202 +24,133 @@ def _expand_vars(obj, env):
         return re.sub(r"\$\{(\w+)\}", lambda m: env.get(m.group(1), m.group(0)), obj)
     return obj
 
+# --- 核心修改：增加 enable_idea 控制 ---
+def _resolve_stage1_resources(cfg: dict, enable_idea: bool = False):
+    """
+    Locates HDF5 data. 
+    ONLY if enable_idea is True, locates idea.json and sets STAGE1_IDEA_PATH.
+    """
+    # 1. Get the directory
+    s1_dir = cfg.get("paths", {}).get("stage1_analysis_dir")
+    if not s1_dir:
+        print("[SETUP][WARN] 'stage1_analysis_dir' not defined in config.")
+        return
+
+    # 2. Locate HDF5 (Always needed)
+    h5_path = None
+    cand_h5 = os.path.join(s1_dir, "REFERENCE_DATA.h5")
+    if os.path.exists(cand_h5):
+        h5_path = os.path.abspath(cand_h5)
+    else:
+        # Fallback: any .h5
+        h5s = glob.glob(os.path.join(s1_dir, "*.h5"))
+        if h5s:
+            h5_path = os.path.abspath(h5s[0])
+    
+    if h5_path:
+        os.environ["STAGE1_H5_PATH"] = h5_path
+        print(f"[SETUP] Found Data Anchor: {h5_path}")
+    else:
+        print(f"[SETUP][WARN] No HDF5 file found in {s1_dir}")
+        return
+
+    # 3. Locate Idea JSON (Conditional)
+    if enable_idea:
+        # We look in the SAME directory as the found H5 file
+        idea_path = os.path.join(os.path.dirname(h5_path), "idea.json")
+        
+        if os.path.exists(idea_path):
+            os.environ["STAGE1_IDEA_PATH"] = idea_path
+            print(f"[SETUP] Found Idea File:  {idea_path}")
+        else:
+            # Fallback to config path
+            custom_idea = cfg.get("prompt_branch", {}).get("idea_file")
+            if custom_idea and os.path.exists(custom_idea):
+                 os.environ["STAGE1_IDEA_PATH"] = os.path.abspath(custom_idea)
+                 print(f"[SETUP] Using Config Idea File: {os.environ['STAGE1_IDEA_PATH']}")
+            else:
+                 print(f"[SETUP][WARN] --use-idea is ON, but 'idea.json' NOT found alongside H5.")
+    else:
+        # Ensure var is cleared if not using idea
+        if "STAGE1_IDEA_PATH" in os.environ:
+            del os.environ["STAGE1_IDEA_PATH"]
+        print("[SETUP] Idea-Driven Mode: OFF")
+
+# ---------------------------------
 
 def cmd_prompt_defined(
-    cfg: dict,
-    *,
-    prompt_path: str | None = None,
-    subcmd: str = "run",
-    use_baseline: bool = False,
-    use_stage1_ref: bool = False,
-    baseline_id: int = 0,
-    inline_prompt_text: str | None = None,
+    cfg: dict, 
+    *, 
+    prompt_path: str | None = None, 
+    subcmd: str = "run", 
+    use_idea: bool = False,  # <--- 接收参数
+    **kwargs
 ):
     print(f"\n[INFO] === Starting prompt phase: {subcmd} ===")
-    prompt_path = (
-        prompt_path
-        or (cfg.get("prompt_branch") or {}).get("prompt_file")
-        or "prompts/pipeline_prompt.yaml"
-    )
+    
+    # 1. Load Resources (Controlled)
+    _resolve_stage1_resources(cfg, enable_idea=use_idea)
+    
+    prompt_path = (prompt_path or (cfg.get("prompt_branch") or {}).get("prompt_file") or "prompts/pipeline_prompt.yaml")
     print(f"[INFO] Using prompt file: {prompt_path}")
-
-    cfg.setdefault("prompt_branch", {})
-    cfg["prompt_branch"]["use_baseline"] = bool(use_baseline)
-    cfg["prompt_branch"]["use_stage1_ref"] = bool(use_stage1_ref)
-    cfg["prompt_branch"]["baseline_id"] = int(baseline_id)
-    if inline_prompt_text:
-        cfg["prompt_branch"]["inline_text"] = inline_prompt_text
-    # --- Stage-1 memory inheritance ---
-    try:
-        from design_execution.stage1_adapter import prepare_stage1_context
-        s1 = prepare_stage1_context(cfg, enable=bool(cfg["prompt_branch"]["use_stage1_ref"]))
-        if s1:
-            # store markdown for later insertion into the generated notebook
-            cfg["prompt_branch"]["stage1_markdown"] = s1.get("markdown", "")
-            # Ensure env var so prompt YAML can reference ${STAGE1_H5_PATH}
-            if s1.get("h5_path"):
-                os.environ["STAGE1_H5_PATH"] = s1["h5_path"]
-                print(f"[STAGE1] H5 override set to: {s1['h5_path']}")
-    except Exception as _e:
-        print(f"[STAGE1][WARN] Failed to prepare Stage-1 context: {_e}")
-    # --- End Stage-1 memory ---
 
     if subcmd == "run":
         ret = _prompt_run(cfg, prompt_path)
-
-        trial_dir = ret["trial_dir"]
-        report = ret.get("report") or {}
-        exp_path = report.get("experiment_report_path")
-
-        if exp_path:
-            print(f"[INFO] Experiment report written to: {exp_path}")
-        else:
-            print("[INFO] No experiment_report.md was generated (missing or invalid metrics.json?).")
-
-        summary_path = os.path.join(trial_dir, "analysis_summary.json")
-        if os.path.exists(summary_path):
-            print(f"[INFO] Analysis summary written to: {summary_path}")
-        else:
-            print("[WARN] analysis_summary.json not found after analyze phase.")
-
-        print(f"[INFO] Trial directory: {trial_dir}")
+        print(f"[INFO] Trial directory: {ret['trial_dir']}")
         print("[INFO] === Prompt phase completed ===\n")
         return ret
 
-
-    if subcmd == "generate" and _prompt_generate:
-        return _prompt_generate(cfg, prompt_path)
-    elif subcmd == "execute" and _prompt_execute:
-        return _prompt_execute(cfg)
-    elif subcmd == "analyze" and _prompt_analyze:
-        return _prompt_analyze(cfg)
-    else:
-        raise ValueError(f"Unknown or unavailable prompt subcmd: {subcmd}")
-
+    if subcmd == "generate": return _prompt_generate(cfg, prompt_path)
+    elif subcmd == "execute": return _prompt_execute(cfg)
+    elif subcmd == "analyze": return _prompt_analyze(cfg)
+    else: raise ValueError(f"Unknown subcmd: {subcmd}")
 
 def main():
     print("\n[INFO] === Pipeline started ===")
-    ap = argparse.ArgumentParser(description="CellScientist prompt-only pipeline")
-    ap.add_argument("--config", required=True, help="path to config JSON")
-    ap.add_argument("--pipeline-mode", choices=["prompt"], default="prompt", help="compat only; always 'prompt'")
-
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", required=True)
+    ap.add_argument("--pipeline-mode", default="prompt")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
+    # Common args helper
+    def add_common(p):
+        p.add_argument("--prompt-file", type=str, default="prompts/pipeline_prompt.yaml")
+        p.add_argument("--use-idea", action="store_true", help="Enable Idea-Driven Generation (reads idea.json)") # <--- 新增
 
-    ap_r = sub.add_parser("run", help="One-command: generate → execute → analyze (prompt pipeline)")
-    ap_r.add_argument("--baseline-id", type=int, default=0, help="which baseline ipynb to reference if enabled")
-    ap_r.add_argument("--with-lit", action="store_true", help="enable literature search & synthesis (if supported)")
-    ap_r.add_argument("--which", choices=["baseline", "patched", "both"], default="both",
-                      help="which notebook(s) to execute (consumed in prompt pipeline if supported)")
-    ap_r.add_argument("--prompt-file", type=str, default="prompts/pipeline_prompt.yaml",
-                      help="path to a plain text/yaml prompt file")
-    ap_r.add_argument("--prompt-text", type=str, default=None,
-                      help="inline text prompt (overrides file if given)")
-
-    group_b = ap_r.add_mutually_exclusive_group()
-    group_b.add_argument("--use-baseline", dest="use_baseline", action="store_true",
-                         help="include baseline notebook as prior context for prompt pipeline")
-    ap_r.set_defaults(use_baseline=False)
-
-    group_s1 = ap_r.add_mutually_exclusive_group()
-    group_s1.add_argument("--use-stage1-ref", dest="use_stage1_ref", action="store_true",
-                          help="include Stage-1 analysis notebooks summary as context")
-    ap_r.set_defaults(use_stage1_ref=True)
-
-
-    ap_pg = sub.add_parser("generate", help="Prompt pipeline: generate only")
-    ap_pg.add_argument("--baseline-id", type=int, default=0)
-    ap_pg.add_argument("--prompt-file", type=str, default="prompts/pipeline_prompt.yaml")
-    ap_pg.add_argument("--prompt-text", type=str, default=None)
-    group_gb = ap_pg.add_mutually_exclusive_group()
-    group_gb.add_argument("--use-baseline", dest="use_baseline", action="store_true")
-    group_gb.add_argument("--no-baseline", dest="use_baseline", action="store_false")
-    ap_pg.set_defaults(use_baseline=False)
-    group_gs1 = ap_pg.add_mutually_exclusive_group()
-    group_gs1.add_argument("--use-stage1-ref", dest="use_stage1_ref", action="store_true")
-    group_gs1.add_argument("--no-stage1-ref", dest="use_stage1_ref", action="store_false")
-    ap_pg.set_defaults(use_stage1_ref=True)
-
-    ap_pe = sub.add_parser("execute", help="Prompt pipeline: execute only")
-    ap_pe.add_argument("--baseline-id", type=int, default=0)
-    group_eb = ap_pe.add_mutually_exclusive_group()
-    group_eb.add_argument("--use-baseline", dest="use_baseline", action="store_true")
-    group_eb.add_argument("--no-baseline", dest="use_baseline", action="store_false")
-    ap_pe.set_defaults(use_baseline=False)
-    group_es1 = ap_pe.add_mutually_exclusive_group()
-    group_es1.add_argument("--use-stage1-ref", dest="use_stage1_ref", action="store_true")
-    group_es1.add_argument("--no-stage1-ref", dest="use_stage1_ref", action="store_false")
-    ap_pe.set_defaults(use_stage1_ref=True)
-
-    ap_pa = sub.add_parser("analyze", help="Prompt pipeline: analyze only")
-    ap_pa.add_argument("--baseline-id", type=int, default=0)
-    group_ab = ap_pa.add_mutually_exclusive_group()
-    group_ab.add_argument("--use-baseline", dest="use_baseline", action="store_true")
-    group_ab.add_argument("--no-baseline", dest="use_baseline", action="store_false")
-    ap_pa.set_defaults(use_baseline=False)
-    group_as1 = ap_pa.add_mutually_exclusive_group()
-    group_as1.add_argument("--use-stage1-ref", dest="use_stage1_ref", action="store_true")
-    group_as1.add_argument("--no-stage1-ref", dest="use_stage1_ref", action="store_false")
-    ap_pa.set_defaults(use_stage1_ref=True)
+    ap_r = sub.add_parser("run")
+    add_common(ap_r)
+    # Legacy args (ignored but kept for compat)
+    ap_r.add_argument("--baseline-id", type=int, default=0)
+    ap_r.add_argument("--with-lit", action="store_true")
+    ap_r.add_argument("--which", default="both")
+    ap_r.add_argument("--prompt-text", type=str, default=None)
+    ap_r.add_argument("--use-baseline", action="store_true")
+    ap_r.add_argument("--use-stage1-ref", action="store_true")
+    
+    ap_g = sub.add_parser("generate")
+    add_common(ap_g)
+    
+    sub.add_parser("execute")
+    sub.add_parser("analyze")
 
     args = ap.parse_args()
-
+    
     cfg_text = open(args.config, "r", encoding="utf-8").read()
     cfg = json.loads(cfg_text)
     env = dict(os.environ); env.update(cfg)
     cfg = _expand_vars(cfg, env)
 
-    print("[INFO] Pipeline mode: prompt")
+    # Get use_idea flag safely
+    use_idea = getattr(args, "use_idea", False)
 
-    if args.cmd == "run":
-        ret = cmd_prompt_defined(
-            cfg,
-            prompt_path=args.prompt_file,
-            subcmd="run",
-            use_baseline=args.use_baseline,
-            use_stage1_ref=args.use_stage1_ref,
-            baseline_id=args.baseline_id,
-            inline_prompt_text=args.prompt_text,
-        )
-        print("[INFO] Trial dir:", ret.get("trial_dir", ""))
-        print("[INFO] === Pipeline finished successfully ===\n")
-        return
-
-    if args.cmd == "generate":
-        ret = cmd_prompt_defined(
-            cfg,
-            prompt_path=args.prompt_file,
-            subcmd="generate",
-            use_baseline=args.use_baseline,
-            use_stage1_ref=args.use_stage1_ref,
-            baseline_id=args.baseline_id,
-            inline_prompt_text=args.prompt_text,
-        )
-        print("[INFO] === Pipeline finished successfully ===\n")
-        return
-
-    if args.cmd == "execute":
-        ret = cmd_prompt_defined(
-            cfg,
-            subcmd="execute",
-            use_baseline=args.use_baseline,
-            use_stage1_ref=args.use_stage1_ref,
-            baseline_id=args.baseline_id,
-        )
-        print("[INFO] === Pipeline finished successfully ===\n")
-        return
-
-    if args.cmd == "analyze":
-        ret = cmd_prompt_defined(
-            cfg,
-            subcmd="analyze",
-            use_baseline=args.use_baseline,
-            use_stage1_ref=args.use_stage1_ref,
-            baseline_id=args.baseline_id,
-        )
-        print("[INFO] === Pipeline finished successfully ===\n")
-        return
-
+    if args.cmd == "run": 
+        cmd_prompt_defined(cfg, prompt_path=args.prompt_file, subcmd="run", use_idea=use_idea)
+    elif args.cmd == "generate": 
+        cmd_prompt_defined(cfg, prompt_path=args.prompt_file, subcmd="generate", use_idea=use_idea)
+    elif args.cmd == "execute": 
+        cmd_prompt_defined(cfg, subcmd="execute")
+    elif args.cmd == "analyze": 
+        cmd_prompt_defined(cfg, subcmd="analyze")
 
 if __name__ == "__main__":
     main()

@@ -1,15 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 Prompt-defined pipeline orchestrator (Notebook mode).
-
-Phases:
-  1) prompt_generate -> build notebook from pipeline_prompt.yaml (Stage-1 ref prepended as markdown if enabled)
-  2) prompt_execute  -> run notebook with auto-fix
-  3) prompt_analyze  -> read-only analysis (no re-execution)
 """
 
 from __future__ import annotations
-import os, json, glob, datetime as _dt
+import os, json, glob, datetime as _dt, shutil
 from typing import Any, Dict, Optional
 import nbformat
 
@@ -47,8 +42,7 @@ def _recursive_key_check(obj: Any, target_key: str) -> bool:
     Return True if target_key exists anywhere in the nested dict/list structure.
     """
     if isinstance(obj, dict):
-        if target_key in obj:
-            return True
+        if target_key in obj: return True
         return any(_recursive_key_check(v, target_key) for v in obj.values())
     elif isinstance(obj, list):
         return any(_recursive_key_check(v, target_key) for v in obj)
@@ -65,7 +59,9 @@ def prompt_generate(cfg: Dict[str, Any], spec_path: str) -> Dict[str, Any]:
     out_root = _prompt_out_root(cfg)
     os.makedirs(os.path.join(out_root, "prompt"), exist_ok=True)
 
+    # Note: generate_notebook_from_prompt creates research_strategy.md in debug_dir if ideas are used
     nb, _user_prompt = generate_notebook_from_prompt(cfg, spec_path, debug_dir)
+    
     ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     tdir = os.path.join(out_root, "prompt", f"prompt_run_{ts}")
     os.makedirs(tdir, exist_ok=True)
@@ -73,6 +69,15 @@ def prompt_generate(cfg: Dict[str, Any], spec_path: str) -> Dict[str, Any]:
     nb_path = os.path.join(tdir, "notebook_prompt.ipynb")
     with open(nb_path, "w", encoding="utf-8") as f:
         nbformat.write(nb, f)
+        
+    # --- ADDED: Conditional Strategy Copy ---
+    # Only copy if the strategy file was actually generated (Idea Mode ON)
+    strategy_src = os.path.join(debug_dir, "research_strategy.md")
+    if os.path.exists(strategy_src):
+        shutil.copy(strategy_src, os.path.join(tdir, "research_strategy.md"))
+    # If not exists (Freestyle Mode), do nothing, no error.
+    # ----------------------------------------
+
     return {"trial_dir": tdir, "artifact": nb_path}
 
 
@@ -103,7 +108,7 @@ def prompt_execute(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict
         ipynb_path=nb_path,
         out_exec_path=out_exec,
         workdir=tdir,
-        timeout=timeout,
+        timeout=timeout, 
         max_fix_rounds=max_fix_rounds,
         verbose=True,
         phase_cfg=cfg,
@@ -130,8 +135,8 @@ def prompt_execute(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict
             viz = write_hypergraph_viz(tdir, nb_path, fmt=str(exec_cfg.get("viz_format", "mermaid")))
             if viz:
                 print(f"[PROMPT] hypergraph viz written: {viz}")
-    except Exception as e:
-        print(f"[PROMPT][WARN] hypergraph viz generation failed: {e}")
+    except Exception:
+        pass
 
     return {"trial_dir": tdir, "metrics": metrics, "exec_notebook": final_exec_path}
 
@@ -162,9 +167,7 @@ def prompt_analyze(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict
     }
 
     if not os.path.exists(metrics_path):
-        reason = f"metrics.json not found in {tdir}; analyze is read-only and will NOT re-execute."
-        print(f"[WARN] {reason}")
-        report["reason"] = "missing_metrics_json"
+        print(f"[WARN] metrics.json not found in {tdir}.")
         # Write minimal summary
         try:
             with open(os.path.join(tdir, "analysis_summary.json"), "w", encoding="utf-8") as f:
@@ -177,30 +180,12 @@ def prompt_analyze(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict
         with open(metrics_path, "r", encoding="utf-8") as f:
             metrics_obj = json.load(f)
     except Exception as e:
-        reason = f"failed to read/parse metrics.json: {e}"
-        print(f"[WARN] {reason}")
-        report["reason"] = "invalid_metrics_json"
-        try:
-            with open(os.path.join(tdir, "analysis_summary.json"), "w", encoding="utf-8") as f:
-                json.dump(report, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
-        return report
-
-    if not isinstance(metrics_obj, dict) or not metrics_obj:
-        reason = "metrics.json loaded but empty or not a dict; analyze will NOT re-execute."
-        print(f"[WARN] {reason}")
-        report["reason"] = "empty_or_invalid_metrics"
-        try:
-            with open(os.path.join(tdir, "analysis_summary.json"), "w", encoding="utf-8") as f:
-                json.dump(report, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        print(f"[WARN] Failed to read metrics: {e}")
         return report
 
     report["has_metrics"] = True
-    report["metrics_keys"] = list(metrics_obj.keys())
     report["metrics"] = metrics_obj
+    report["metrics_keys"] = list(metrics_obj.keys())
     report["reason"] = "ok"
     
     # --- Check Primary Metric (Recursive) ---
@@ -227,8 +212,8 @@ def prompt_analyze(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict
         print(f"[INFO] experiment_report.md written to: {exp_path}")
     except Exception as e:
         print(f"[WARN] failed to write experiment_report.md: {e}")
-        import traceback
-        traceback.print_exc()
+        # import traceback
+        # traceback.print_exc()
 
     try:
         with open(os.path.join(tdir, "analysis_summary.json"), "w", encoding="utf-8") as f:
@@ -239,13 +224,7 @@ def prompt_analyze(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict
     return report
 
 
-# ---------- Unified entrypoint ----------
-
 def run_prompt_pipeline(cfg: Dict[str, Any], spec_path: str) -> Dict[str, Any]:
-    """
-    Orchestrate the 3 phases and return outputs:
-      { "trial_dir": ..., "exec_notebook": ..., "metrics": ..., "report": {...} }
-    """
     print("[INFO] === Generating prompt notebook ===")
     g = prompt_generate(cfg, spec_path)
 
@@ -263,14 +242,3 @@ def run_prompt_pipeline(cfg: Dict[str, Any], spec_path: str) -> Dict[str, Any]:
         "metrics": merged_metrics,
         "report": a,
     }
-
-# === Stage-1 markdown injector (auto-appended) ===
-def _prepend_stage1_markdown_if_any(cfg: Dict[str, Any], nb: 'nbformat.NotebookNode') -> 'nbformat.NotebookNode':
-    try:
-        s1md = (cfg.get('prompt_branch') or {}).get('stage1_markdown') or ''
-        if s1md:
-            cell = nbformat.v4.new_markdown_cell(s1md)
-            nb['cells'] = [cell] + list(nb.get('cells') or [])
-    except Exception as _e:
-        print(f"[PROMPT][WARN] failed to inject Stage-1 markdown: {_e}")
-    return nb

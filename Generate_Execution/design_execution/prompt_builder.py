@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-Utilities for building the prompt-defined notebook:
-- YAML reading & env expansion
-- Stage-1 reference summarization (markdown)
-- LLM chat wrapper
-- Converting LLM JSON into a valid nbformat notebook
+Utilities for building the prompt-defined notebook.
+FINAL VERSION:
+1. Robust HTTP Fallback (No "None" errors).
+2. Conditional Strategy Generation (Respects --use-idea flag via env var).
+3. Strict Pathing for idea.json.
 """
 
 from __future__ import annotations
-import os, json, re, glob, time
+import os, json, re, time
 from typing import Any, Dict, List, Tuple, Optional
 from pathlib import Path
 import nbformat
@@ -18,361 +18,206 @@ try:
 except Exception:
     yaml = None
 
-try:
-    from .llm_client import resolve_llm_from_cfg, LLMClient
-except Exception:
-    resolve_llm_from_cfg = None  # type: ignore
-    LLMClient = None  # type: ignore
-
-
 # ---------- YAML & Env ----------
 
 def read_yaml(path: str) -> Dict[str, Any]:
-    """Read YAML; requires PyYAML."""
-    if yaml is None:
-        raise RuntimeError("PyYAML is required to read the prompt spec.")
-    with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    return data or {}
+    if yaml is None: raise RuntimeError("PyYAML is required.")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except Exception as e:
+        print(f"[PROMPT][WARN] Failed to read YAML {path}: {e}")
+        return {}
 
 def expand_env_vars(obj: Any) -> Any:
-    """Recursively expand ${VAR} using current environment variables."""
-    if isinstance(obj, dict):
-        return {k: expand_env_vars(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [expand_env_vars(v) for v in obj]
-    if isinstance(obj, str):
-        return os.path.expandvars(obj)
+    if isinstance(obj, dict): return {k: expand_env_vars(v) for k, v in obj.items()}
+    if isinstance(obj, list): return [expand_env_vars(v) for v in obj]
+    if isinstance(obj, str): return os.path.expandvars(obj)
     return obj
 
-
-# ---------- Stage-1 reference (markdown summary) ----------
-
-def summarize_stage1_ipynb(reference_dir: str, max_cells: int = 20, max_chars: int = 2000) -> str:
-    """
-    Make a lightweight text summary from the first .ipynb under reference_dir.
-    Returns a markdown string (no code execution).
-    """
-    if not reference_dir or not os.path.isdir(reference_dir):
-        return ""
-    cands = sorted(glob.glob(os.path.join(reference_dir, "*.ipynb")))
-    if not cands:
-        return ""
-    try:
-        nb = nbformat.read(cands[0], as_version=4)
-        lines: List[str] = []
-        lines.append("**Light summary extracted from Stage-1 notebook**  \n")
-        for cell in nb.cells[:max_cells]:
-            if cell.cell_type == "markdown":
-                src = (cell.source or "").strip()
-                if src:
-                    lines.append(src[:300])
-            elif cell.cell_type == "code":
-                src = (cell.source or "").strip()
-                if not src:
-                    continue
-                # keep only imports/defs to avoid dumping big code
-                keep = [ln for ln in src.splitlines()
-                        if ln.strip().startswith(("import", "from ", "def ", "class "))]
-                if keep:
-                    lines.append("```python\n" + "\n".join(keep[:20]) + "\n```")
-        text = "\n\n".join(lines)
-        return text[:max_chars]
-    except Exception:
-        return ""
-
-
-def build_stage1_markdown(cfg: Dict[str, Any]) -> str:
-    """
-    Build the markdown block for Stage-1 reference if enabled.
-
-    Toggle precedence:
-      1) cfg['prompt_branch']['use_stage1_ref'] (bool)
-      2) default: True
-    """
-    pb = cfg.get("prompt_branch", {}) or {}
-    use_ref = bool(pb.get("use_stage1_ref", True))
-    if not use_ref:
-        return ""
-    ref_dir = (cfg.get("paths", {}) or {}).get("stage1_analysis_dir", "")
-    md = summarize_stage1_ipynb(ref_dir)
-    if not md:
-        return ""
-    header = "## Experiment & Validation Suggestions (from Stage-1)\n\n"
-    note = "> Note: The following summary is only a **reference** extracted from Stage-1. The pipeline remains driven by `pipeline_prompt.yaml`.\n\n"
-    return header + note + md + "\n"
-
-
-# ---------- LLM wrappers ----------
+# ---------- LLM Wrapper (Robust) ----------
 
 def _strip_code_fences(s: str) -> str:
-    if not isinstance(s, str):
-        return ""
+    if not s: return ""
     s = s.strip()
     if s.startswith("```"):
-        s = re.sub(r"^```(?:json|python)?\s*|\s*```$", "", s, flags=re.I | re.S).strip()
+        s = re.sub(r"^```(?:json|python|markdown)?\s*|\s*```$", "", s, flags=re.I | re.S).strip()
     return s
 
-def chat_text(messages: List[Dict[str, str]],
-              *,
-              cfg: Dict[str, Any],
-              timeout: int,
-              debug_dir: Optional[str] = None,
-              temperature: float = 0.2,
-              max_tokens: int = 20000,
-              retries: int = 2) -> str:
-    """
-    OpenAI-compatible chat using LLMClient if available; otherwise raw HTTP POST.
-    Prints provider/model for easy debugging.
-    """
-    os.makedirs(debug_dir or ".", exist_ok=True)
-    if resolve_llm_from_cfg is None:
-        raise RuntimeError("resolve_llm_from_cfg is unavailable.")
-
-    resolved = resolve_llm_from_cfg(cfg)
-    base_url = resolved["base_url"]
-    api_key = resolved["api_key"]
-    model = resolved["model"]
-
-    print(f"[LLM] provider={resolved.get('provider','?')} model={model} base_url={base_url}")
-
-    if LLMClient is not None:
-        client = LLMClient(model=model, base_url=base_url, api_key=api_key, timeout=timeout)
-        return client.chat(messages,
-                           temperature=float(temperature),
-                           max_tokens=int(max_tokens),
-                           enforce_json=False,
-                           retries=max(int(retries), 1),
-                           debug_dir=debug_dir)
-
-    # Fallback HTTP
+def _robust_http_fallback(messages, api_key, base_url, model, temperature, max_tokens, timeout) -> str:
     import requests
     url = base_url.rstrip("/") + "/chat/completions"
-    last_err = None
-    for i in range(max(1, retries)):
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": model, "messages": messages,
+        "temperature": temperature, "max_tokens": max_tokens, "stream": False
+    }
+    
+    print(f"\n[DEBUG] >>> SENDING TO API ({model})...")
+    
+    max_retries = 3
+    for i in range(max_retries):
         try:
-            resp = requests.post(url, json={
-                "model": model,
-                "messages": messages,
-                "temperature": float(temperature),
-                "max_tokens": int(max_tokens),
-            }, headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            }, timeout=timeout)
-            data = resp.json()
-            try:
-                with open(os.path.join(debug_dir or ".", f"raw_response_try{i+1}.json"),
-                          "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
-            content = (((data.get("choices") or [{}])[0]).get("message") or {}).get("content") or ""
-            if content.strip():
-                return content.strip()
+            resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+            if resp.status_code == 200:
+                data = resp.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                if content: return content
+                print(f"[LLM] Warning: Empty content received. Retrying...")
+            else:
+                print(f"[LLM] HTTP Error {resp.status_code}: {resp.text}")
+                
         except Exception as e:
-            last_err = e
-            time.sleep(1.0)
-    raise RuntimeError(f"LLM call failed after {retries} attempt(s): {last_err}")
+            print(f"[LLM] Connection attempt {i+1} failed: {e}")
+            time.sleep(2)
+            
+    raise RuntimeError("LLM API failed after retries.")
 
+def chat_text(messages, *, cfg, timeout, debug_dir=None, temperature=0.2, max_tokens=20000, retries=2) -> str:
+    provider = cfg.get("llm", {}).get("provider", "openai")
+    prov_cfg = cfg.get("providers", {}).get(provider, {})
+    base_url = cfg.get("llm", {}).get("base_url") or prov_cfg.get("base_url")
+    api_key = cfg.get("llm", {}).get("api_key") or prov_cfg.get("api_key")
+    model = cfg.get("llm", {}).get("model") or prov_cfg.get("model")
 
-# ---------- Notebook assembly ----------
+    return _robust_http_fallback(messages, api_key, base_url, model, temperature, max_tokens, timeout)
 
-def _topo_from_hypergraph(cells_spec: List[Dict[str, Any]],
-                          hypergraph: Dict[str, Any] | None) -> List[str]:
-    """
-    Topological order from hyperedges; fallback to listed order.
-    """
+# ---------- Step 1: Idea & Strategy Logic ----------
+
+def load_ideas_from_env() -> str:
+    """Reads idea.json ONLY if STAGE1_IDEA_PATH is set (i.e., --use-idea was passed)."""
+    idea_path = os.environ.get("STAGE1_IDEA_PATH")
+    if not idea_path or not os.path.exists(idea_path): 
+        return "" # Return empty to signal "No Idea Mode"
+
     try:
-        ids = [c.get("id") for c in (cells_spec or []) if c.get("id")]
-        edges: List[Tuple[str, str]] = []
-        for e in (hypergraph or {}).get("hyperedges", []) or []:
-            head = e.get("head")
-            for t in (e.get("tail") or []):
-                if head in ids and t in ids:
-                    edges.append((t, head))
-        from collections import defaultdict, deque
-        indeg = defaultdict(int); graph = defaultdict(list)
-        for u, v in edges:
-            graph[u].append(v); indeg[v] += 1
-            indeg.setdefault(u, 0)
-        for i in ids:
-            indeg.setdefault(i, 0)
-        q = deque([i for i in ids if indeg[i] == 0])
-        order: List[str] = []
-        while q:
-            u = q.popleft(); order.append(u)
-            for v in graph[u]:
-                indeg[v] -= 1
-                if indeg[v] == 0:
-                    q.append(v)
-        return order if len(order) == len(ids) else ids
-    except Exception:
-        return [c.get("id") for c in (cells_spec or []) if c.get("id")]
+        with open(idea_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        ideas = data.get("ideas", [])
+        if not ideas: return ""
 
-def _wrap_code_to_notebook(code_text: str) -> nbformat.NotebookNode:
-    nb = nbformat.v4.new_notebook()
-    nb.cells = [nbformat.v4.new_code_cell(code_text)]
-    return nb
+        text = ["**Candidate Ideas:**"]
+        for i, idea in enumerate(ideas):
+            text.append(f"{i+1}. {idea.get('title')}: {idea.get('description')}")
+        return "\n".join(text)
+    except: return ""
 
-def _wrap_cells_to_notebook(cells_spec: List[Dict[str, Any]],
-                            hypergraph: Dict[str, Any] | None = None) -> nbformat.NotebookNode:
-    nb = nbformat.v4.new_notebook()
-    nb.metadata.setdefault("execution", {})["mode"] = "cellwise"
-    if hypergraph:
-        nb.metadata["execution"]["hypergraph"] = hypergraph
-
-    md = ["# Generated Notebook (cell-wise)", "", "Subtasks:"]
-    for i, c in enumerate(cells_spec or []):
-        md.append(f"- **{c.get('id','T'+str(i))} — {c.get('name','')}:** {c.get('purpose','')}")
-    nb.cells.append(nbformat.v4.new_markdown_cell("\n".join(md)))
-
-    order = _topo_from_hypergraph(cells_spec, hypergraph)
-    id2cell = {(c.get("id") or f"T{i}"): c for i, c in enumerate(cells_spec or [])}
-    for cid in order:
-        c = id2cell.get(cid) or {}
-        code = c.get("code") or ""
-        cell = nbformat.v4.new_code_cell(code)
-        cell.metadata["subtask"] = {
-            "id": cid,
-            "name": c.get("name"),
-            "purpose": c.get("purpose"),
-            "deps": [t for t in (hypergraph or {}).get("hyperedges", []) if t.get("head") == cid],
-        }
-        nb.cells.append(cell)
-    return nb
-
-
-def prepend_stage1_markdown(nb: nbformat.NotebookNode, stage1_md: str) -> nbformat.NotebookNode:
-    """
-    Prepend a markdown cell with Stage-1 suggestions. No changes if empty.
-    """
-    if not stage1_md:
-        return nb
-    md_cell = nbformat.v4.new_markdown_cell(stage1_md)
-    nb.cells.insert(0, md_cell)
-    return nb
-
-
-def generate_notebook_from_prompt(cfg: Dict[str, Any],
-                                  spec_path: str,
-                                  debug_dir: str) -> Tuple[nbformat.NotebookNode, str]:
-    """
-    Main builder entrypoint. Always returns (notebook, user_prompt) or raises.
-    Behavior:
-      - Read YAML spec (pipeline_prompt.yaml).
-      - Call LLM to produce STRICT JSON for {notebook}|{code}|{cells}+{hypergraph}.
-      - Materialize notebook.
-      - If Stage-1 ref is enabled and available, prepend markdown as the FIRST cell.
-    """
-    os.makedirs(debug_dir, exist_ok=True)
-
-    # Expose dataset_name/repo_root for ${...} expansions in YAML
-    ds_name = (cfg.get("dataset_name")
-               or os.environ.get("dataset_name")
-               or os.environ.get("DATASET_NAME")
-               or "").strip()
-    if ds_name:
-        os.environ["dataset_name"] = ds_name
-        os.environ["DATASET_NAME"] = ds_name
-
-    repo_root = Path(__file__).resolve()
-    while not (repo_root / "data").exists() and repo_root != repo_root.parent:
-        repo_root = repo_root.parent
-    os.environ.setdefault("repo_root", str(repo_root))
-
-    # Read & expand spec
-    spec = expand_env_vars(read_yaml(spec_path))
-
-    # Build messages
-    sys_txt = (spec.get("system") or "").strip() if isinstance(spec, dict) else ""
-    dev_txt = (spec.get("developer") or "").strip() if isinstance(spec, dict) else ""
-    core = {k: v for k, v in spec.items() if k not in ("system", "developer", "user")} if isinstance(spec, dict) else {}
-
-    # User payload (pure YAML dump; Stage-1 is NOT mixed into prompt text)
-    if yaml is not None:
-        usr_txt = yaml.safe_dump(core, allow_unicode=True, sort_keys=False).strip() or "{}"
+def synthesize_strategy(cfg: Dict[str, Any], raw_ideas: str, debug_dir: str) -> str:
+    """Generates strategy document from raw ideas."""
+    strategy_path = os.path.join(debug_dir, "research_strategy.md")
+    
+    # Locate prompt file
+    current_file_dir = Path(__file__).resolve().parent
+    root_dir = current_file_dir.parent
+    prompt_file = root_dir / "prompts" / "idea.yml"
+    
+    if prompt_file.exists():
+        yml_data = read_yaml(str(prompt_file))
+        sys_content = yml_data.get("system", "Act as Lead Architect.")
     else:
-        usr_txt = json.dumps(core, ensure_ascii=False, indent=2)
+        sys_content = "Act as Lead Architect."
 
-    messages = [{"role": "system", "content": (sys_txt or "You are a principal ML scientist. Return STRICT JSON only.")}]
-    if dev_txt:
-        messages.append({"role": "system", "content": "Developer instructions:\n" + dev_txt})
-    messages.append({"role": "user", "content": usr_txt})
-
-    # LLM params
-    pb = cfg.get("prompt_branch", {}) or {}
-    timeout = int(pb.get("timeout", cfg.get("llm", {}).get("timeout", 1200)))
-    raw_text_1 = chat_text(messages,
-                           cfg=cfg,
-                           timeout=timeout,
-                           debug_dir=debug_dir,
-                           temperature=float(pb.get("temperature", 0.2)),
-                           max_tokens=int(pb.get("max_tokens", 20000)),
-                           retries=int(pb.get("retries", 2)))
-    with open(os.path.join(debug_dir, "llm_raw_text_r1.txt"), "w", encoding="utf-8") as f:
-        f.write(raw_text_1 or "")
-    cleaned = _strip_code_fences(raw_text_1)
-
-    # Parse first attempt
-    nb_json = None
+    user_prompt = f"Here are the available ideas:\n{raw_ideas}\n\nWrite the Strategy Summary."
+    
+    print("\n[PROMPT] 🧠 Synthesizing Research Strategy...")
     try:
-        nb_json = json.loads(cleaned) if cleaned else None
-    except Exception:
-        nb_json = None
-
-    # If missing/invalid JSON, force STRICT-JSON retry
-    if not nb_json:
-        hard_rule = (
-            "Return STRICT JSON only with one of these keys:\n"
-            "  1) {\"notebook\": <nbformat v4 JSON>}\n"
-            "  2) {\"code\": \"<python script>\"}\n"
-            "  3) {\"cells\": [...], \"hypergraph\": {...}}\n"
-            "No markdown, no backticks, no extra commentary."
+        # 1000 tokens limit as requested
+        strategy = chat_text(
+            [{"role": "system", "content": sys_content}, {"role": "user", "content": user_prompt}],
+            cfg=cfg, timeout=600, debug_dir=debug_dir, temperature=0.7, max_tokens=1000 
         )
-        messages2 = list(messages) + [{"role": "system", "content": hard_rule}]
-        raw_text_2 = chat_text(messages2,
-                               cfg=cfg,
-                               timeout=timeout,
-                               debug_dir=debug_dir,
-                               temperature=float(pb.get("temperature", 0.2)),
-                               max_tokens=int(pb.get("max_tokens", 20000)),
-                               retries=max(1, int(pb.get("retries", 2)) - 1))
-        with open(os.path.join(debug_dir, "llm_raw_text_r2.txt"), "w", encoding="utf-8") as f:
-            f.write(raw_text_2 or "")
-        cleaned2 = _strip_code_fences(raw_text_2)
-        try:
-            nb_json = json.loads(cleaned2)
-        except Exception as e2:
-            # As a last resort, if it's plain code, wrap it
-            if cleaned2 and not cleaned2.lstrip().startswith("{"):
-                nb = _wrap_code_to_notebook(cleaned2)
-                stage1_md = build_stage1_markdown(cfg)
-                return prepend_stage1_markdown(nb, stage1_md), usr_txt
-            with open(os.path.join(debug_dir, "raw_unparsed.txt"), "w", encoding="utf-8") as fdbg:
-                fdbg.write(raw_text_1 or ""); fdbg.write("\n\n===== SECOND ROUND =====\n\n"); fdbg.write(raw_text_2 or "")
-            raise RuntimeError(f"Notebook JSON parse failed: {e2}")
+        with open(strategy_path, "w", encoding="utf-8") as f: f.write(strategy)
+        print(f"[PROMPT] ✅ Strategy saved to: {strategy_path}")
+        return strategy
+    except Exception as e:
+        print(f"[PROMPT][ERROR] Strategy Synthesis Failed: {e}")
+        return ""
 
-    # Build notebook from decoded JSON
-    nb: Optional[nbformat.NotebookNode] = None
+# ---------- Step 2: Notebook Generation ----------
+
+def _wrap_cells_to_notebook(cells_spec: List[Dict[str, Any]]) -> nbformat.NotebookNode:
+    nb = nbformat.v4.new_notebook()
+    for c in cells_spec:
+        nb.cells.append(nbformat.v4.new_code_cell(c.get("code", "")))
+    return nb
+
+def generate_notebook_from_prompt(cfg: Dict[str, Any], spec_path: str, debug_dir: str) -> Tuple[nbformat.NotebookNode, str]:
+    os.makedirs(debug_dir, exist_ok=True)
+    
+    # 1. Attempt to Load Ideas
+    raw_ideas = load_ideas_from_env()
+    strategy_md = ""
+    
+    # 2. Load Technical Spec
+    spec = expand_env_vars(read_yaml(spec_path))
+    sys_txt = spec.get("system", "")
+    spec_dump = yaml.safe_dump({k:v for k,v in spec.items() if k!='system'}, sort_keys=False)
+
+    # 3. Branching Logic: Strategy vs Freestyle
+    if raw_ideas:
+        # -- MODE: IDEA DRIVEN --
+        strategy_md = synthesize_strategy(cfg, raw_ideas, debug_dir)
+        if strategy_md:
+            full_user_content = f"""
+================================================================================
+# PART 1: RESEARCH STRATEGY (MANDATORY IMPLEMENTATION)
+================================================================================
+**INSTRUCTION**: You are the Lead Engineer. Implement the model described below.
+
+{strategy_md}
+
+================================================================================
+# PART 2: TECHNICAL SPECIFICATION
+================================================================================
+{spec_dump}
+"""
+            print("[PROMPT] 💻 Generating Code (Strategy-Driven)...")
+        else:
+            # Fallback if synthesis failed but ideas existed
+            full_user_content = f"# TECHNICAL SPECIFICATION\n{spec_dump}"
+            print("[PROMPT] 💻 Generating Code (Fallback to Freestyle)...")
+    else:
+        # -- MODE: FREESTYLE (No --use-idea or no file) --
+        full_user_content = f"""
+================================================================================
+# TECHNICAL SPECIFICATION
+================================================================================
+**INSTRUCTION**: Design a high-performance model based on your expert judgement.
+Follow these rules strictly:
+
+{spec_dump}
+"""
+        print("[PROMPT] 💻 Generating Code (Freestyle/No-Idea)...")
+
+    messages = [{"role": "system", "content": sys_txt}, {"role": "user", "content": full_user_content}]
+    
+    # 4. Generate Code
+    pb = cfg.get("prompt_branch", {})
+    try:
+        raw_text = chat_text(
+            messages, cfg=cfg, timeout=1200, debug_dir=debug_dir, 
+            temperature=float(pb.get("temperature", 0.4)), 
+            max_tokens=int(pb.get("max_tokens", 40000))
+        )
+        cleaned = _strip_code_fences(raw_text)
+        nb_json = json.loads(cleaned)
+    except Exception as e:
+        raise RuntimeError(f"Notebook Generation Failed: {e}")
+
+    # 5. Build Notebook
+    nb = nbformat.v4.new_notebook()
+    cells = []
     if isinstance(nb_json, dict):
-        if "notebook" in nb_json and isinstance(nb_json["notebook"], dict):
-            try:
-                nb = nbformat.from_dict(nb_json["notebook"])
-            except Exception:
-                nb = nbformat.v4.new_notebook()
-                nb.cells = [nbformat.v4.new_code_cell("# Failed to parse provided notebook")]
-        elif "cells" in nb_json and isinstance(nb_json["cells"], list):
-            nb = _wrap_cells_to_notebook(nb_json["cells"], nb_json.get("hypergraph"))
-        elif "code" in nb_json and isinstance(nb_json["code"], str):
-            nb = _wrap_code_to_notebook(nb_json["code"])
+        if "cells" in nb_json: cells = nb_json["cells"]
+        elif "notebook" in nb_json: cells = nb_json["notebook"].get("cells", [])
+    elif isinstance(nb_json, list): # Handle edge case where LLM returns list
+        cells = nb_json
 
-    if nb is None:
-        # Try full nbformat dict
-        try:
-            nb = nbformat.from_dict(nb_json)
-            if getattr(nb, "nbformat", 4) != 4:
-                raise RuntimeError(f"nbformat must be 4, got {getattr(nb, 'nbformat', None)}")
-        except Exception as e:
-            raise RuntimeError(f"Invalid notebook format: {e}")
-    return nb, usr_txt
+    for c in cells:
+        nb.cells.append(nbformat.v4.new_code_cell(c.get("code", "")))
+        
+    # Only inject Strategy Cell if we actually have one
+    if strategy_md:
+        nb.cells.insert(0, nbformat.v4.new_markdown_cell(f"# 🧠 Research Strategy\n\n{strategy_md}"))
+    
+    return nb, full_user_content
