@@ -6,8 +6,6 @@ Phases:
   1) prompt_generate -> build notebook from pipeline_prompt.yaml (Stage-1 ref prepended as markdown if enabled)
   2) prompt_execute  -> run notebook with auto-fix
   3) prompt_analyze  -> read-only analysis (no re-execution)
-
-This keeps previous behavior and only adds Stage-1 markdown as the first cell (when enabled).
 """
 
 from __future__ import annotations
@@ -22,11 +20,13 @@ try:
     from .prompt_builder import generate_notebook_from_prompt
     from .prompt_viz import write_hypergraph_viz
     from .nb_autofix import execute_with_autofix
+    from .experiment_report import write_experiment_report
 except Exception:
-    # Fallback for relative runs
-    from prompt_builder import generate_notebook_from_prompt  # type: ignore
-    from prompt_viz import write_hypergraph_viz  # type: ignore
-    from nb_autofix import execute_with_autofix  # type: ignore
+    # Fallback for running without package context
+    from prompt_builder import generate_notebook_from_prompt
+    from prompt_viz import write_hypergraph_viz
+    from nb_autofix import execute_with_autofix
+    from experiment_report import write_experiment_report
 
 
 # ---------- Output roots ----------
@@ -38,6 +38,21 @@ def _latest_prompt_dir(cfg: Dict[str, Any]) -> Optional[str]:
     root = os.path.join(_prompt_out_root(cfg), "prompt")
     subs = sorted([p for p in glob.glob(os.path.join(root, "prompt_run_*")) if os.path.isdir(p)])
     return subs[-1] if subs else None
+
+
+# ---------- Helper: Recursive Key Check ----------
+
+def _recursive_key_check(obj: Any, target_key: str) -> bool:
+    """
+    Return True if target_key exists anywhere in the nested dict/list structure.
+    """
+    if isinstance(obj, dict):
+        if target_key in obj:
+            return True
+        return any(_recursive_key_check(v, target_key) for v in obj.values())
+    elif isinstance(obj, list):
+        return any(_recursive_key_check(v, target_key) for v in obj)
+    return False
 
 
 # ---------- Phases ----------
@@ -76,9 +91,10 @@ def prompt_execute(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict
     exec_cfg = (cfg.get("exec") or {})
     timeout = int(exec_cfg.get("timeout_seconds", 1800))
     max_fix_rounds = int(exec_cfg.get("max_fix_rounds", 1))
+    # max_cell_retries is kept for config compatibility
     max_cell_retries = int(exec_cfg.get("max_cell_retries", 2))
 
-    print(f"[PROMPT] exec config -> timeout_seconds={timeout}, max_fix_rounds={max_fix_rounds}, max_cell_retries={max_cell_retries}")
+    print(f"[PROMPT] exec config -> timeout_seconds={timeout}, max_fix_rounds={max_fix_rounds}")
     print(f"[PROMPT] trial_dir={tdir}")
     print(f"[PROMPT] notebook={nb_path}")
 
@@ -120,29 +136,38 @@ def prompt_execute(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict
     return {"trial_dir": tdir, "metrics": metrics, "exec_notebook": final_exec_path}
 
 
-def prompt_analyze(cfg: Dict[str, Any], trial_dir: str) -> Dict[str, Any]:
+def prompt_analyze(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict[str, Any]:
     """
     Read-only analyze phase:
       - Do NOT execute or auto-fix here.
-      - If metrics.json is missing / invalid / empty, print the reason and return a report without metrics.
+      - Checks for metrics.json.
+      - Writes experiment_report.md (using LLM if configured).
     """
-    print("\n[INFO] === Analyzing results (read-only) ===")
-    metrics_path = os.path.join(trial_dir, "metrics.json")
+    # --- FIX: Auto-detect latest dir if not provided ---
+    tdir = trial_dir or _latest_prompt_dir(cfg)
+    if not tdir:
+        raise RuntimeError("No prompt trial found to analyze (and none provided).")
+    
+    print(f"\n[INFO] === Analyzing results (read-only) | Trial: {tdir} ===")
+    metrics_path = os.path.join(tdir, "metrics.json")
 
     report: Dict[str, Any] = {
-        "trial_dir": trial_dir,
+        "trial_dir": tdir,
         "has_metrics": False,
         "metrics_keys": [],
         "reason": None,
-        "metrics": {}
+        "metrics": {},
+        "primary_metric": None,
+        "experiment_report_path": None,
     }
 
     if not os.path.exists(metrics_path):
-        reason = f"metrics.json not found in {trial_dir}; analyze is read-only and will NOT re-execute."
+        reason = f"metrics.json not found in {tdir}; analyze is read-only and will NOT re-execute."
         print(f"[WARN] {reason}")
         report["reason"] = "missing_metrics_json"
+        # Write minimal summary
         try:
-            with open(os.path.join(trial_dir, "analysis_summary.json"), "w", encoding="utf-8") as f:
+            with open(os.path.join(tdir, "analysis_summary.json"), "w", encoding="utf-8") as f:
                 json.dump(report, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
@@ -156,7 +181,7 @@ def prompt_analyze(cfg: Dict[str, Any], trial_dir: str) -> Dict[str, Any]:
         print(f"[WARN] {reason}")
         report["reason"] = "invalid_metrics_json"
         try:
-            with open(os.path.join(trial_dir, "analysis_summary.json"), "w", encoding="utf-8") as f:
+            with open(os.path.join(tdir, "analysis_summary.json"), "w", encoding="utf-8") as f:
                 json.dump(report, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
@@ -167,7 +192,7 @@ def prompt_analyze(cfg: Dict[str, Any], trial_dir: str) -> Dict[str, Any]:
         print(f"[WARN] {reason}")
         report["reason"] = "empty_or_invalid_metrics"
         try:
-            with open(os.path.join(trial_dir, "analysis_summary.json"), "w", encoding="utf-8") as f:
+            with open(os.path.join(tdir, "analysis_summary.json"), "w", encoding="utf-8") as f:
                 json.dump(report, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
@@ -177,15 +202,36 @@ def prompt_analyze(cfg: Dict[str, Any], trial_dir: str) -> Dict[str, Any]:
     report["metrics_keys"] = list(metrics_obj.keys())
     report["metrics"] = metrics_obj
     report["reason"] = "ok"
-    print(f"[INFO] Loaded metrics from {metrics_path}: keys={report['metrics_keys']}")
-
+    
+    # --- Check Primary Metric (Recursive) ---
     primary = ((cfg.get("experiment") or {}).get("primary_metric")
                or (cfg.get("improve") or {}).get("primary_metric"))
-    if primary and primary not in metrics_obj:
-        print(f"[WARN] primary metric '{primary}' not found in metrics.json keys.")
+    report["primary_metric"] = primary
+
+    if primary:
+        # Optimized: Deep check instead of shallow check
+        found = _recursive_key_check(metrics_obj, primary)
+        if not found:
+            print(
+                f"[WARN] Primary metric '{primary}' NOT FOUND anywhere in metrics.json! "
+                "Experiment report may be incomplete."
+            )
+        else:
+            print(f"[INFO] Primary metric '{primary}' found in metrics data.")
+
+    # --- Generate Report ---
+    try:
+        # Passed 'cfg' to support LLM-based reporting
+        exp_path = write_experiment_report(tdir, metrics_obj, cfg, primary_metric=primary)
+        report["experiment_report_path"] = exp_path
+        print(f"[INFO] experiment_report.md written to: {exp_path}")
+    except Exception as e:
+        print(f"[WARN] failed to write experiment_report.md: {e}")
+        import traceback
+        traceback.print_exc()
 
     try:
-        with open(os.path.join(trial_dir, "analysis_summary.json"), "w", encoding="utf-8") as f:
+        with open(os.path.join(tdir, "analysis_summary.json"), "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
     except Exception:
         pass

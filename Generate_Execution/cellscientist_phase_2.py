@@ -65,45 +65,28 @@ def cmd_prompt_defined(
         print(f"[STAGE1][WARN] Failed to prepare Stage-1 context: {_e}")
     # --- End Stage-1 memory ---
 
-
-    # --- Stage-1 memory inheritance ---
-    try:
-        from design_execution.stage1_adapter import prepare_stage1_context
-        s1 = prepare_stage1_context(cfg, enable=bool(cfg["prompt_branch"]["use_stage1_ref"]))
-        if s1:
-            # store markdown for later insertion into the generated notebook
-            cfg["prompt_branch"]["stage1_markdown"] = s1.get("markdown", "")
-            # Ensure env var so prompt YAML can reference ${STAGE1_H5_PATH}
-            if s1.get("h5_path"):
-                os.environ["STAGE1_H5_PATH"] = s1["h5_path"]
-                print(f"[STAGE1] H5 override set to: {s1['h5_path']}")
-    except Exception as _e:
-        print(f"[STAGE1][WARN] Failed to prepare Stage-1 context: {_e}")
-    # --- End Stage-1 memory ---
-
-        cfg["prompt_branch"]["inline_text"] = inline_prompt_text
-
     if subcmd == "run":
         ret = _prompt_run(cfg, prompt_path)
-        try:
-            from design_execution.evaluator import record_metrics
-            record_metrics(ret["trial_dir"], ret.get("metrics", {}))
-            print(f"[INFO] Metrics recorded for trial: {ret['trial_dir']}")
-        except Exception:
-            print("[INFO] Metrics recording skipped (not available).")
-        try:
-            report_path = build_markdown_report(
-                ret["trial_dir"],
-                bdir=cfg["paths"].get("baseline_source_dir", ""),
-                report_dir=os.path.join(cfg["paths"]["design_execution_root"], "reports"),
-                baseline_metrics_path=None
-            )
-            print(f"[INFO] Prompt report file created at: {report_path}")
-        except Exception:
-            print("[INFO] Report generation skipped (not available).")
-        print(f"[INFO] Trial directory: {ret['trial_dir']}")
+
+        trial_dir = ret["trial_dir"]
+        report = ret.get("report") or {}
+        exp_path = report.get("experiment_report_path")
+
+        if exp_path:
+            print(f"[INFO] Experiment report written to: {exp_path}")
+        else:
+            print("[INFO] No experiment_report.md was generated (missing or invalid metrics.json?).")
+
+        summary_path = os.path.join(trial_dir, "analysis_summary.json")
+        if os.path.exists(summary_path):
+            print(f"[INFO] Analysis summary written to: {summary_path}")
+        else:
+            print("[WARN] analysis_summary.json not found after analyze phase.")
+
+        print(f"[INFO] Trial directory: {trial_dir}")
         print("[INFO] === Prompt phase completed ===\n")
         return ret
+
 
     if subcmd == "generate" and _prompt_generate:
         return _prompt_generate(cfg, prompt_path)
@@ -133,22 +116,18 @@ def main():
                       help="path to a plain text/yaml prompt file")
     ap_r.add_argument("--prompt-text", type=str, default=None,
                       help="inline text prompt (overrides file if given)")
-    # 是否读取 baseline 代码
+
     group_b = ap_r.add_mutually_exclusive_group()
     group_b.add_argument("--use-baseline", dest="use_baseline", action="store_true",
                          help="include baseline notebook as prior context for prompt pipeline")
-    group_b.add_argument("--no-baseline", dest="use_baseline", action="store_false",
-                         help="do NOT include baseline notebook (default)")
     ap_r.set_defaults(use_baseline=False)
-    # 是否引用 stage1_analysis_dir 作为参考
+
     group_s1 = ap_r.add_mutually_exclusive_group()
     group_s1.add_argument("--use-stage1-ref", dest="use_stage1_ref", action="store_true",
                           help="include Stage-1 analysis notebooks summary as context")
-    group_s1.add_argument("--no-stage1-ref", dest="use_stage1_ref", action="store_false",
-                          help="do NOT include Stage-1 analysis context (default)")
     ap_r.set_defaults(use_stage1_ref=True)
 
-    # 可选的细分阶段
+
     ap_pg = sub.add_parser("generate", help="Prompt pipeline: generate only")
     ap_pg.add_argument("--baseline-id", type=int, default=0)
     ap_pg.add_argument("--prompt-file", type=str, default="prompts/pipeline_prompt.yaml")

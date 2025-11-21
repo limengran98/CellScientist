@@ -252,19 +252,20 @@ class OpenAICompatClient:
 
 # ---------------- High-level Runner ----------------
 
-def _system_prompt(language: str, headings: List[str], base_prompt_str: str, data_path: str, h5_output_path: str) -> str:
+def _system_prompt(language: str, headings: List[str], base_prompt_str: str, data_path: str, h5_output_path: str, split_strategy: str) -> str:
     # [MODIFIED] Function now accepts base_prompt_str and paths
     if not base_prompt_str:
         raise ValueError("Base system prompt is empty. Check prompts/notebook_generation.yml")
     lang_label = "English" if language.startswith("en") else language
     headings_bulleted = "\n".join([f"  {h}" for h in headings])
     
-    # [MODIFIED] Inject paths into the prompt string
+    # [MODIFIED] Inject paths and split_strategy into the prompt string
     return base_prompt_str.format(
         language_label=lang_label, 
         headings_bulleted=headings_bulleted,
         data_path=data_path,
-        h5_output_path=h5_output_path
+        h5_output_path=h5_output_path,
+        split_strategy=split_strategy
     )
 
 def make_messages(
@@ -276,6 +277,7 @@ def make_messages(
     headings: List[str],
     base_system_prompt_str: str, # [MODIFIED] Accept loaded system prompt
     h5_output_path: str, # [MODIFIED] Accept H5 output path
+    split_strategy: str = "random", # [MODIFIED] Accept split strategy
 ) -> List[Dict[str, str]]:
     """Compose the system+user messages for the LLM."""
     context = {
@@ -296,9 +298,9 @@ def make_messages(
         }
     }
     return [
-        # [MODIFIED] Pass all required args to _system_prompt
+        # [MODIFIED] Pass all required args to _system_prompt including split_strategy
         {"role": "system", "content": _system_prompt(
-            language, headings, base_system_prompt_str, data_path, h5_output_path
+            language, headings, base_system_prompt_str, data_path, h5_output_path, split_strategy
         )},
         {"role": "user", "content": json.dumps(context, ensure_ascii=False, indent=2)},
     ]
@@ -311,6 +313,7 @@ def run_llm_notebook(
     out_path: str,
     base_system_prompt_str: str, # [MODIFIED] Accept loaded system prompt
     h5_out_path: str, # [MODIFIED] Accept H5 output path
+    split_strategy: str = "random", # [MODIFIED] Accept split strategy
     executed_path: Optional[str] = None,
     model: Optional[str] = None,
     timeout_seconds: int = 1800,
@@ -343,12 +346,13 @@ def run_llm_notebook(
     paper_excerpt = read_pdf_excerpt(paper_pdf, max_pages=pdf_max_pages)
 
     # LLM messages
-    # [MODIFIED] Pass the base_system_prompt_str and h5_out_path
+    # [MODIFIED] Pass the split_strategy to make_messages
     messages = make_messages(
         user_prompt, data_path, paper_excerpt, csv_preview, 
         language=language, headings=headings, 
         base_system_prompt_str=base_system_prompt_str,
-        h5_output_path=h5_out_path
+        h5_output_path=h5_out_path,
+        split_strategy=split_strategy
     )
 
     # LLM config (explicit > env)
@@ -432,8 +436,11 @@ def run_llm_notebook_with_config(config: Dict[str, Any], phase_name: str = "task
     exec_cfg = _resolve_exec_cfg(nb_cfg)
     llm_basic = _resolve_llm_cfg(nb_cfg)
 
+    # [NEW] Get split strategy from config, default to random if missing
+    split_strategy = nb_cfg.get("split_strategy", "random")
+
     # Run
-    # [MODIFIED] Pass the loaded base_system_prompt_str and h5_out
+    # [MODIFIED] Pass the loaded base_system_prompt_str, h5_out and split_strategy
     return run_llm_notebook(
         data_path=data,
         paper_pdf=paper,
@@ -443,6 +450,7 @@ def run_llm_notebook_with_config(config: Dict[str, Any], phase_name: str = "task
         executed_path=out_exec,
         base_system_prompt_str=base_system_prompt_str,
         h5_out_path=h5_out,
+        split_strategy=split_strategy,  # <--- PASS STRATEGY HERE
         model=llm_basic["model"],
         timeout_seconds=exec_cfg["timeout_seconds"],
         force_json_mode=exec_cfg["force_json_mode"],

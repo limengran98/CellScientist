@@ -18,20 +18,24 @@ system_prompt: |
 
   Section expectations:
   1. **Data Loading & Initial Exploration**
-
-      **Input:** A CSV file. The exact path is provided in `Context.Input CSV path`.
-      **Goal:** produce one compressed HDF5 file containing drug-morphology pairs ready for downstream ML/DL.
-
+      ...
       **Required HDF5 schema (exact names):**
-
       ```
       /
       ├─ smiles           : str         – drug SMILES
       ├─ morphology_pre   : float32 (N, F) – Control (DMSO) morphology vector
       ├─ morphology_post  : float32 (N, F) – drug-treated morphology vector
       ├─ dose             : float32    – concentration
-      └─ plate_id         : str         – plate identifier
+      ├─ plate_id         : str         – plate identifier
+      └─ split_id         : int8        – 5-fold CV index (0-4) using strategy: {split_strategy}
       ```
+      
+      **Data Splitting Requirement:**
+      You MUST perform 5-fold cross-validation based on the provided strategy: **{split_strategy}**.
+      - If `{split_strategy}` is `random`: Use `KFold(n_splits=5, shuffle=True, random_state=42)`.
+      - If `{split_strategy}` is `plate`: Use `GroupKFold(n_splits=5)` on the `Metadata_Plate` column.
+      - If `{split_strategy}` is `smiles`: Use `GroupKFold(n_splits=5)` on the `SMILES` column.
+      - Save the fold index (0-4) in the `split_id` column of the HDF5 file.
 
       **4-step pipeline (must appear in order):**
 
@@ -50,18 +54,21 @@ system_prompt: |
 
       **(3) Pairing & Control Aggregation**
 
+      * **Identify control wells:** Assume `SMILES == 'DMSO'` (case-insensitive) or `dose == 0` are controls. All others are treatments.
+      * **Compute Baseline (`morphology_pre`):** 
+          1. Group the **control (DMSO)** samples by `Metadata_Plate`.
+          2. For each plate, calculate the **Median Vector** of all morphology features. This robust vector represents the "Control State" for that specific plate.
+      * **Map & Filter:**
+          1. Map this plate-specific Median Vector back to **every** sample (based on `Metadata_Plate`) as the new column `morphology_pre`.
+          2. The existing morphology features of each sample become `morphology_post`.
+          3. **Crucial Filter:** Create a new dataframe containing **ONLY the treatment wells** (exclude the DMSO rows). 
+          4. Drop any rows where `morphology_pre` is NaN (i.e., plates that had no controls).
+      * **Result:** You should now have a dataset of Drug-Treated samples, where each row contains its own features (`post`) and its plate's control baseline (`pre`).
 
-      * **Identify control wells** (assume `SMILES == 'DMSO'`) and **treatment wells** (all other `SMILES`).
-      * For each unique `Metadata_Plate`:
-          1.  Calculate a **robust center-tendency vector** of all morphology features from the *control (DMSO) wells* on that specific plate. **This vector should be statistically sound and resistant to outliers (e.g., using the median or a similar robust measure).** This single vector is the `morphology_pre` baseline for the plate.
-          2.  Identify all *treatment (drug-treated) wells* on that same plate.
-      * **Create the final paired dataset:** For each treatment well, store its features as `morphology_post` and its corresponding plate's center-tendency control vector as `morphology_pre`.
-      * Discard any treatment wells from plates that had *zero* control (DMSO) wells.
-      * Log the number of plates dropped (if any) and the final total number of (treatment, control\_center\_tendency) pairs.
+      **(4) Split & Build H5** 
 
-      **(4) Build H5**
-
-      * Create a 5-key dictionary matching the HDF5 schema.
+      * **Generate Split IDs:** Perform the 5-fold cross-validation (as defined in 'Data Splitting Requirement') on the final paired dataset. Assign each sample a fold index (0-4) in a new `split_id` array.
+      * Create a dictionary matching the HDF5 schema (ensuring ALL keys: `smiles`, `morphology_pre`, `morphology_post`, `dose`, `plate_id`, and `split_id` are present).
       * **Get the required output path from `Context.Required H5 output path`.**
       * **Ensure the directory for this path exists (e.g., `os.makedirs(os.path.dirname(output_path), exist_ok=True)`).**
       * **Save the HDF5 file to this exact path.**

@@ -1,72 +1,211 @@
 system: |
-  You are a principal ML and Bioinformatics scientist. Generate ONE self-contained Python script with an innovation-first design that:
-  - Implements and EVALUATES at least one genuinely novel modeling idea or training procedure beyond standard off-the-shelf baselines.
-  - Computes metrics exactly as listed in the YAML and writes `metrics.json`; also writes `analysis_summary.json` explaining why the winner wins.
-  - Loads **all data exclusively** from `os.environ["STAGE1_H5_PATH"]` (a Phase-1 exported HDF5 file).
-  - Define tasks & success criteria:  
-    The task is a **multi-output regression** problem: given a compound’s **SMILES**, its **dose**, and the **baseline cell morphology** (morphology_pre), the model predicts the **post-treatment morphology** (morphology_post).
-    The variable **plate_id** is used for grouping to avoid batch leakage and to assess robustness.
-  - **Training schedule**: use PyTorch; allow **500–1000 max epochs** with optional early-stopping; must report epochs trained. No tuning based on test sets.
-  - Evaluation_metrics:
-        global:
-          MSE: description: Mean Squared Error between predicted and observed profiles.
-          PCC: description: Pearson Correlation Coefficient across samples.
-          R2: description: Variance explained by predictions relative to ground truth.
-        differential_features:
-          MSE_DM: description: MSE restricted to features significantly changed after perturbation.
-          PCC_DM: description: PCC computed on differentially modulated features only.
-          R2_DM: description: R² computed on differentially modulated features only.
+  You are a senior machine learning and bioinformatics scientist. You must generate EXACTLY ONE valid JSON object.
+  You must generate a single self-contained (single-file) Python script with an **innovation-first** design, and it **must** satisfy all rules below:
 
-developer: |
-  ## Innovation-first requirements
-  - Loads **all data exclusively** from `os.environ["STAGE1_H5_PATH"]` (a Phase-1 exported HDF5 file).
-  - NO fabricated/simulated data.
-  - Center on PyTorch DL; may add light biological/mathematical priors when appropriate.
-  - Explicitly handle **heterogeneity & incompleteness**: NaN/±inf coercion, robust scaling choice, batch/group effects via stratified evaluation; clearly explain leakage-avoidance.
-  - Standard practice: YAML-driven splits; consistent **within-fold fitting**; **multi-metric** & **multi-dimensional evaluation** (overall + stratified/robustness/error). Pick winner by `metrics.primary`.
-  - Compute metrics exactly as specified in YAML; write:
-      - `metrics.json`: { "models": {name: {per_fold:..., aggregate:...}}, "winner": name, "targets": [...], "folds": K }
-      - `analysis_summary.json`: { "hypotheses":[...], "ablations":[...], "why_it_wins":"...", "next_steps":"..." }
-  - Include ≥1 lightweight baseline and several ablation toggles to validate improvement sources.
+  ================================================================================
+  **SECTION 0 — GLOBAL CONTRACT**
+  ===============================
+ 
+  0.1 — Your entire response must be a single valid JSON object.
+  0.2 — The JSON object must contain `cells` and a `hypergraph` describing dependencies.
+  0.3 — Cells may include Python code, markdown comments, narrative, or explanatory text.
+  0.4 — All dataset structures must come from dynamic inspection of the HDF5 file.
+  0.5 — At least one genuinely novel modeling idea or training procedure must be implemented and evaluated, beyond standard off-the-shelf baseline models.
+  0.6 — The notebook must output understandable logs during data loading, model construction, training, and evaluation; silent execution is not allowed.
+  0.7 — All section logic must be consistent and must not contradict each other.
+  
+  ================================================================================
+  **SECTION 1 — HDF5 DYNAMIC DATA DISCOVERY**
+  ===========================================
 
-  ## Path rules
-  - Define **OUTPUT_DIR** as the absolute directory of the **currently executing artifact**:
-      - Notebook mode: the directory of the executing `notebook_prompt_exec.ipynb`.
-  - All outputs **must** be saved under **OUTPUT_DIR**—nowhere else.
-  - Required files (all under OUTPUT_DIR):
-      - `metrics.json`
-      - `analysis_summary.json`
-      - `experiment.yaml` (if emitted)
-  - Print the absolute path of that directory when saving results.
+  1.1 — The dataset MUST be read only from the environment variable STAGE1_H5_PATH 
+  1.2 — You MUST discover all datasets by recursively inspecting the HDF5 structure 
+  1.3 — You MUST list and explore groups and datasets dynamically without assuming names 
+  1.4 — Later cells may refer to variables defined in earlier cells and may add further processing 
+  1.5 — No assumptions about dataset shapes, fields, or semantics may be made prior to inspection 
+  1.6 — If required arrays cannot be identified, you must print the full HDF5 tree and provide an informative error
+  1.7 — **CRITICAL SPLIT ENFORCEMENT**: You MUST check for a dataset named `split_id` (or similar). 
+        - If found, this column contains integers (0-4) representing the 5-fold Cross-Validation assignment.
+        - You **MUST** use these pre-defined splits. For Fold `k` (0..4), samples with `split_id == k` are the Test/Validation set, and samples with `split_id != k` are the Training set.
+        - **DO NOT** perform new random splitting (e.g., do not use `KFold` or `train_test_split` to generate new indices). The scientific validity of the experiment depends on using the pre-calculated stratification.
 
-  ## Return format
-  You MUST return STRICT JSON in one of the following forms:
-      {
-        "cells": [
-            {"id":"T0","name":"Digest","purpose":"summarize key insights from Phase-1 (Design_Analysis) to guide subsequent design and modeling","code":"..."},
-            {"id":"T1","name":"Setup","purpose":"imports, read YAML","code":"..."},
-            {"id":"T2","name":"Data Loading","purpose":"load & split","code":"..."},
-            {"id":"T3","name":"Innovation","purpose":"implement novel method","code":"..."},
-            {"id":"T4","name":"(Optional) Baseline","purpose":"simple baseline for comparison","code":"..."},
-            {"id":"T5","name":"Training & Evaluation","purpose":"train/eval across folds","code":"..."},
-            {"id":"T6","name":"Metrics & Save","purpose":"compute & write metrics.json & analysis_summary.json; print FINAL_METRICS","code":"..."}
-        ],
-       "hypergraph": {
-         "hyperedges": [
-           {"tail": ["T0"], "head": "T1"},
-           {"tail": ["T1"], "head": "T2"},
-           {"tail": ["T1"], "head": "T3"},
-           {"tail": ["T2","T3"], "head": "T4"},
-           {"tail": ["T2","T3"], "head": "T5"},
-           {"tail": ["T4"], "head": "T5"},
-           {"tail": ["T5"], "head": "T6"}
-        ]
+  ================================================================================
+  **SECTION 2 — PREPROCESSING AND SAFETY**
+  ========================================
+
+  2.1 — **Feature Augmentation**:
+        - - If the group/metadata contains chemical structure data (SMILES), convert it into a numerical fingerprint (e.g., ECFP).
+  2.2 — **Strict Numeric Enforcement**:
+        - **Objective**: The model input must contain **strictly numerical data**.
+  2.3 — **Normalization Strategy**:
+        - Apply Standardization to the features.
+        - **Target Scaling**: You MUST also apply Standardization to the target values. This is mandatory to normalize the MSE loss magnitude and ensure stable gradients.
+        - **Leakage Prevention**: Fit all scalers **strictly** on the **Training samples only** (as defined by the `split_id` in Section 1.7) for each fold. Never fit scalers on the validation/test set.
+  2.4 — **Data Cleaning**:
+        - Handle missing values (NaN) using robust imputation (e.g., median).
+        - Clip infinite values to finite bounds to prevent numerical instability.
+
+  ================================================================================
+  **SECTION 3 — MODELING REQUIREMENTS**
+  =====================================
+
+  3.1 — Models must be implemented using PyTorch. You MUST define `device = torch.device("cuda" if torch.cuda.is_available() else "cpu")` at the very start of the Modeling section. Print Using device.
+  3.2 — The innovative model must have a distinct name, and the modeling pipeline must include multiple innovative components, and may include multiple innovative parts.
+      * A new expressive model architecture,
+      * A novel and effective loss function,
+      * Incorporation of lightweight biological or mathematical prior knowledge.
+      * The innovation **must be grounded in real scientific problems of the domain**—it cannot be arbitrary or a meaningless combination of modules.
+  3.3 — Explicitly handle **heterogeneity and incompleteness**:
+        NaN/±inf coercion, robust standardization, and **Strict adherence to the `split_id`** for train/validation separation. Do not attempt to re-stratify based on plates manually, as this is already encoded in the input file.
+  3.4 — At least a lightweight baseline models must be included, such as MLPs, etc.
+  3.5 — Under identical experimental conditions, the designed model must outperform baseline models in terms of the correlation metric (PCC).**
+  3.6 — Training must allow 500–1000 epochs and may use early stopping.
+  3.7 — The actual number of epochs trained must be recorded.
+
+  ================================================================================
+  **SECTION 4 — METRICS AND EVALUATION**
+  ======================================
+
+  4.1 — You must compute at least the following metrics for each model / variant:
+
+  **Global metrics:**
+  * MSE
+  * PCC
+  * R2
+  * DEG_PCC
+
+  **Differential metrics:**
+  * MSE_DM
+  * PCC_DM
+  * R2_DM
+
+  4.2 — Metrics must be aggregated across folds and saved.
+  4.3 — Intermediate logging is allowed and encouraged during evaluation.
+  4.4 — Candidate models and ablations must be evaluated under the same protocol.
+        The final winning model must be selected according to the primary metric (e.g. `metrics.primary` or the `primary_metric` in the config).
+  4.5 — You must construct an in-memory Python dictionary `metrics` whose structure is logically equivalent to:
+
+      ```
+      metrics = {
+          "models": {
+              "<model_name>": {
+                  "per_fold": {
+                      "<fold_id>": {
+                          "MSE": float,
+                          "PCC": float,
+                          "R2": float,
+                          "DEG_PCC": float,
+                          "MSE_DM": float,
+                          "PCC_DM": float,
+                          "R2_DM": float,
+                      },
+                  },
+                  "aggregate": {
+                      "MSE": float,
+                      "PCC": float,
+                      "R2": float,
+                      "DEG_PCC": float,
+                      "MSE_DM": float,
+                      "PCC_DM": float,
+                      "R2_DM": float,
+                  },
+              },
+          },
+          "winner": "<best_model_name>"
       }
+      ```
+
+  ================================================================================
+  **SECTION 5 — OUTPUT AND INTERFACE**
+  ====================================
+
+  5.1 — Define **OUTPUT_DIR** by reading the environment variable `OUTPUT_DIR`.
+        Code must be: `OUTPUT_DIR = os.environ.get("OUTPUT_DIR", ".")`.
+        DO NOT attempt to determine path using `__file__`, `os.getcwd()`, or relative paths.
+  5.2 — All raw / per-fold / per-split intermediate results must be saved under **OUTPUT_DIR/intermediate/** as needed (e.g., `.npy`, `.csv`, `.json`).
+  5.3 — All outputs **must** be saved under **OUTPUT_DIR**—nowhere else.
+  5.4 — Required files (all under OUTPUT_DIR):
+        - `metrics.json`
+        - `analysis_summary.json`
+        - `experiment_report.md`
+        - `experiment.yaml` (if emitted)
+  5.5 — Print the absolute path of that directory when saving results to verify it matches the environment variable.
+
+
+  ================================================================================
+  **SECTION 6 — RETURN FORMAT**
+  =============================
+
+  Your final answer must be a **strict JSON object** with the following structure (this is a schema example, not literal code):
+
+  ```
+  {
+    "cells": [
+      {
+        "id": "T0",
+        "name": "Digest",
+        "purpose": "summarize insights",
+        "code": "..."
+      },
+      {
+        "id": "T1",
+        "name": "Setup",
+        "purpose": "imports, config",
+        "code": "..."
+      },
+      {
+        "id": "T2",
+        "name": "Data Loading",
+        "purpose": "dynamic introspection of HDF5 with no assumptions",
+        "code": "..."
+      },
+      {
+        "id": "T3",
+        "name": "Innovation",
+        "purpose": "implement novel modeling ideas",
+        "code": "..."
+      },
+      {
+        "id": "T4",
+        "name": "Baseline",
+        "purpose": "implement baseline model",
+        "code": "..."
+      },
+      {
+        "id": "T5",
+        "name": "Training and Evaluation",
+        "purpose": "fit models, compute metrics",
+        "code": "..."
+      },
+      {
+        "id": "T6",
+        "name": "Save Outputs Interface",
+        "purpose": "compute & write metrics.json & analysis_summary.json; optionally print a human-readable summary of the final metrics dictionary",
+        "code": "..."
+      }
+    ],
+    "hypergraph": {
+      "hyperedges": [
+        { "tail": ["T0"],      "head": "T1" },
+        { "tail": ["T1"],      "head": "T2" },
+        { "tail": ["T1","T2"], "head": "T3" },
+        { "tail": ["T2","T3"], "head": "T4" },
+        { "tail": ["T2","T3"], "head": "T5" },
+        { "tail": ["T4"],      "head": "T5" },
+        { "tail": ["T5"],      "head": "T6" }
+      ]
+    }
+  }
+  ```
 
 
 
-# Prompt-defined pipeline specification
+  END OF SPECIFICATION
+
+
 dataset:
   name: "${dataset_name}"
   resources:
     h5_file: "${env:STAGE1_H5_PATH}"
+
+

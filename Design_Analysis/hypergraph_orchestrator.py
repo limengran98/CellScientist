@@ -3,7 +3,7 @@
 # Orchestrate multi-notebook generation (hyperedges), review them, and export a best "reference" notebook.
 # Everything is driven by config.json under phases.task_analysis.llm_notebook.multi.*
 
-import json, hashlib, os, shutil, re
+import json, hashlib, os, shutil, re, time, requests
 from typing import Optional
 from pathlib import Path
 from typing import Dict, Any, Optional, List
@@ -19,7 +19,7 @@ from cellscientist_phase_1 import run_pipeline_basic
 
 from run_llm_nb import (
     collect_cell_errors, apply_edits, execute_notebook,
-    build_fix_messages, chat_json
+    build_fix_messages, chat_json as _chat_json_autofix # Renamed to avoid confusion
 )
 
 # --------------------
@@ -93,7 +93,7 @@ def _resolve_llm_cfg_for_autofix(llm_cfg: Dict[str, Any]) -> Dict[str, Any]:
             base_url = os.environ.get(base_url_env)
         else:
             # Default env var or hardcoded fallback from llm_notebook_runner
-            base_url = os.environ.get("OPENAI_BASE_URL") or "[https://vip.yi-zhan.top/v1](https://vip.yi-zhan.top/v1)"
+            base_url = os.environ.get("OPENAI_BASE_URL") or "https://vip.yi-zhan.top/v1"
     
     # 3c. Clean up hardcoded markdown link if it's used
     if base_url and base_url.startswith("[") and base_url.endswith(")"):
@@ -106,6 +106,67 @@ def _resolve_llm_cfg_for_autofix(llm_cfg: Dict[str, Any]) -> Dict[str, Any]:
     }
 # [END NEW FUNCTION]
 
+# [NEW] Robust Generic Chat JSON Function (Local)
+def _chat_json_generic(messages, *, api_key, base_url, model, temperature=0.7, max_tokens=12000):
+    """
+    A local, robust version of chat_json that does NOT default to {"edits": []}.
+    It is designed for creative tasks like Idea Generation.
+    """
+    def _post(payload):
+        url = (base_url or "https://api.openai.com/v1").rstrip("/") + "/chat/completions"
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        print(f"  [LLM] ➡️  POST to {url} (model={payload.get('model')})")
+        r = requests.post(url, headers=headers, json=payload, timeout=600)
+        if r.status_code != 200:
+            print(f"  [LLM] ❌ Error {r.status_code}: {r.text}")
+        r.raise_for_status()
+        return r.json()
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens, # Increased for reasoning models
+        "response_format": {"type": "json_object"},
+    }
+
+    for attempt in range(3):
+        try:
+            data = _post(payload)
+            choice = (data.get("choices") or [{}])[0]
+            
+            # Check finish reason
+            finish_reason = choice.get("finish_reason")
+            if finish_reason == "length":
+                print(f"  [LLM] ⚠️  Generation truncated (length limit hit). Max tokens: {max_tokens}")
+            
+            content = (choice.get("message") or {}).get("content") or ""
+            
+            if not content:
+                # Check for reasoning usage to give user a hint
+                usage = data.get("usage", {})
+                reasoning = usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0)
+                print(f"  [LLM] ⚠️ Empty content received (Attempt {attempt+1}). Reasoning tokens used: {reasoning}")
+                continue
+                
+            # Try parsing
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError:
+                # Try finding json block
+                m = re.search(r"```json\s*(\{.*?\})\s*```", content, flags=re.S)
+                if m: return json.loads(m.group(1))
+                # Try finding any brace block
+                m2 = re.search(r"(\{.*\})", content, flags=re.S)
+                if m2: return json.loads(m2.group(1))
+                
+                print(f"  [LLM] ⚠️ Could not parse JSON. Raw: {content[:200]}...")
+                
+        except Exception as e:
+            print(f"  [LLM] ❌ Attempt {attempt+1} failed: {e}")
+            time.sleep(1)
+            
+    return None # Return None on total failure
 
 # --------------------
 # Per-run config builder
@@ -362,6 +423,103 @@ def calculate_run_heuristics(
     print(f"🧠 [HEURISTICS] Heuristic scores calculated and saved.")
     # [MODIFIED] No return value.
 
+
+# ============================
+# NEW: Generate Experiment Ideas
+# ============================
+def generate_experiment_ideas(
+    notebook_path: str,
+    output_dir: Path,
+    llm_cfg: Dict[str, Any],
+    prompts_dir_path: Optional[str] = None # [NEW] To load idea.yml
+):
+    """
+    Generate 5-10 innovative ideas based on the reference notebook's context
+    and the processed data summary.
+    """
+    # 1. Extract context from Notebook (Markdown + Output text)
+    nb_cells = _extract_nb_cells(notebook_path)
+    
+    # Simple context extraction: Markdown cells + small output text
+    context_text = []
+    for c in nb_cells:
+        src = c.get("source", "")
+        if c.get("cell_type") == "markdown":
+            context_text.append(src)
+        elif c.get("cell_type") == "code":
+            for out in c.get("outputs", []) or []:
+                # [FIXED] Check for 'text/plain' first, then 'text'
+                data_obj = out.get("data", {})
+                text_content = data_obj.get("text/plain") or data_obj.get("text")
+                
+                if text_content:
+                    val = "".join(text_content)
+                    # Only include reasonable sized logs
+                    if len(val) < 2000:
+                        context_text.append(f"Output: {val}")
+                        
+    # Truncate context
+    full_text = "\n\n".join(context_text)
+    if len(full_text) > 12000:
+        full_text = full_text[:3000] + "\n...[SNIP]...\n" + full_text[-9000:]
+
+    # 2. Load System Prompt from idea.yml
+    system_prompt = ""
+    if prompts_dir_path:
+        idea_yml = Path(prompts_dir_path) / "idea.yml"
+        if idea_yml.exists():
+            try:
+                import yaml # Assume PyYAML is available if using .yml
+                with open(idea_yml, 'r') as f:
+                    y = yaml.safe_load(f)
+                    if isinstance(y, dict):
+                         system_prompt = y.get("system_prompt", "")
+                    elif isinstance(y, str):
+                         system_prompt = y
+            except Exception as e:
+                 print(f"⚠️ [IDEAS] Failed to load idea.yml: {e}")
+
+    # Fallback prompt if file missing or empty
+    if not system_prompt:
+        system_prompt = (
+            "You are an expert computational biologist and AI scientist.\n"
+            "Task: Generate 5-10 innovative experimental ideas based on the provided High-Content Screening data analysis.\n"
+            "Return a JSON object with key 'ideas'. Each idea needs 'title', 'description', 'reasoning', 'expected_impact'."
+        )
+
+    user_msg = f"Here is the context from the Data Analysis Notebook:\n\n{full_text}\n\nGenerate the `idea.json` content now."
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_msg}
+    ]
+
+    print(f"💡 [IDEAS] Generating experimental ideas via LLM...")
+    
+    try:
+        resolved = _resolve_llm_cfg_for_autofix(llm_cfg)
+        
+        # [FIX] Use the local generic chat function, NOT the imported autofix one
+        resp = _chat_json_generic(
+            messages,
+            api_key=resolved["api_key"],
+            base_url=resolved["base_url"],
+            model=resolved["model"],
+            temperature=0.8, # Higher temp for creativity
+            max_tokens=12000 # [CRITICAL UPDATE] Increased to 12000 for reasoning models
+        )
+        
+        if resp:
+            out_path = output_dir / "idea.json"
+            out_path.write_text(json.dumps(resp, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(f"✨ [IDEAS] Saved generated ideas to {out_path}")
+        else:
+             print(f"⚠️ [IDEAS] LLM returned empty/null response.")
+
+    except Exception as e:
+        print(f"❌ [IDEAS] Failed to generate ideas: {e}")
+
+
 # ============================
 # Reference selection & export
 # ============================
@@ -488,6 +646,20 @@ def select_and_export_reference(
 
     data["reference"] = ref_meta # [MODIFIED] Store full metadata
     hp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    
+    # --- [NEW] Generate Ideas (Called at the very end) ---
+    # Need to reload full cfg to get LLM details since _ref_cfg filters them
+    full_cfg = _load_cfg(cfg_path, prompts_dir_path)
+    nb_cfg_full = (((full_cfg.get("phases") or {}).get("task_analysis") or {}).get("llm_notebook") or {})
+    
+    if ref_cfg.get("generate_ideas", True): # Default to True
+        generate_experiment_ideas(
+            notebook_path=str(dst_ipynb),
+            output_dir=export_dir,
+            llm_cfg=nb_cfg_full.get("llm", {}),
+            prompts_dir_path=prompts_dir_path # Pass prompt dir
+        )
+
     return data["reference"]
 
 # ============================
@@ -666,7 +838,8 @@ def _auto_fix_notebook(executed_path: str, run_cfg: dict) -> str:
         )
         
         # [MODIFICATION] Call chat_json with the correctly resolved config
-        spec = chat_json(
+        # [NOTE] Use _chat_json_autofix (the imported original) here, NOT generic
+        spec = _chat_json_autofix(
             messages,
             api_key=api_key_final,
             base_url=base_url_final,

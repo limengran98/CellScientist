@@ -7,7 +7,8 @@
     "task_analysis": {
       "enabled": true,
       "llm_notebook": {
-        "paths": {
+        "split_strategy": "smiles",
+        "paths": { 
           "data": "../data/${dataset_name}/CP_data.csv",
           "paper": "../data/${dataset_name}/BBBC036.pdf",
           "preprocess": "../data/${dataset_name}/BBBC036_data_process.ipynb"
@@ -34,7 +35,7 @@
           "presence_penalty": 0
         },
         "multi": {
-          "num_runs": 4,
+          "num_runs": 1,
           "enabled": true,
           "name_template": "NB{idx:02d}-seed{seed}",
           "seeds": [
