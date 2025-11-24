@@ -124,7 +124,7 @@ def synthesize_strategy(cfg: Dict[str, Any], raw_ideas: str, debug_dir: str) -> 
         # 1000 tokens limit as requested
         strategy = chat_text(
             [{"role": "system", "content": sys_content}, {"role": "user", "content": user_prompt}],
-            cfg=cfg, timeout=600, debug_dir=debug_dir, temperature=0.7, max_tokens=1000 
+            cfg=cfg, timeout=600, debug_dir=debug_dir, temperature=0.7, max_tokens=10000 
         )
         with open(strategy_path, "w", encoding="utf-8") as f: f.write(strategy)
         print(f"[PROMPT] ✅ Strategy saved to: {strategy_path}")

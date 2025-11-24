@@ -4,6 +4,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import os, json, argparse, re, glob
+import numpy as np
 from design_execution.prompt_pipeline import run_prompt_pipeline as _prompt_run
 
 # Try imports
@@ -16,6 +17,7 @@ except Exception:
 
 
 def _expand_vars(obj, env):
+    """Recursively expand ${VAR} in dictionary values."""
     if isinstance(obj, dict):
         return {k: _expand_vars(v, env) for k, v in obj.items()}
     elif isinstance(obj, list):
@@ -24,7 +26,7 @@ def _expand_vars(obj, env):
         return re.sub(r"\$\{(\w+)\}", lambda m: env.get(m.group(1), m.group(0)), obj)
     return obj
 
-# --- 核心修改：增加 enable_idea 控制 ---
+
 def _resolve_stage1_resources(cfg: dict, enable_idea: bool = False):
     """
     Locates HDF5 data. 
@@ -76,81 +78,168 @@ def _resolve_stage1_resources(cfg: dict, enable_idea: bool = False):
             del os.environ["STAGE1_IDEA_PATH"]
         print("[SETUP] Idea-Driven Mode: OFF")
 
-# ---------------------------------
 
-def cmd_prompt_defined(
-    cfg: dict, 
-    *, 
-    prompt_path: str | None = None, 
-    subcmd: str = "run", 
-    use_idea: bool = False,  # <--- 接收参数
-    **kwargs
-):
-    print(f"\n[INFO] === Starting prompt phase: {subcmd} ===")
+def check_success(metrics: dict, threshold: float, metric_key: str) -> tuple[bool, float]:
+    """
+    Check if metrics meet the target threshold.
+    Returns: (is_success, current_score)
+    """
+    if not metrics:
+        return False, -999.0
     
-    # 1. Load Resources (Controlled)
-    _resolve_stage1_resources(cfg, enable_idea=use_idea)
+    # 1. Find winner or default to the first model
+    winner_key = metrics.get("winner")
+    if not winner_key:
+        # If no winner in metrics structure, try to find the first key in models
+        all_models = metrics.get("models", {})
+        # Exclude non-model keys like config, trial_dir
+        keys = [k for k in all_models.keys() if k not in ["config", "trial_dir"]]
+        if not keys:
+            return False, -999.0
+        winner_key = keys[0]
+        
+    model_data = metrics.get(winner_key, metrics.get("models", {}).get(winner_key, {}))
     
-    prompt_path = (prompt_path or (cfg.get("prompt_branch") or {}).get("prompt_file") or "prompts/pipeline_prompt.yaml")
-    print(f"[INFO] Using prompt file: {prompt_path}")
+    # 2. Get metric (Prioritize Aggregate, otherwise average over folds)
+    val = None
+    if "aggregate" in model_data and isinstance(model_data["aggregate"], dict):
+        val = model_data["aggregate"].get(metric_key)
+    
+    if val is None and "per_fold" in model_data:
+        # Robustness: If no aggregate field, try to calculate average manually
+        folds = model_data["per_fold"]
+        vals = []
+        for f in folds.values():
+            if isinstance(f, dict):
+                v = f.get(metric_key, f.get("metrics", {}).get(metric_key))
+                if v is not None: vals.append(float(v))
+        if vals: val = np.mean(vals)
+        
+    current_score = float(val) if val is not None else -999.0
+    print(f"[CHECK] Winner: {winner_key} | {metric_key}: {current_score:.4f} (Target > {threshold})")
+    
+    if current_score > threshold:
+        return True, current_score
+    return False, current_score
 
-    if subcmd == "run":
-        ret = _prompt_run(cfg, prompt_path)
-        print(f"[INFO] Trial directory: {ret['trial_dir']}")
-        print("[INFO] === Prompt phase completed ===\n")
-        return ret
 
-    if subcmd == "generate": return _prompt_generate(cfg, prompt_path)
-    elif subcmd == "execute": return _prompt_execute(cfg)
-    elif subcmd == "analyze": return _prompt_analyze(cfg)
-    else: raise ValueError(f"Unknown subcmd: {subcmd}")
+def cmd_run_loop(cfg: dict, prompt_path: str, use_idea: bool):
+    """
+    Core loop logic: Read max_iterations and threshold from config,
+    exit immediately if the condition is met.
+    """
+    exp_cfg = cfg.get("experiment", {})
+    # Default value protection
+    max_iters = int(exp_cfg.get("max_iterations", 1))
+    threshold = float(exp_cfg.get("success_threshold", 0.0))
+    primary_metric = exp_cfg.get("primary_metric", "PCC")
+
+    print(f"\n[LOOP] Starting Experiment Loop")
+    print(f"      Max Iterations: {max_iters}")
+    print(f"      Stop Condition: {primary_metric} > {threshold}")
+
+    best_score = -float('inf')
+    best_trial = None
+
+    for i in range(1, max_iters + 1):
+        print(f"\n{'='*60}")
+        print(f"🔄 ITERATION {i}/{max_iters}")
+        print(f"{'='*60}")
+
+        try:
+            # 1. Prepare resources (Idea / H5)
+            _resolve_stage1_resources(cfg, enable_idea=use_idea)
+            
+            # 2. Determine Prompt path
+            actual_prompt = (prompt_path or 
+                             (cfg.get("prompt_branch") or {}).get("prompt_file") or 
+                             "prompts/pipeline_prompt.yaml")
+
+            # 3. Run Pipeline (Generate -> Execute -> Analyze)
+            ret = _prompt_run(cfg, actual_prompt)
+            
+            # 4. Check results
+            metrics = ret.get("metrics", {})
+            trial_dir = ret.get("trial_dir")
+            
+            is_success, score = check_success(metrics, threshold, primary_metric)
+            
+            # Record best result
+            if score > best_score:
+                best_score = score
+                best_trial = trial_dir
+
+            # 5. Decide whether to exit
+            if is_success:
+                print(f"\n🎉 [SUCCESS] Iteration {i} PASSED!")
+                print(f"      Metric: {primary_metric} = {score:.4f} (> {threshold})")
+                print(f"      Trial:  {trial_dir}")
+                print("🛑 Stopping loop early as success criteria met.")
+                return # <--- Stop program immediately
+
+            else:
+                print(f"⚠️ [CONTINUE] Threshold not met ({score:.4f} <= {threshold}). Retrying...")
+
+        except Exception as e:
+            print(f"❌ [ERROR] Iteration {i} crashed: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # If loop finished without success
+    print(f"\n🏁 [DONE] Loop finished without hitting threshold.")
+    print(f"      Best {primary_metric}: {best_score:.4f}")
+    print(f"      Best Trial: {best_trial}")
+
 
 def main():
     print("\n[INFO] === Pipeline started ===")
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
-    ap.add_argument("--pipeline-mode", default="prompt")
+    
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    # Common args helper
+    # Common helper
     def add_common(p):
-        p.add_argument("--prompt-file", type=str, default="prompts/pipeline_prompt.yaml")
-        p.add_argument("--use-idea", action="store_true", help="Enable Idea-Driven Generation (reads idea.json)") # <--- 新增
+        p.add_argument("--prompt-file", type=str, default=None)
+        p.add_argument("--use-idea", action="store_true", help="Enable Idea-Driven Generation")
 
+    # 1. RUN (Loop Mode)
     ap_r = sub.add_parser("run")
     add_common(ap_r)
-    # Legacy args (ignored but kept for compat)
-    ap_r.add_argument("--baseline-id", type=int, default=0)
-    ap_r.add_argument("--with-lit", action="store_true")
-    ap_r.add_argument("--which", default="both")
-    ap_r.add_argument("--prompt-text", type=str, default=None)
-    ap_r.add_argument("--use-baseline", action="store_true")
-    ap_r.add_argument("--use-stage1-ref", action="store_true")
-    
+    # Note: max_retries and threshold moved to config; add argument logic here if CLI override is needed later
+
+    # 2. GENERATE (Single Step)
     ap_g = sub.add_parser("generate")
     add_common(ap_g)
     
+    # 3. OTHER STEPS
     sub.add_parser("execute")
     sub.add_parser("analyze")
 
     args = ap.parse_args()
     
+    # Load Config
     cfg_text = open(args.config, "r", encoding="utf-8").read()
     cfg = json.loads(cfg_text)
     env = dict(os.environ); env.update(cfg)
     cfg = _expand_vars(cfg, env)
 
-    # Get use_idea flag safely
     use_idea = getattr(args, "use_idea", False)
 
     if args.cmd == "run": 
-        cmd_prompt_defined(cfg, prompt_path=args.prompt_file, subcmd="run", use_idea=use_idea)
+        cmd_run_loop(cfg, prompt_path=args.prompt_file, use_idea=use_idea)
+
     elif args.cmd == "generate": 
-        cmd_prompt_defined(cfg, prompt_path=args.prompt_file, subcmd="generate", use_idea=use_idea)
+        _resolve_stage1_resources(cfg, enable_idea=use_idea)
+        p_path = args.prompt_file or (cfg.get("prompt_branch") or {}).get("prompt_file") or "prompts/pipeline_prompt.yaml"
+        # Call original generate
+        _prompt_generate(cfg, p_path)
+
     elif args.cmd == "execute": 
-        cmd_prompt_defined(cfg, subcmd="execute")
+        _prompt_execute(cfg) 
+
     elif args.cmd == "analyze": 
-        cmd_prompt_defined(cfg, subcmd="analyze")
+        _prompt_analyze(cfg)
 
 if __name__ == "__main__":
     main()

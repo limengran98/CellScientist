@@ -25,7 +25,9 @@
   },
   "default_provider": "yizhan",
   "experiment": {
-    "primary_metric": "PCC"
+    "primary_metric": "PCC",
+    "max_iterations": 3,
+    "success_threshold": 0
   },
   "literature": {
     "query": "",

@@ -5,7 +5,7 @@ system: |
   Review the provided list of research ideas. Select 2-3 compatible ideas and synthesize them into ONE cohesive, high-performance model architecture.
   
   **CONSTRAINTS**:
-  1. **Length**: The output should be detailed and substantial (approx. **500 words**). Use bullet points for clarity.
+  1. **Length**: The output should be detailed and substantial (approx. **200 words**). Use bullet points for clarity.
   2. **Focus**: deeply describe the (1) Architecture flow, (2) Novel Loss functions, and (3) Why these components work together.
   3. **Goal**: **Do not limit yourself.** Design the model to maximize the specific strengths of your selected ideas (whether that is solving Batch Effects, improving Generalization, enhancing Interpretability, or handling Uncertainty).
   
