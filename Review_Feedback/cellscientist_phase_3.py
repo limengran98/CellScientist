@@ -22,8 +22,56 @@ try:
 except ImportError:
     raise ImportError("Missing required modules: 'llm_client.py' or 'nb_autofix.py'. Please ensure they are in the same directory.")
 
+# [NEW] Import Report Generator
+try:
+    from experiment_report import write_experiment_report
+except ImportError:
+    print("[WARN] 'experiment_report.py' not found. Report generation will be disabled.")
+    write_experiment_report = None
+
 # =============================================================================
-# 1. Path & Resource Management
+# 1. Logging & Analysis Logic (New Feature)
+# =============================================================================
+
+def write_review_log(workspace, iteration, suggestion, score, baseline, status):
+    """
+    Writes a human-readable log of what the LLM changed and the result.
+    """
+    log_path = os.path.join(workspace, "optimization_history.md")
+    
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    
+    critique = suggestion.get("critique", "No critique provided.")
+    edits = suggestion.get("edits", [])
+    
+    log_entry = f"""
+## Iteration {iteration} (Time: {timestamp})
+**Status**: {status}
+**Metric**: {score:.4f} (Baseline: {baseline:.4f})
+
+### 1. Critique
+> {critique}
+
+### 2. Applied Edits
+"""
+    for edit in edits:
+        idx = edit.get("cell_index")
+        src = edit.get("source", "")
+        # Indent code for display
+        src_block = "\n".join(["    " + line for line in src.splitlines()])
+        log_entry += f"\n- **Cell {idx}**:\n```python\n{src_block}\n```\n"
+
+    log_entry += "\n---\n"
+    
+    # Append to file
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(log_entry)
+    
+    print(f"[LOG] Review details written to: {log_path}")
+
+
+# =============================================================================
+# 2. Path & Resource Management
 # =============================================================================
 
 def _expand_vars(obj, env):
@@ -75,11 +123,15 @@ def setup_phase3_workspace(cfg, source_trial_path):
     src_met = os.path.join(source_trial_path, "metrics.json")
     shutil.copy(src_met, os.path.join(workspace, "metrics_base.json"))
     
+    # Init Log File
+    with open(os.path.join(workspace, "optimization_history.md"), "w") as f:
+        f.write(f"# Optimization History\nSource Trial: {source_trial_path}\n\n")
+    
     print(f"[INIT] Workspace initialized at: {workspace}")
     return workspace, dst_nb
 
 # =============================================================================
-# 2. Notebook Analysis & Cell Routing (Safety Layer)
+# 3. Notebook Analysis & Cell Routing (Safety Layer)
 # =============================================================================
 
 def identify_mutable_cells(nb, cfg):
@@ -96,6 +148,10 @@ def identify_mutable_cells(nb, cfg):
         if cell.cell_type != "code": continue
         src = cell.source
         
+        # [CRITICAL] Safety Check: Explicitly protect Baseline
+        if "baseline" in src.lower() and "class" in src.lower():
+            continue
+
         # Heuristic 1: Explicit Section Headers
         is_target = any(k in src for k in target_keywords)
         is_protected = any(k in src for k in protected_keywords)
@@ -105,11 +161,10 @@ def identify_mutable_cells(nb, cfg):
         has_torch_nn = "import torch.nn" in src or "class " in src and "(nn.Module)" in src
         
         # Logic: It is mutable if it looks like a model AND isn't explicitly protected
-        # Note: 'is_target' helps identify cells explicitly labeled by Phase 2 prompt
         if (is_target or has_torch_nn) and not is_protected:
             mutable_indices.append(i)
             
-    print(f"[ROUTER] Mutable Cell Indices (Model/Training): {mutable_indices}")
+    print(f"[ROUTER] Mutable Cell Indices (Innovation Model Only): {mutable_indices}")
     if not mutable_indices:
         print("[WARN] No mutable cells found! The LLM will have nothing to edit. Check keywords in config.")
         
@@ -152,10 +207,10 @@ def get_metric_value(metrics_path, metric_name="PCC"):
         return -999.0
 
 # =============================================================================
-# 3. LLM Optimization Logic
+# 4. LLM Optimization Logic
 # =============================================================================
 
-def generate_optimization_suggestion(cfg, llm_client, nb, mutable_indices, current_metrics, iteration, best_metric_val):
+def generate_optimization_suggestion(cfg, llm_client, nb, mutable_indices, current_metrics, iteration, best_metric_val, workspace):
     """
     Calls LLM to review the mutable code and suggest improvements.
     """
@@ -167,7 +222,6 @@ def generate_optimization_suggestion(cfg, llm_client, nb, mutable_indices, curre
     # Load Prompt
     prompt_path = "prompts/review_optimize.yaml"
     if not os.path.exists(prompt_path):
-        # Fallback simple prompt
         print(f"[WARN] Prompt file {prompt_path} not found. Using fallback.")
         sys_prompt = "You are a code optimizer. Return JSON with 'edits' key."
         user_prompt = f"Optimize this code to improve {cfg['review']['target_metric']}:\n{mutable_content}"
@@ -179,13 +233,17 @@ def generate_optimization_suggestion(cfg, llm_client, nb, mutable_indices, curre
                 "target_metric": cfg["review"]["target_metric"], 
                 "current_best": str(best_metric_val)
             })
-            user_prompt = _expand_vars(p_data["user_template"], {
-                "iteration": str(iteration),
-                "target_metric": cfg["review"]["target_metric"],
-                "current_best": str(best_metric_val),
-                "mutable_cells_content": mutable_content,
-                "metrics_json": json.dumps(current_metrics, indent=2)
-            })
+            if "user_template" not in p_data:
+                 print("[WARN] 'user_template' key missing in yaml. Using simple concat.")
+                 user_prompt = f"ITERATION {iteration}\nMETRICS: {json.dumps(current_metrics)}\nCODE:\n{mutable_content}"
+            else:
+                user_prompt = _expand_vars(p_data["user_template"], {
+                    "iteration": str(iteration),
+                    "target_metric": cfg["review"]["target_metric"],
+                    "current_best": str(best_metric_val),
+                    "mutable_cells_content": mutable_content,
+                    "metrics_json": json.dumps(current_metrics, indent=2)
+                })
 
     messages = [
         {"role": "system", "content": sys_prompt},
@@ -193,23 +251,43 @@ def generate_optimization_suggestion(cfg, llm_client, nb, mutable_indices, curre
     ]
 
     print(f"[REVIEW] Requesting optimization from LLM (Iter {iteration})...")
+    
+    # [DEBUG] Define a debug directory for raw responses
+    debug_dir = os.path.join(workspace, "llm_debug")
+    
     try:
-        # Use robust chat with JSON enforcement
-        response_str = llm_client.chat(messages, enforce_json=True, temperature=cfg["llm"].get("temperature", 0.7))
+        response_str = llm_client.chat(
+            messages, 
+            enforce_json=False, 
+            temperature=cfg["llm"].get("temperature", 0.7),
+            debug_dir=debug_dir # <--- Pass debug dir to client
+        )
         
-        # Robust Cleaning of Markdown Code Blocks
         cleaned = response_str.strip()
-        if cleaned.startswith("```json"): cleaned = cleaned[7:]
-        elif cleaned.startswith("```"): cleaned = cleaned[3:]
-        if cleaned.endswith("```"): cleaned = cleaned[:-3]
         
-        return json.loads(cleaned.strip())
+        # Regex to find JSON block
+        json_match = re.search(r"```json(.*?)```", cleaned, re.DOTALL)
+        if json_match:
+            cleaned = json_match.group(1).strip()
+        elif cleaned.startswith("```"): 
+            cleaned = cleaned[3:].strip()
+        if cleaned.endswith("```"): 
+            cleaned = cleaned[:-3].strip()
+            
+        # [IMPROVED] Brute force JSON extraction if regex fails
+        # Find first '{' and last '}'
+        start_idx = cleaned.find('{')
+        end_idx = cleaned.rfind('}')
+        if start_idx != -1 and end_idx != -1:
+            cleaned = cleaned[start_idx:end_idx+1]
+        
+        return json.loads(cleaned)
     except Exception as e:
         print(f"[REVIEW] LLM Interaction Failed: {e}")
         return None
 
 # =============================================================================
-# 4. Main Optimization Loop
+# 5. Main Optimization Loop
 # =============================================================================
 
 def optimize_loop(cfg, workspace_dir, base_nb_path):
@@ -217,6 +295,8 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
     The core Review-Feedback Loop.
     """
     llm_params = resolve_llm_from_cfg(cfg)
+    # [CRITICAL] Ensure timeout is sufficient
+    print(f"[CONFIG] LLM Timeout set to: {llm_params['timeout']}s")
     client = LLMClient(**llm_params)
     
     target_metric = cfg["review"]["target_metric"]
@@ -227,6 +307,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
     current_metrics_path = os.path.join(workspace_dir, "metrics_base.json")
     best_score = get_metric_value(current_metrics_path, target_metric)
     best_nb_path = base_nb_path
+    best_metrics_path = current_metrics_path 
     
     print(f"\n[LOOP] Starting Optimization. Baseline {target_metric}: {best_score}")
 
@@ -251,11 +332,12 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             curr_metrics_obj = {}
             
         suggestion = generate_optimization_suggestion(
-            cfg, client, nb, mutable_indices, curr_metrics_obj, i, best_score
+            cfg, client, nb, mutable_indices, curr_metrics_obj, i, best_score, workspace_dir
         )
         
         if not suggestion or "edits" not in suggestion:
             print("[WARN] No valid edits received. Skipping round.")
+            write_review_log(workspace_dir, i, {"critique": "LLM Failed or Returned Invalid JSON"}, best_score, best_score, "SKIPPED")
             continue
             
         print(f"[CRITIQUE] {suggestion.get('critique', 'No critique provided.')}")
@@ -267,8 +349,6 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             try:
                 idx = int(edit["cell_index"])
                 new_src = edit["source"]
-                
-                # GUARD: Only allow editing mutable cells
                 if idx in mutable_indices:
                     nb_next.cells[idx].source = new_src
                     applied_count += 1
@@ -279,7 +359,8 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                 print(f"[WARN] Failed to apply edit: {e}")
         
         if applied_count == 0:
-            print("[WARN] No edits were applied (all blocked or invalid). Skipping execution.")
+            print("[WARN] No edits were applied. Skipping execution.")
+            write_review_log(workspace_dir, i, suggestion, best_score, best_score, "NO_CHANGES")
             continue
             
         # 5. Save Candidate Notebook
@@ -289,10 +370,9 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
         # 6. Execute (Robust Run with AutoFix)
         print(f"[EXEC] Running Candidate {i} with AutoFix...")
         try:
-            # Note: Phase 3 execution needs to respect the same timeouts/retries
             executed_nb_path = execute_with_autofix(
                 ipynb_path=candidate_nb_path,
-                workdir=workspace_dir, # Run in same dir to share intermediate files
+                workdir=workspace_dir,
                 timeout_seconds=cfg["exec"]["timeout_seconds"],
                 max_fix_rounds=cfg["exec"]["max_fix_rounds"],
                 phase_cfg=cfg,
@@ -300,9 +380,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             )
             
             # 7. Evaluate
-            cand_metrics_path = os.path.join(workspace_dir, "metrics.json") # execute_with_autofix saves here
-            
-            # Rename specifically for this iter to avoid overwriting
+            cand_metrics_path = os.path.join(workspace_dir, "metrics.json")
             iter_metrics_path = os.path.join(workspace_dir, f"metrics_iter_{i}.json")
             if os.path.exists(cand_metrics_path):
                 shutil.copy(cand_metrics_path, iter_metrics_path)
@@ -310,27 +388,50 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             score = get_metric_value(iter_metrics_path, target_metric)
             print(f"[RESULT] Iteration {i} Score: {score}")
             
+            # [LOGGING] Write detailed history
+            status = "IMPROVED" if score > best_score else "FAILED"
+            write_review_log(workspace_dir, i, suggestion, score, best_score, status)
+
             # 8. Compare & Update
             if score > best_score:
                 print(f"🎉 NEW BEST! {target_metric}={score:.4f} > {best_score:.4f}")
                 best_score = score
-                best_nb_path = executed_nb_path # Use the executed (and potentially autofixed) version as next base
+                best_nb_path = executed_nb_path 
                 current_metrics_path = iter_metrics_path
+                best_metrics_path = iter_metrics_path 
                 
+                # [NEW] Generate Report for this winner
+                if write_experiment_report and os.path.exists(best_metrics_path):
+                    try:
+                        with open(best_metrics_path, 'r') as f: m_obj = json.load(f)
+                        report_path = write_experiment_report(workspace_dir, m_obj, cfg, primary_metric=target_metric)
+                        print(f"[REPORT] Updated experiment report: {report_path}")
+                    except Exception as e:
+                        print(f"[WARN] Failed to generate interim report: {e}")
+
                 if best_score >= threshold:
                     print(f"[SUCCESS] Threshold {threshold} reached. Stopping.")
                     break
             else:
                 print(f"📉 Improvement failed ({score:.4f} <= {best_score:.4f}). Reverting to previous best.")
-                # We do NOT update best_nb_path, effectively discarding this attempt
                 
         except Exception as e:
             print(f"[ERROR] Execution failed for Iteration {i}: {e}")
-            # traceback.print_exc()
+            write_review_log(workspace_dir, i, suggestion, -999, best_score, f"CRASH: {str(e)}")
 
     print(f"\n🏁 Optimization Finished. Best {target_metric}: {best_score}")
     print(f"📂 Final Notebook: {best_nb_path}")
-    print(f"📂 Final Metrics: {current_metrics_path}")
+    print(f"📂 Review History: {os.path.join(workspace_dir, 'optimization_history.md')}")
+    
+    # [NEW] Final Report Generation
+    if write_experiment_report and os.path.exists(best_metrics_path):
+        print(f"\n[INFO] Generating Final Experiment Report...")
+        try:
+            with open(best_metrics_path, 'r') as f: m_obj = json.load(f)
+            report_path = write_experiment_report(workspace_dir, m_obj, cfg, primary_metric=target_metric)
+            print(f"📝 Final Report: {report_path}")
+        except Exception as e:
+            print(f"[WARN] Failed to generate final report: {e}")
 
 # =============================================================================
 # Main Entry

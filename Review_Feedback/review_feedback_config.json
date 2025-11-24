@@ -8,7 +8,8 @@
     "provider": "yizhan",
     "model": "gemini-3-pro-preview-thinking",
     "temperature": 0.7,
-    "max_tokens": 40000
+    "max_tokens": 40000,
+    "timeout": 300
   },
   "providers": {
     "yizhan": {
