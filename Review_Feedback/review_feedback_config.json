@@ -1,0 +1,43 @@
+{
+  "dataset_name": "BBBC036",
+  "paths": {
+    "generate_execution_root": "../results/${dataset_name}/generate_execution",
+    "review_feedback_root": "../results/${dataset_name}/review_feedback"
+  },
+  "llm": {
+    "provider": "yizhan",
+    "model": "gemini-3-pro-preview-thinking",
+    "temperature": 0.7,
+    "max_tokens": 40000
+  },
+  "providers": {
+    "yizhan": {
+      "base_url": "https://vip.yi-zhan.top/v1",
+      "model": "gemini-3-pro-preview-thinking",
+      "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835"
+    }
+  },
+  "review": {
+    "target_metric": "PCC",
+    "direction": "maximize", 
+    "max_iterations": 5,
+    "pass_threshold": 0.85,
+    "protected_sections": [
+        "SECTION 1", 
+        "SECTION 2", 
+        "SECTION 4",
+        "Data Loading",
+        "Evaluation"
+    ],
+    "target_sections": [
+        "SECTION 3",
+        "Innovation",
+        "Modeling",
+        "Training"
+    ]
+  },
+  "exec": {
+    "timeout_seconds": 18000,
+    "max_fix_rounds": 3
+  }
+}

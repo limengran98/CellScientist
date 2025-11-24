@@ -13,7 +13,6 @@ system: |
   0.5 — At least one genuinely novel modeling idea or training procedure must be implemented and evaluated, beyond standard off-the-shelf baseline models.
   0.6 — The notebook must output understandable logs during data loading, model construction, training, and evaluation; silent execution is not allowed.
   0.7 — All section logic must be consistent and must not contradict each other.
-  0.8 — You MUST set a fixed random seed (e.g., 42) for numpy, random, and torch at the very beginning of the "Setup" cell. This is non-negotiable for reproducibility.
   
   ================================================================================
   **SECTION 1 — HDF5 DYNAMIC DATA DISCOVERY**
@@ -38,11 +37,11 @@ system: |
         - - If the group/metadata contains chemical structure data (SMILES), convert it into a numerical fingerprint (e.g., ECFP).
   2.2 — **Strict Numeric Enforcement**:
         - **Objective**: The model input must contain **strictly numerical data**.
-  2.3 — **Standardization Protocol**:
-        - You MUST use `StandardScaler` for the raw feature and targets $y$.
-        - **CRITICAL**: The Scaler MUST be `.fit()` ONLY on samples where `split_id != test_fold_id`.
-        - It is FORBIDDEN to fit the scaler on the whole dataset.
-        - If you fail to do this, the MSE will be invalid.
+  2.3 — StandardScaler or other simple transformations may be used, but **RobustScaler is forbidden**. 
+        - The raw target values ($y$) likely have large variance, causing massive MSE.
+        - **You MUST apply `StandardScaler` to the targets $y$ as well.**
+        - Raw feature and target values ($y$) of Training and Evaluation must be performed in this **standardized space** (so expected MSE is < 1.0).
+        - **Leakage Prevention**: Fit all scalers **strictly** on the **Training samples only** (as defined by the `split_id` in Section 1.7) for each fold. Never fit scalers on the validation/test set.
   2.4 — **Data Cleaning**:
         - Handle missing values (NaN) using robust imputation (e.g., median).
         - Clip infinite values to finite bounds to prevent numerical instability.
