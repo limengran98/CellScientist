@@ -30,7 +30,7 @@ except ImportError:
     write_experiment_report = None
 
 # =============================================================================
-# 1. Logging & Analysis Logic (New Feature)
+# 1. Logging & Analysis Logic (Review Details)
 # =============================================================================
 
 def write_review_log(workspace, iteration, suggestion, score, baseline, status):
@@ -137,8 +137,19 @@ def setup_phase3_workspace(cfg, source_trial_path):
 def identify_mutable_cells(nb, cfg):
     """
     Identifies which cells are 'Modeling/Innovation' (Mutable) vs 'Data/Eval' (Immutable).
-    Returns a list of indices.
+    Supports explicit override via 'force_cells'.
     """
+    # [NEW] Manual Override Logic
+    force_indices = cfg["review"].get("force_cells")
+    if force_indices and isinstance(force_indices, list) and len(force_indices) > 0:
+        print(f"[ROUTER] ⚠️ MANUAL OVERRIDE: Forcing focus on cells {force_indices}")
+        # Validate indices
+        valid_indices = [i for i in force_indices if 0 <= i < len(nb.cells)]
+        if len(valid_indices) != len(force_indices):
+            print(f"[WARN] Some forced indices were out of bounds. Valid: {valid_indices}")
+        return valid_indices
+
+    # Standard Heuristic Logic
     protected_keywords = cfg["review"].get("protected_sections", [])
     target_keywords = cfg["review"].get("target_sections", ["SECTION 3", "Model", "Innovation"])
     
@@ -164,7 +175,7 @@ def identify_mutable_cells(nb, cfg):
         if (is_target or has_torch_nn) and not is_protected:
             mutable_indices.append(i)
             
-    print(f"[ROUTER] Mutable Cell Indices (Innovation Model Only): {mutable_indices}")
+    print(f"[ROUTER] Mutable Cell Indices (Auto-Detected): {mutable_indices}")
     if not mutable_indices:
         print("[WARN] No mutable cells found! The LLM will have nothing to edit. Check keywords in config.")
         
