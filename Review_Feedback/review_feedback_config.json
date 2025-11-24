@@ -23,7 +23,7 @@
     "direction": "maximize", 
     "max_iterations": 5,
     "pass_threshold": 0.85,
-    "force_cells": [4, 6],
+    "force_cells": [5, 7],
     "protected_sections": [
         "SECTION 1", 
         "SECTION 2", 
