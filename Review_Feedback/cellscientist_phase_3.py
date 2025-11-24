@@ -30,7 +30,36 @@ except ImportError:
     write_experiment_report = None
 
 # =============================================================================
-# 1. Logging & Analysis Logic (Review Details)
+# 1. Helper: Absolute Path Enforcement (The "Robustness" Fix)
+# =============================================================================
+
+def _enforce_absolute_paths(cfg):
+    """
+    CRITICAL FIX: When moving execution to a deep subdirectory, relative paths break.
+    This function converts known data path variables to absolute paths in the config/env.
+    """
+    # 1. Resolve HDF5 Path
+    h5_path = os.environ.get("STAGE1_H5_PATH")
+    if h5_path and not os.path.isabs(h5_path):
+        # Try to find it relative to CWD first
+        abs_path = os.path.abspath(h5_path)
+        if os.path.exists(abs_path):
+            print(f"[PATH FIX] Converting STAGE1_H5_PATH to absolute: {abs_path}")
+            os.environ["STAGE1_H5_PATH"] = abs_path
+            # Update cfg env as well
+            if "env" not in cfg: cfg["env"] = {}
+            cfg["env"]["STAGE1_H5_PATH"] = abs_path
+    
+    # 2. Resolve Idea Path (if any)
+    idea_path = os.environ.get("STAGE1_IDEA_PATH")
+    if idea_path and not os.path.isabs(idea_path):
+        abs_idea = os.path.abspath(idea_path)
+        if os.path.exists(abs_idea):
+            print(f"[PATH FIX] Converting STAGE1_IDEA_PATH to absolute: {abs_idea}")
+            os.environ["STAGE1_IDEA_PATH"] = abs_idea
+
+# =============================================================================
+# 2. Logging & Analysis Logic (Review Details)
 # =============================================================================
 
 def write_review_log(workspace, iteration, suggestion, score, baseline, status):
@@ -71,7 +100,7 @@ def write_review_log(workspace, iteration, suggestion, score, baseline, status):
 
 
 # =============================================================================
-# 2. Path & Resource Management
+# 3. Path & Resource Management
 # =============================================================================
 
 def _expand_vars(obj, env):
@@ -131,7 +160,7 @@ def setup_phase3_workspace(cfg, source_trial_path):
     return workspace, dst_nb
 
 # =============================================================================
-# 3. Notebook Analysis & Cell Routing (Safety Layer)
+# 4. Notebook Analysis & Cell Routing (Safety Layer)
 # =============================================================================
 
 def identify_mutable_cells(nb, cfg):
@@ -218,7 +247,7 @@ def get_metric_value(metrics_path, metric_name="PCC"):
         return -999.0
 
 # =============================================================================
-# 4. LLM Optimization Logic
+# 5. LLM Optimization Logic
 # =============================================================================
 
 def generate_optimization_suggestion(cfg, llm_client, nb, mutable_indices, current_metrics, iteration, best_metric_val, workspace):
@@ -298,13 +327,17 @@ def generate_optimization_suggestion(cfg, llm_client, nb, mutable_indices, curre
         return None
 
 # =============================================================================
-# 5. Main Optimization Loop
+# 6. Main Optimization Loop
 # =============================================================================
 
 def optimize_loop(cfg, workspace_dir, base_nb_path):
     """
     The core Review-Feedback Loop.
     """
+    # [ROBUSTNESS FIX] Enforce Absolute Paths before starting loop
+    # This ensures Cell 3 (Data Loading) works in the deep subfolder
+    _enforce_absolute_paths(cfg)
+
     llm_params = resolve_llm_from_cfg(cfg)
     # [CRITICAL] Ensure timeout is sufficient
     print(f"[CONFIG] LLM Timeout set to: {llm_params['timeout']}s")
