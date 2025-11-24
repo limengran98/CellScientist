@@ -30,33 +30,45 @@ except ImportError:
     write_experiment_report = None
 
 # =============================================================================
-# 1. Helper: Absolute Path Enforcement (The "Robustness" Fix)
+# 1. Helper: Relative Path Resolver (Fixes FileNotFoundError)
 # =============================================================================
 
-def _enforce_absolute_paths(cfg):
+def _resolve_relative_resources(cfg):
     """
-    CRITICAL FIX: When moving execution to a deep subdirectory, relative paths break.
-    This function converts known data path variables to absolute paths in the config/env.
+    Allows user to use relative paths in config (e.g. "../results/...")
+    but ensures the Notebook finds the file regardless of execution directory.
     """
-    # 1. Resolve HDF5 Path
-    h5_path = os.environ.get("STAGE1_H5_PATH")
-    if h5_path and not os.path.isabs(h5_path):
-        # Try to find it relative to CWD first
-        abs_path = os.path.abspath(h5_path)
-        if os.path.exists(abs_path):
-            print(f"[PATH FIX] Converting STAGE1_H5_PATH to absolute: {abs_path}")
-            os.environ["STAGE1_H5_PATH"] = abs_path
-            # Update cfg env as well
-            if "env" not in cfg: cfg["env"] = {}
-            cfg["env"]["STAGE1_H5_PATH"] = abs_path
+    # 1. Get the relative path from config
+    s1_dir = cfg.get("paths", {}).get("stage1_analysis_dir")
+    if not s1_dir:
+        print("[WARN] 'stage1_analysis_dir' missing in config.")
+        return
+
+    # 2. Convert relative path to absolute path (based on current script location)
+    # This fixes the issue where the notebook runs in a sub-folder and can't find "../"
+    abs_s1_dir = os.path.abspath(s1_dir)
     
-    # 2. Resolve Idea Path (if any)
-    idea_path = os.environ.get("STAGE1_IDEA_PATH")
-    if idea_path and not os.path.isabs(idea_path):
-        abs_idea = os.path.abspath(idea_path)
-        if os.path.exists(abs_idea):
-            print(f"[PATH FIX] Converting STAGE1_IDEA_PATH to absolute: {abs_idea}")
-            os.environ["STAGE1_IDEA_PATH"] = abs_idea
+    print(f"[PATH] Resolving relative path '{s1_dir}' -> '{abs_s1_dir}'")
+
+    if not os.path.exists(abs_s1_dir):
+        print(f"[ERROR] Directory not found: {abs_s1_dir}")
+        return
+
+    # 3. Find the HDF5 file
+    h5_files = glob.glob(os.path.join(abs_s1_dir, "*.h5"))
+    if h5_files:
+        target_h5 = h5_files[0]
+        # 4. Inject into Environment Variable (Critical Step)
+        # The notebook will read this environment variable
+        os.environ["STAGE1_H5_PATH"] = target_h5
+        print(f"[DATA] HDF5 Resource Locked: {target_h5}")
+    else:
+        print(f"[WARN] No .h5 file found in {abs_s1_dir}")
+
+    # 5. Handle Idea File (if any)
+    idea_files = glob.glob(os.path.join(abs_s1_dir, "idea.json"))
+    if idea_files:
+        os.environ["STAGE1_IDEA_PATH"] = idea_files[0]
 
 # =============================================================================
 # 2. Logging & Analysis Logic (Review Details)
@@ -334,9 +346,9 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
     """
     The core Review-Feedback Loop.
     """
-    # [ROBUSTNESS FIX] Enforce Absolute Paths before starting loop
-    # This ensures Cell 3 (Data Loading) works in the deep subfolder
-    _enforce_absolute_paths(cfg)
+    # [FIX] Resolve Relative Paths to Absolute here
+    # This reads the relative path from config, converts it, and sets env vars
+    _resolve_relative_resources(cfg)
 
     llm_params = resolve_llm_from_cfg(cfg)
     # [CRITICAL] Ensure timeout is sufficient

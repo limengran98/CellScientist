@@ -2,7 +2,8 @@
   "dataset_name": "BBBC036",
   "paths": {
     "generate_execution_root": "../results/${dataset_name}/generate_execution",
-    "review_feedback_root": "../results/${dataset_name}/review_feedback"
+    "review_feedback_root": "../results/${dataset_name}/review_feedback",
+    "stage1_analysis_dir": "../results/${dataset_name}/design_analysis/reference"
   },
   "llm": {
     "provider": "yizhan",
