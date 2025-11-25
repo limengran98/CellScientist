@@ -22,7 +22,7 @@
   "review": {
     "target_metric": "PCC",
     "direction": "maximize", 
-    "max_iterations": 5,
+    "max_iterations": 10,
     "pass_threshold": 0.85,
     "force_cells": [0,1,4,6],
     "protected_sections": [

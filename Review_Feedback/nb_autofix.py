@@ -47,6 +47,7 @@ def _load_llm_profile(cfg: dict | None, *, verbose: bool = False) -> dict:
         or os.environ.get(f"{(provider or 'openai').upper()}_BASE_URL")
         or prov_profile.get("base_url")
     )
+    
     api_key = (
         llm_cfg.get("api_key")
         or os.environ.get(f"{(provider or 'openai').upper()}_API_KEY")
