@@ -36,11 +36,15 @@ system: |
 user_template: |
 
   Iteration: ${iteration}
+  Best ${target_metric} So Far: ${current_best}
 
-  Best ${target_metric}: ${current_best}
+  **HISTORY OF ATTEMPTS (Evolutionary Context)**:
+  ${history_summary}
 
-  CODE TO OPTIMIZE (Only showing Mutable Modeling Cells): ${mutable_cells_content}
+  **CURRENT METRICS**:
+  ${metrics_json}
 
-  PREVIOUS METRICS: ${metrics_json}
+  **CODE TO OPTIMIZE**:
+  ${mutable_cells_content}
 
   INSTRUCTION: Generate a strictly better model architecture to improve ${target_metric}. Ensure the code is complete and runnable. Return ONLY the JSON.
