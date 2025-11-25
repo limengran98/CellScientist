@@ -152,29 +152,45 @@ def setup_phase3_workspace(cfg, source_trial_path):
 # 4. Notebook Analysis
 # =============================================================================
 
+
 def identify_mutable_cells(nb, cfg):
+    """
+    Identifies mutable cells, explicitly supporting Strategy (Markdown) + Model (Code).
+    """
+
     force_indices = cfg["review"].get("force_cells")
     if force_indices and isinstance(force_indices, list) and len(force_indices) > 0:
-        return [i for i in force_indices if 0 <= i < len(nb.cells)]
+        valid_indices = [i for i in force_indices if 0 <= i < len(nb.cells)]
+        # print(f"[ROUTER] 🧠 Strategy Mode: Focusing on cells {valid_indices}")
+        return valid_indices
 
     protected_keywords = cfg["review"].get("protected_sections", [])
-    target_keywords = cfg["review"].get("target_sections", ["SECTION 3", "Model", "Innovation"])
+    target_keywords = cfg["review"].get("target_sections", ["SECTION 3", "Model", "Innovation", "Strategy"])
     
     mutable_indices = []
+    
     for i, cell in enumerate(nb.cells):
-        if cell.cell_type != "code": continue
         src = cell.source
-        # Baseline cells are ignored unless forced
-        if "baseline" in src.lower() and "class" in src.lower(): continue
-
-        is_target = any(k in src for k in target_keywords)
-        is_protected = any(k in src for k in protected_keywords)
-        has_torch_nn = "import torch.nn" in src or "class " in src and "(nn.Module)" in src
         
-        if (is_target or has_torch_nn) and not is_protected:
-            mutable_indices.append(i)
+        if "StratifiedKFold" in src or "train_test_split" in src:
+            continue
             
-    print(f"[ROUTER] Mutable Cell Indices: {mutable_indices}")
+        if cell.cell_type == "markdown":
+            if any(k in src for k in ["Strategy", "Idea", "Hypothesis", "Research"]):
+                mutable_indices.append(i)
+            continue
+
+        if cell.cell_type == "code":
+            is_protected = any(k in src for k in protected_keywords)
+            if is_protected: continue
+            
+            is_model = "import torch.nn" in src or ("class " in src and "(nn.Module)" in src)
+            is_digest = "Digest" in src and "Strategy" in src
+            
+            if is_model or is_digest:
+                mutable_indices.append(i)
+            
+    print(f"[ROUTER] Mutable Cell Indices (Auto): {mutable_indices}")
     return mutable_indices
 
 # =============================================================================
@@ -242,38 +258,88 @@ def get_baseline_metric_value(metrics_path, metric_name="PCC"):
 # =============================================================================
 
 def generate_optimization_suggestion(cfg, llm_client, nb, mutable_indices, current_metrics, iteration, best_metric_val, workspace, history_summary):
+    """
+    Generates optimization suggestions with:
+    1. Dynamic Semantic Labeling: Tells LLM "This cell is Strategy", "This is Model".
+    2. History Context: Injects previous attempts to allow iterative evolution.
+    """
+    
+    # --- 1. Dynamic Content Construction (with Semantic Tags) ---
     mutable_content = ""
     for idx in mutable_indices:
-        mutable_content += f"\n# --- CELL INDEX {idx} ---\n{nb.cells[idx].source}\n"
-    
+        cell = nb.cells[idx]
+        src = cell.source
+        
+        # Auto-Labeling Logic based on content
+        label = "CODE" # Default fallback
+        
+        if cell.cell_type == "markdown":
+            # Identify Strategy Docs
+            if any(k in src for k in ["Strategy", "Idea", "Hypothesis", "Research Plan"]):
+                label = "STRATEGY_DOC"
+            else:
+                label = "MARKDOWN_NOTE"
+        
+        elif cell.cell_type == "code":
+            # Identify Model Definitions
+            if "class " in src and "(nn.Module)" in src:
+                label = "MODEL_DEF"
+            # Identify Strategy Summaries in Code Comments
+            elif "Strategy Digest" in src or "Strategy Summary" in src:
+                label = "STRATEGY_DIGEST"
+            # Identify Imports (if user allowed modifying them)
+            elif idx < 5 and ("import " in src or "from " in src):
+                label = "SETUP/IMPORTS"
+            
+        # Inject Label into the Header so LLM sees it
+        mutable_content += f"\n# --- CELL INDEX {idx} (TYPE: {label}) ---\n{src}\n"
+
+    # --- 2. History Context Construction ---
     history_text = ""
     if history_summary:
-        history_text = "\n".join([f"- Iter {h['iter']}: {h['critique']} (Result: {h['status']}, Score: {h['score']:.4f})" for h in history_summary])
+        history_text = "\n".join([
+            f"- Iter {h['iter']}: {h['critique']} (Result: {h['status']}, Score: {h['score']:.4f})" 
+            for h in history_summary
+        ])
     else:
         history_text = "None (Starting from Phase 2 baseline)."
 
-    prompt_path = os.path.join(os.getcwd(), "prompts", "review_optimize.yaml")
+    # --- 3. Load Prompt Template ---
+    # Robustly find the yaml file
+    cwd_path = os.path.join(os.getcwd(), "prompts", "review_optimize.yaml")
+    script_path = os.path.join(os.path.dirname(__file__), "prompts", "review_optimize.yaml")
     
+    prompt_path = None
+    if os.path.exists(cwd_path): prompt_path = cwd_path
+    elif os.path.exists(script_path): prompt_path = script_path
+    
+    # Default Fallbacks
     sys_prompt = "You are a code optimizer. Return JSON with 'edits' key."
     user_prompt = f"Optimize this code:\n{mutable_content}"
 
-    if os.path.exists(prompt_path):
-        import yaml
-        with open(prompt_path, 'r') as f:
-            p_data = yaml.safe_load(f)
-            sys_prompt = _expand_vars(p_data["system"], {
+    if prompt_path:
+        try:
+            import yaml
+            with open(prompt_path, 'r', encoding='utf-8') as f:
+                p_data = yaml.safe_load(f)
+            
+            # Prepare Context Variables for ${var} replacement
+            ctx = {
                 "target_metric": cfg["review"]["target_metric"], 
-                "current_best": str(best_metric_val)
-            })
+                "current_best": str(best_metric_val),
+                "iteration": str(iteration),
+                "mutable_cells_content": mutable_content,
+                "metrics_json": json.dumps(current_metrics, indent=2),
+                "history_summary": history_text
+            }
+
+            if "system" in p_data:
+                sys_prompt = _expand_vars(p_data["system"], ctx)
             if "user_template" in p_data:
-                user_prompt = _expand_vars(p_data["user_template"], {
-                    "iteration": str(iteration),
-                    "target_metric": cfg["review"]["target_metric"],
-                    "current_best": str(best_metric_val),
-                    "mutable_cells_content": mutable_content,
-                    "metrics_json": json.dumps(current_metrics, indent=2),
-                    "history_summary": history_text
-                })
+                user_prompt = _expand_vars(p_data["user_template"], ctx)
+                
+        except Exception as e:
+            print(f"[WARN] Failed to load prompt yaml: {e}. Using fallback.")
 
     messages = [
         {"role": "system", "content": sys_prompt},
@@ -281,6 +347,8 @@ def generate_optimization_suggestion(cfg, llm_client, nb, mutable_indices, curre
     ]
 
     print(f"[REVIEW] Requesting optimization (Iter {iteration})...")
+    
+    # --- 4. Call LLM & Parse Response ---
     debug_dir = os.path.join(workspace, "llm_debug")
     
     try:
@@ -291,12 +359,19 @@ def generate_optimization_suggestion(cfg, llm_client, nb, mutable_indices, curre
             debug_dir=debug_dir
         )
         
+        # Robust JSON Cleaning
         cleaned = response_str.strip()
-        json_match = re.search(r"```json(.*?)```", cleaned, re.DOTALL)
-        if json_match: cleaned = json_match.group(1).strip()
-        elif cleaned.startswith("```"): cleaned = cleaned[3:].strip()
-        if cleaned.endswith("```"): cleaned = cleaned[:-3].strip()
         
+        # 1. Try finding fenced code block
+        json_match = re.search(r"```json(.*?)```", cleaned, re.DOTALL)
+        if json_match: 
+            cleaned = json_match.group(1).strip()
+        elif cleaned.startswith("```"): 
+            cleaned = cleaned[3:].strip()
+        if cleaned.endswith("```"): 
+            cleaned = cleaned[:-3].strip()
+        
+        # 2. Brute force extract { ... } if Markdown failed
         start_idx = cleaned.find('{')
         end_idx = cleaned.rfind('}')
         if start_idx != -1 and end_idx != -1:
@@ -306,7 +381,7 @@ def generate_optimization_suggestion(cfg, llm_client, nb, mutable_indices, curre
     except Exception as e:
         print(f"[REVIEW] LLM Interaction Failed: {e}")
         return None
-
+    
 # =============================================================================
 # 6. Main Optimization Loop
 # =============================================================================
