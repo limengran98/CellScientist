@@ -81,14 +81,17 @@ def _check_success(metrics: dict, threshold: float, metric_key: str) -> tuple[bo
     
     return score > threshold, score
 
-def _archive_run(trial_dir: str, prefix: str = "FINAL"):
-    """Renames the process-specific workspace to a permanent timestamped folder."""
+def _archive_run(trial_dir: str):
+    """
+    [MODIFIED] Renames workspace to prompt_run_TIMESTAMP.
+    """
     if not os.path.exists(trial_dir): return
     
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     parent = os.path.dirname(trial_dir)
-    # The final name is clean (no PID), just status + timestamp
-    new_name = f"prompt_run_{prefix}_{ts}"
+    
+    # [FIX] Clean naming pattern
+    new_name = f"prompt_run_{ts}"
     new_path = os.path.join(parent, new_name)
     
     try:
@@ -110,9 +113,7 @@ def run_loop(cfg: dict, prompt_file: str, use_idea: bool):
               (cfg.get("prompt_branch") or {}).get("prompt_file") or 
               "prompts/pipeline_prompt.yaml")
 
-    # [MODIFIED] Unique Workspace Name per Process
-    # Format: workspace_TIMESTAMP_PID
-    # Allows multiple terminals to run 'run_loop' simultaneously without collision
+    # Unique Workspace Name per Process
     start_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     pid = os.getpid()
     workspace_name = f"workspace_{start_ts}_{pid}"
@@ -125,7 +126,7 @@ def run_loop(cfg: dict, prompt_file: str, use_idea: bool):
         try:
             _setup_stage1_resources(cfg, use_idea)
             
-            # Run in the unique workspace (overwrites previous iteration of THIS process)
+            # Run in the unique workspace
             res = run_full_pipeline(cfg, p_path, run_name=workspace_name)
             
             trial_dir = res.get("trial_dir")
@@ -133,15 +134,15 @@ def run_loop(cfg: dict, prompt_file: str, use_idea: bool):
             
             if success:
                 print(f"\n🎉 [SUCCESS] Criteria Met! Archiving and Stopping.", flush=True)
-                _archive_run(trial_dir, prefix="SUCCESS")
+                _archive_run(trial_dir) # No prefix
                 return
             
             print(f"⚠️ [CONTINUE] Threshold not met.", flush=True)
             
-            # Archive the last run even if failed, so you can inspect it
+            # Archive the last run even if failed
             if i == max_iters:
                 print(f"\n🏁 [DONE] Loop finished. Archiving last run.", flush=True)
-                _archive_run(trial_dir, prefix="FAIL")
+                _archive_run(trial_dir) # No prefix
 
         except Exception as e:
             print(f"❌ [ERROR] Iteration {i} crashed: {e}", flush=True)
@@ -177,7 +178,7 @@ def main():
     elif args.cmd == "generate":
         _setup_stage1_resources(cfg, use_idea)
         p_path = args.prompt_file or (cfg.get("prompt_branch", {})).get("prompt_file") or "prompts/pipeline_prompt.yaml"
-        # Standard generate creates timestamped folder by default (safe for parallel)
+        # Standard generate creates timestamped folder by default
         phase_generate(cfg, p_path)
         
     elif args.cmd == "execute":

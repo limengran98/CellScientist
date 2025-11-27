@@ -10,13 +10,13 @@
     "base_url": "https://vip.yi-zhan.top/v1",
     "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835",
     "max_tokens": 40000,
-    "temperature": 0.5,
+    "temperature": 0.2,
     "timeout": 600
   },
   "experiment": {
     "primary_metric": "PCC",
     "max_iterations": 3,
-    "success_threshold": 0.2
+    "success_threshold": 0.5
   },
   "prompt_branch": {
     "output_type": "notebook",

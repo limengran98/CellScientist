@@ -104,6 +104,9 @@ def chat_text(
     
     try:
         content = data["choices"][0]["message"]["content"]
+        if not content:
+            print(f"[LLM] ⚠️ Warning: Received empty content from API!", flush=True)
+            return ""
         return content.strip()
     except KeyError:
         print(f"[LLM] Unexpected response structure: {data}", flush=True)
@@ -160,7 +163,7 @@ def chat_json(
             # 2. Regex Code Block
             m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, flags=re.S)
             if m:
-                try: return json.loads(m.group(1))
+                try: return json.chat_text(m.group(1))
                 except: pass
             
             # 3. Regex Braces
