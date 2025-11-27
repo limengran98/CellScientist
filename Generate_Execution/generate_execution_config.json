@@ -23,7 +23,7 @@
     "prompt_file": "prompts/pipeline_prompt.yaml",
     "idea_file": "idea.json",
     "save_root": "../results/${dataset_name}/generate_execution",
-    "temperature": 0.5,
+    "temperature": 0.7,
     "max_tokens": 40000
   },
   "exec": {
