@@ -51,7 +51,7 @@ python cellscientist_phase_1.py design_analysis_config.json
 
 ### 5\. Review & Export (`review.reference`)
 
-Uses **Heuristic Scoring** (Rule-based detection of stats, plots, biology terms) instead of LLM critique.
+Uses **Heuristic Scoring** (Rule-based detection of stats, plots, biology terms).
 
   * `weights`: Adjust importance of Scientific, Novelty, Reproducibility, and Interpretability scores.
   * **Note**: The system **automatically** calculates scores and exports the best performing notebook to the `reference/` directory.

@@ -1,82 +1,84 @@
-# Generate_Execution
+# Generate Execution Module
 
-## Run
+## Quick Start
+
+### 1\. Standard Run
 
 ```bash
 python cellscientist_phase_2.py --config generate_execution_config.json run
-# optional flags:
-#   --with-lit                # enable literature retrieval/synthesis (if configured)
-#   --use-stage1-ref          # prepend Stage-1 summary as Markdown (default True)
-#   --no-stage1-ref           # disable Stage-1 summary
-#   --use-baseline            # include baseline notebook context (if present)
-#   --no-baseline             # do not include baseline (default)
 ```
 
----
+**Optional Arguments**:
 
-## Files
+  * `--use-idea`: Enables **Idea-Driven Mode**. The system locates the `idea.json` generated in Phase 1, synthesizes a research strategy, and then generates code based on that strategy. **Highly Recommended**.
+  * `--prompt-file <path>`: Specify a custom YAML prompt file (defaults to `prompts/pipeline_prompt.yaml`).
 
-| File                               | Purpose                                                                                                                                |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| **cellscientist_phase_2.py**       | Main entry. CLI (`run / generate / execute / analyze`) for the prompt-only pipeline. Supports `--use-baseline` and `--use-stage1-ref`. |
-| **generate_execution_config.json** | Config (dataset paths, save roots, LLM options, exec behavior).                                                                        |
-| **prompts/pipeline_prompt.yaml**   | Prompt spec consumed by the LLM to produce the notebook.                                                                               |
+### 2\. Step-by-Step Debugging
 
+Use subcommands to isolate specific stages of the pipeline:
 
-| File                                                          | Purpose                                                                                                               |
-| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| **design_execution/prompt_pipeline.py**                                        | Orchestrates generate → execute → analyze (prompt mode). Analyze is read-only.                                        |
-| **design_execution/prompt_builder.py**                                         | Builds LLM messages, calls LLM, parses STRICT-JSON, constructs notebook; **prepends Stage-1 Markdown** when enabled.  |
-| **design_execution/llm_client.py**                                             | Unified OpenAI-compatible client; prints provider/model each call; `resolve_llm_from_cfg` picks the exact model used. |
-| **design_execution/nb_autofix.py**                                             | Execute + auto-fix loop (known patches, optional LLM bug-fix); preserves source in exec by default.                   |
-| **design_execution/notebook_executor.py**                                      | Thin wrapper helpers for nb execution.                                                                                |
-| **design_execution/report_builder.py**                                         | Builds minimal markdown/JSON summaries.                                                                   |
-| **design_execution/prompts.py / design_execution/prompt_viz.py / design_execution/run_llm_nb.py / design_execution/evaluator.py** | Helpers (message building, hypergraph viz, JSON-chat wrapper, metrics recorder).                                      |
+  * **Generate Only** (Inspect LLM code quality without execution):
+    ```bash
+    python cellscientist_phase_2.py --config generate_execution_config.json generate --use-idea
+    ```
+  * **Execute Only** (Run the latest generated notebook with Auto-Fix):
+    ```bash
+    python cellscientist_phase_2.py --config generate_execution_config.json execute
+    ```
+  * **Analyze Only** (Re-calculate metrics and generate reports):
+    ```bash
+    python cellscientist_phase_2.py --config generate_execution_config.json analyze
+    ```
 
+-----
 
----
+## Core Files Overview
 
-## Key CLI flags
+| File | Function |
+| :--- | :--- |
+| **cellscientist\_phase\_2.py** | **Entry Point**. Handles argument parsing, environment setup (injecting API keys/data paths), loop control, and command dispatch. |
+| **design\_execution/llm\_utils.py** | **LLM Engine**. Centralizes all LLM interactions, featuring API Key resolution, automatic **Retries**, robust JSON parsing, and Proxy configuration. |
+| **design\_execution/prompt\_orchestrator.py** | **Scheduler**. Manages the standard workflow (Generate -\> Execute -\> Analyze) and handles file path transitions. |
+| **design\_execution/prompt\_generator.py** | **Code Generator**. Converts Ideas and Specs into a Jupyter Notebook. Includes logic for "Strategy Synthesis". |
+| **design\_execution/prompt\_executor.py** | **Execution Engine**. Runs the notebook and manages the **Auto-Fix Loop** (Capture Error -\> LLM Patch -\> Retry). |
+| **design\_execution/experiment\_report.py** | **Analyst**. Reads `metrics.json`, computes statistical significance (P-Values), and generates the detailed `experiment_report.md`. |
+| **design\_execution/prompt\_viz.py** | **Visualizer**. Parses notebook metadata to generate `hypergraph.md` (Mermaid flowchart). |
 
-* `--use-stage1-ref / --no-stage1-ref` – control whether Stage-1 analysis summary is **prepended as Markdown** to the generated notebook (Cell 1).
-* `--use-baseline / --no-baseline` – include baseline notebook context in the prompt (does **not** run a separate baseline branch).
-* `--prompt-file / --prompt-text` – pick the spec source; inline text overrides file.
+-----
 
----
+## Configuration Guide (`generate_execution_config.json`)
 
-## Typical Workflow
+### 1\. LLM Settings (`llm`)
 
-### **A. Generate Patch (LLM only)**
-Generate improved notebook patches **without execution**.
+  * **`base_url`**: **Critical**. Must be set to your proxy address (e.g., `https://vip.yi-zhan.top/v1`) to avoid "Network Unreachable" errors.
+  * **`api_key`**: Your API key. If left empty, it defaults to the environment variable `OPENAI_API_KEY`.
+  * **`model`**: Strong reasoning models are recommended (e.g., `gpt-4o`, `gemini-3-pro`).
 
-#### Without literature (simpler, faster)
+### 2\. Experiment Control (`experiment`)
 
-```bash
-python cellscientist_phase_2.py --config generate_execution_config.json generate 
-```
+  * **`primary_metric`**: The core metric (e.g., `PCC`, `MSE`) used to determine "Success" and rank models.
+  * **`success_threshold`**: The target score. If a run exceeds this value, the loop terminates early.
+  * **`max_iterations`**: Maximum number of attempts (prevents infinite loops).
 
-#### With literature (adds OpenAlex search + LLM summarization)
+### 3\. Execution & Repair (`exec`)
 
-```bash
-python cellscientist_phase_2.py --config generate_execution_config.json generate --with-lit
-```
+  * **`enable_llm_autofix`**: Set to `true` to enable automatic code repair.
+  * **`max_fix_rounds`**: Maximum attempts to fix code errors (Recommended: 3-5).
+  * **`timeout_seconds`**: Max runtime per notebook (Recommended: 18000s+ for model training).
 
-### **B. Execute**
-Run baseline and patched notebooks:
-```bash
-python cellscientist_phase_2.py --config generate_execution_config.json execute
-```
+### 4\. Generation Settings (`prompt_branch`)
 
-### **C. Analyze**
-Generate Markdown summary report:
-```bash
-python cellscientist_phase_2.py --config generate_execution_config.json analyze
-```
+  * **`idea_file`**: The filename for ideas (default: `idea.json`). The system automatically searches for this file in the Phase 1 output directory.
 
-### **D. Full Pipeline**
-Run all three stages in sequence:
-```bash
-python cellscientist_phase_2.py --config generate_execution_config.json run --with-lit
-```
+-----
 
+## Output Structure
 
+Results are saved to `../results/${dataset_name}/generate_execution/prompt/prompt_run_YYYYMMDD_.../`:
+
+1.  **`notebook_prompt.ipynb`**: The raw, LLM-generated source code.
+2.  **`notebook_prompt_exec.ipynb`**: The executed notebook (containing outputs and logs).
+3.  **`research_strategy.md`**: The research strategy document synthesized by the LLM (only if `--use-idea` is enabled).
+4.  **`metrics.json`**: Extracted model performance metrics.
+5.  **`experiment_report.md`**: The final analysis report.
+6.  **`hypergraph.md`**: A visualization of the code's logical flow.

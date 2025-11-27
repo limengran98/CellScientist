@@ -4,10 +4,10 @@ Experiment report generator (Deep Metric Hunter & NaN-Safe Version).
 Refactored to load prompts from YAML with fallback.
 """
 
+# design_execution/experiment_report.py
 from __future__ import annotations
 from typing import Any, Dict, Optional, List
-import os, json, re
-import math
+import os, json, re, math
 import numpy as np
 from scipy import stats
 
@@ -16,10 +16,12 @@ try:
 except ImportError:
     yaml = None
 
+# [MODIFIED] Use new centralized LLM Utils
 try:
-    from .prompt_builder import chat_text
+    from .llm_utils import chat_text
 except ImportError:
-    from prompt_builder import chat_text
+    # Fallback if running standalone (not recommended)
+    pass
 
 __all__ = ["write_experiment_report"]
 

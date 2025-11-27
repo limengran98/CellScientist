@@ -37,7 +37,7 @@ system: |
         - - If the group/metadata contains chemical structure data (SMILES), convert it into a numerical fingerprint (e.g., ECFP).
   2.2 — **Strict Numeric Enforcement**:
         - **Objective**: The model input must contain **strictly numerical data**.
-  2.3 — StandardScaler or other simple transformations may be used, but **RobustScaler is forbidden**. 
+  2.3 — QuantileTransformer, RobustScaler or other simple transformations may be used. 
         - The raw target values ($y$) likely have large variance, causing massive MSE.
         - **You MUST apply `StandardScaler` to the targets $y$ as well.**
         - Raw feature and target values ($y$) of Training and Evaluation must be performed in this **standardized space** (so expected MSE is < 1.0).
@@ -60,7 +60,7 @@ system: |
         NaN/±inf coercion, robust standardization, and **Strict adherence to the `split_id`** for train/validation separation. Do not attempt to re-stratify based on plates manually, as this is already encoded in the input file.
   3.4 — At least a lightweight baseline models must be included, such as MLPs, etc.
   3.5 — Under identical experimental conditions, the designed model must outperform baseline models in terms of the correlation metric (PCC) and MSE.**
-  3.6 — Training must allow 500–1000 epochs and may use early stopping.
+  3.6 — Training must allow 200–500 epochs and may use early stopping.
   3.7 — The actual number of epochs trained must be recorded.
 
   ================================================================================

@@ -28,7 +28,7 @@
           "model": "gemini-3-pro-preview-thinking",
           "base_url": "https://vip.yi-zhan.top/v1",
           "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835",
-          "temperature": 0.5,
+          "temperature": 0.2,
           "max_tokens": 20480,
           "top_p": 1,
           "frequency_penalty": 0,
