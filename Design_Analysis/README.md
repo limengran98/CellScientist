@@ -1,63 +1,66 @@
-# Design_Analysis
+# Design Analysis Module
 
-## Run
+## Quick Start
+
 ```bash
 python cellscientist_phase_1.py design_analysis_config.json
 ```
 
-## Files
-| File | Description |
-|------|--------------|
-| **cellscientist_phase_1.py** | Main entry. Loads config and runs the full analysis pipeline. |
-| **run_llm_nb.py** | Calls the LLM to generate analysis notebooks. |
-| **llm_notebook_runner.py** | Handles unified LLM API logic. |
-| **hypergraph_orchestrator.py** | Manages multi-run orchestration and workflow control. |
-| **config.json** | Configuration file for paths, datasets, and LLM parameters. |
+## Core Files Overview
 
-## Paths
-- Input data: `../data/${dataset_name}/`  
-- Output results: `../results/${dataset_name}/design_analysis/`
+| File | Function |
+| :--- | :--- |
+| **cellscientist\_phase\_1.py** | **Entry Point**. Loads configuration, injects API keys into the environment, and enables unbuffered real-time logging. |
+| **hypergraph\_orchestrator.py** | **Scheduler**. Manages parallel execution (ThreadPool), timestamped directory creation, heuristic scoring, and mandatory export of the best result. |
+| **run\_llm\_nb.py** | **Execution Engine**. Handles robust LLM communication, notebook execution, and the **Auto-Fix Loop** (error recovery). |
+| **config\_loader.py** | **Utility**. Safely loads JSON configs and YAML prompts. |
 
-## Key Config Parameters (`config.json`)
+## Configuration Guide (`design_analysis_config.json`)
 
-### Top-level
+### 1\. Basic Settings
 
-* **dataset_name** — used in all paths.
-  Example: `"BBBC036"` → input `../data/BBBC036/`, output `../results/BBBC036/design_analysis/`.
+  * **`dataset_name`**: Dynamic variable used in paths.
+      * *Example*: If set to `"BBBC036"`, `${dataset_name}` in paths resolves to `BBBC036`.
 
-### llm_notebook
+### 2\. LLM Settings (`llm`)
 
-* **paths.data / paper / preprocess** — input files.
-* **prompt** — what the LLM should do.
-* **llm.provider** — selects provider name from `llm_providers.json`.
-* **llm.model** — model name for that provider.
+| Parameter | Recommended | Description |
+| :--- | :--- | :--- |
+| `model` | `gpt-5` / `gemini-2.5-pro` | Strong reasoning models are required for code generation. |
+| `max_tokens` | `10000` - `20000` | Context window size. **Do not set too low**, as notebooks generate long outputs. |
+| `temperature` | `0.5` | Controls creativity for generation. Note: **Auto-Fix** forces `0.0` internally for precision. |
+| `api_key` | `sk-...` | If empty, the system defaults to the `OPENAI_API_KEY` environment variable. |
 
-### exec
+### 3\. Execution & Auto-Fix (`exec`)
 
-* **timeout_seconds** — notebook execution timeout.
-* **allow_errors** — `true` keeps running even if some cells fail.
-* **force_json_mode** — if `true`, LLM must return strict JSON; turn `false` for normal text/code.
-* **max_fix_rounds** — number of auto-repair cycles after execution errors.
+| Parameter | Recommended | Description |
+| :--- | :--- | :--- |
+| **`max_fix_rounds`** | **3 - 5** | **Critical**. The number of times the LLM is allowed to self-correct code errors. Set to `0` to disable repair. |
+| `timeout_seconds` | `1800` - `3600` | Max runtime per notebook. Increase for large datasets. |
+| `allow_errors` | `false` | If `true`, the notebook continues execution even after a cell fails (not recommended). |
 
-### multi
+### 4\. Parallel Orchestration (`multi`)
 
-* **enabled** — run multiple notebooks in parallel for comparison.
-* **num_runs** — number of runs.
-* **out_dir** — where results are saved (`../results/${dataset_name}/hypergraph_runs`).
-* **prompt_variants** — prompt differences for each run.
+| Parameter | Recommended | Description |
+| :--- | :--- | :--- |
+| `enabled` | `true` | Enables multi-run mode. |
+| **`max_parallel_workers`** | **2 - 4** | **Critical**. Number of concurrent threads. Depends on GPU VRAM and API rate limits. (e.g., 4 for A100, 2 for standard GPUs). |
+| `num_runs` | `1` - `5` | Planned runs. Actual runs = `min(num_runs, len(seeds), len(variants))`. |
+| `prompt_variants` | List[Str] | Different analysis instructions (e.g., "Focus on Dose-Response"). |
+| `seeds` | List[Int] | Fixed random seeds for reproducibility. |
 
-### review
+### 5\. Review & Export (`review.reference`)
 
-* **enabled** — enables notebook evaluation.
-* **threshold** — score cutoff for accepting a notebook.
-* **reference.export_dir** — folder for accepted notebooks.
-* **llm.system_prompt / critique_prompt_template** — define review style and scoring rubric.
+Uses **Heuristic Scoring** (Rule-based detection of stats, plots, biology terms) instead of LLM critique.
 
+  * `weights`: Adjust importance of Scientific, Novelty, Reproducibility, and Interpretability scores.
+  * **Note**: The system **automatically** calculates scores and exports the best performing notebook to the `reference/` directory.
 
-## Typical Workflow
+## Output Structure
 
-1. Edit `dataset_name` and input paths.
-2. Adjust `prompt` for your analysis goal.
-3. (Optional) change LLM provider or model.
-4. Run `cellscientist_phase_1.py`.
-5. Check outputs in `../results/<dataset_name>/hypergraph_runs/`.
+Results are saved to `../results/${dataset_name}/design_analysis/`:
+
+1.  **Run Directories**: Named `design_analysis_YYYYMMDD_HHMMSS_RunX`.
+      * Contains: `CP_llm.ipynb` (Source), `CP_llm_executed.ipynb` (Executed), `preprocessed_data.h5` (Data artifact).
+2.  **`hypergraph_runs/hypergraph.json`**: Metadata and scores for all runs.
+3.  **`reference/`**: Automatically contains the **Best Notebook** (`BEST_design_analysis_...ipynb`) and its corresponding H5 data file.

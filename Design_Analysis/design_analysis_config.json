@@ -14,7 +14,7 @@
           "preprocess": "../data/${dataset_name}/BBBC036_data_process.ipynb"
         },
         "exec": {
-          "timeout_seconds": 3600,
+          "timeout_seconds": 360,
           "max_preview_rows": 8,
           "max_preview_cols": 20,
           "pdf_max_pages": 10,
@@ -25,7 +25,7 @@
         },
         "llm": {
           "provider": "yizhan",
-          "model": "gpt-5",
+          "model": "gemini-3-pro-preview-thinking",
           "base_url": "https://vip.yi-zhan.top/v1",
           "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835",
           "temperature": 0.5,
@@ -35,8 +35,9 @@
           "presence_penalty": 0
         },
         "multi": {
-          "num_runs": 1,
+          "num_runs": 4,
           "enabled": true,
+          "max_parallel_workers": 4,
           "name_template": "NB{idx:02d}-seed{seed}",
           "seeds": [
             11,

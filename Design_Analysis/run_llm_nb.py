@@ -1,30 +1,72 @@
-# run_llm_nb.py (utility module)
-# [NEW] This file exposes helper functions for auto-fix and LLM calls.
-import os, json, re, io, contextlib, importlib
+# run_llm_nb.py
+import os, json, re, io, contextlib, importlib, time, requests
+from pathlib import Path
 
 def _load_runner_clean():
-    """Import runner quietly (suppress initialization prints/logs)."""
+    """Import runner quietly."""
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
         mod = importlib.import_module("cellscientist.Design_Analysis.llm_notebook_runner")
-    # The original function should return a path to the executed notebook
-    # [MODIFIED] Update function name to match what is exported
     return getattr(mod, "run_llm_notebook_from_file")
 
-# --- LLM helper ---
-def chat_json(messages, *, api_key, base_url, model, temperature=0.2, max_tokens=800):
-    """Return JSON object from an OpenAI-compatible /chat/completions endpoint.
-    [FIX] Improved robustness: retries, strict JSON parsing, fenced-block extraction, and tool_call fallback.
-    """
-    import requests, json as _json, time, re
+# --- Centralized LLM Config Resolver ---
+def resolve_llm_config(llm_cfg: dict) -> dict:
+    """Strictly follows Config > Env Var > Default."""
+    llm = llm_cfg or {}
+    
+    api_key = llm.get("api_key")
+    if not api_key:
+        api_key_env = llm.get("api_key_env") or "OPENAI_API_KEY"
+        api_key = os.environ.get(api_key_env)
 
+    model = llm.get("model") or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+
+    base_url = None
+    try:
+        base_dir = Path(__file__).resolve().parents[1] 
+        prov_file = base_dir / "llm_providers.json"
+        prov_name = (llm.get("provider") or "").strip() or None
+        if prov_name and prov_file.exists():
+            data = json.loads(prov_file.read_text(encoding="utf-8"))
+            prov = data.get("providers", {}).get(prov_name)
+            if prov:
+                base_url = prov.get("base_url")
+                if not llm.get("model") and prov.get("models"):
+                    model = prov.get("models")[0]
+    except Exception:
+        pass 
+
+    if not base_url:
+        base_url_env = llm.get("base_url_env")
+        if base_url_env and os.environ.get(base_url_env):
+            base_url = os.environ.get(base_url_env)
+        else:
+            base_url = os.environ.get("OPENAI_BASE_URL") or "https://vip.yi-zhan.top/v1"
+            
+    if base_url and base_url.startswith("[") and base_url.endswith(")"):
+        base_url = re.sub(r"\[(.*?)\]\((.*?)\)", r"\2", base_url)
+
+    # [CRITICAL] Preserve User Hyperparameters
+    max_tokens = int(llm.get("max_tokens") or 10240)
+    temperature = float(llm.get("temperature", 0.5)) 
+
+    return {
+        "model": model,
+        "base_url": base_url,
+        "api_key": api_key,
+        "max_tokens": max_tokens,
+        "temperature": temperature
+    }
+
+# --- LLM helper ---
+def chat_json(messages, *, api_key, base_url, model, temperature=0.2, max_tokens=2048):
+    """Robust JSON chat completion with retries."""
     def _post(payload):
         url = (base_url or "https://api.openai.com/v1").rstrip("/") + "/chat/completions"
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        # [NEW LOGGING] 打印出它正在尝试连接的地址和模型
-        print(f"  [chat_json] ➡️  POST to {url} (model={payload.get('model')})")
+        # print(f"  [chat_json] ➡️  POST {model} (temp={temperature})", flush=True) 
         r = requests.post(url, headers=headers, json=payload, timeout=600)
-        r.raise_for_status()  # 这将对 4xx/5xx 错误引发异常
+        r.raise_for_status()
         return r.json()
 
     base_payload = {
@@ -34,103 +76,46 @@ def chat_json(messages, *, api_key, base_url, model, temperature=0.2, max_tokens
         "max_tokens": max_tokens,
         "response_format": {"type": "json_object"},
     }
-    
-    content = "" # 在循环外定义 content
-    data = {} # 在循环外定义 data
 
-    for attempt in range(2):  # Two attempts: strict JSON → relaxed instruction
+    for attempt in range(3): 
         payload = dict(base_payload)
-        if attempt == 1:
-            nudged = messages + [
-                {"role": "system", "content": "Return only valid MINIFIED JSON. No markdown, no comments, no extra text."},
-                {"role": "user", "content": '{"edits": []}'},  # minimal valid JSON example
+        if attempt > 0:
+            payload["messages"] = messages + [
+                {"role": "system", "content": "You MUST return valid JSON only. Check for missing braces."}
             ]
-            payload["messages"] = nudged
 
         try:
-            data = _post(payload) # [MODIFIED] 赋值给外部的 data
-
-            # [START ROBUST-FIX 1]
-            # 立即检查 API 是否返回了顶层错误 (例如: model_not_found)
+            data = _post(payload)
             if "error" in data:
-                error_details = data.get("error", {})
-                print(f"  [chat_json] ❌ API returned an error object (attempt {attempt+1}):")
-                print(f"      Message: {error_details.get('message')}")
-                print(f"      Type:    {error_details.get('type')}")
-                print(f"      Code:    {error_details.get('code')}")
-                time.sleep(0.4)
-                continue # 跳到下一次尝试 (如果还有)
-            # [END ROBUST-FIX 1]
-
-        except Exception as e:
-            # [MODIFIED] 打印出 API 调用的具体错误！
-            print(f"  [chat_json] ❌ API call failed (attempt {attempt+1}). Error: {e}")
-            time.sleep(0.4)
-            continue
-
-        choice = (data.get("choices") or [{}])[0]
-        msg = choice.get("message") or {}
-        content = (msg.get("content") or "").strip() # [MODIFIED] 赋值给外部的 content
-
-        # 1) Direct JSON
-        if content:
-            try:
-                return _json.loads(content)
-            except Exception:
-                pass
-
-        # 2) ```json fenced block
-        if content:
-            m = re.search(r"```json\s*(\{.*?\})\s*```", content, flags=re.S)
+                print(f"  [chat_json] ❌ API Error: {data['error']}", flush=True)
+                time.sleep(1)
+                continue
+            
+            choice = (data.get("choices") or [{}])[0]
+            content = (choice.get("message") or {}).get("content") or ""
+            
+            try: return json.loads(content)
+            except: pass
+            
+            m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, flags=re.S)
             if m:
-                try:
-                    return _json.loads(m.group(1))
-                except Exception:
-                    pass
-            # 3) Any substring that looks like JSON
-            m2 = re.search(r"(\{(?:.|\n)*\})", content)
+                try: return json.loads(m.group(1))
+                except: pass
+            
+            m2 = re.search(r"(\{.*\})", content, flags=re.S)
             if m2:
-                try:
-                    return _json.loads(m2.group(1))
-                except Exception:
-                    pass
+                try: return json.loads(m2.group(1))
+                except: pass
+                
+        except Exception as e:
+            print(f"  [chat_json] ⚠️ Attempt {attempt+1} failed: {e}", flush=True)
+            time.sleep(1)
 
-        # 4) function_call / tool_calls structure
-        fc = msg.get("function_call") or {}
-        if isinstance(fc, dict) and "arguments" in fc:
-            try:
-                return _json.loads(fc["arguments"])
-            except Exception:
-                pass
-        tools = msg.get("tool_calls") or []
-        if tools:
-            args = tools[0].get("function", {}).get("arguments")
-            if args:
-                try:
-                    return _json.loads(args)
-                except Exception:
-                    pass
-
-        # [START ROBUST-FIX 2]
-        # 如果即将失败，打印出 LLM 返回的原始（非 JSON）内容
-        if content:
-             print(f"  [chat_json] ⚠️ Failed to parse. Raw content preview: {content[:500]}...")
-        else:
-            # [NEW] 如果 content 都是空的，也打印出来
-            print(f"  [chat_json] ⚠️ Message content was empty. Full data received (preview): {str(data)[:500]}...")
-        # [END ROBUST-FIX 2]
-
-        time.sleep(0.4)
-
-    # Fallback: return empty edits to gracefully stop current fix round
-    # [NEW LOGGING] 明确指出 LLM 返回为空
-    print(f"  [chat_json] ⚠️ Could not get valid JSON response after 2 attempts. Returning empty edits.")
-    return {"edits": []}
-
+    print(f"  [chat_json] ❌ Failed to parse JSON after 3 attempts.", flush=True)
+    return {"edits": []} 
 
 # --- Notebook helpers ---
 def collect_cell_errors(nb):
-    """Extract all code cell errors from a Jupyter notebook."""
     errs = []
     for i, cell in enumerate(nb.get("cells", [])):
         if cell.get("cell_type") != "code":
@@ -147,9 +132,7 @@ def collect_cell_errors(nb):
                 })
     return errs
 
-
 def apply_edits(nb, edits):
-    """Apply edits from LLM response to notebook cells."""
     changed = 0
     for ed in (edits or []):
         try:
@@ -160,84 +143,130 @@ def apply_edits(nb, edits):
             if nb["cells"][idx].get("cell_type") != "code":
                 continue
             old = nb["cells"][idx].get("source", "")
-            # [NEW] Only count actual changes
-            if old != src:
+            if old.strip() != src.strip():
                 nb["cells"][idx]["source"] = src
                 changed += 1
         except Exception:
             continue
     return changed
 
-
 def execute_notebook(nb, *, timeout=1800, allow_errors=True):
-    """Execute a notebook and return it with optional error summary."""
-    import nbformat as nbf
     from nbclient import NotebookClient
     client = NotebookClient(nb, timeout=timeout, kernel_name="python3", allow_errors=allow_errors)
     errors_summary = []
     try:
         client.execute()
     except Exception as e:
-        errors_summary.append(f"Notebook execution raised: {type(e).__name__}: {e}")
+        errors_summary.append(f"Execution Exception: {str(e)}")
     return nb, errors_summary
 
-
-# [MODIFIED] Added 'autofix_prompt_str' to the function definition
-def build_fix_messages(
-    language, data_path, csv_preview, paper_excerpt, errors, headings,
-    autofix_prompt_str: str 
-):
-    """Build structured chat messages for LLM-based notebook auto-fix."""
+def build_fix_messages(language, data_path, csv_preview, paper_excerpt, errors, headings, autofix_prompt_str):
+    sys_prompt = autofix_prompt_str or "You are a Python expert. Fix the code errors. Return JSON {'edits': ...}."
     
-    # [MODIFIED] Use the passed-in prompt string, with a fallback
-    sys_prompt = ( autofix_prompt_str or 
-        (
-        "You are a senior Python engineer and Jupyter expert.\n"
-        "Given Jupyter cell errors, return ONLY a MINIFIED JSON object with key 'edits'.\n"
-        "Each edit MUST be {\"cell_index\": int, \"source\": str} replacing the WHOLE code cell.\n"
-        "You MUST cover ALL indices listed in 'target_cell_indices' (one edit per index). Do not add new cells.\n"
-        "Do not modify markdown cells. No markdown fences or extra text.\n"
-        ) # Fallback
-    )
-    
-    # [START ROBUST-FIX 1] 清理和截断错误信息，避免 LLM 上下文过载
     cleaned_errors = []
     target_indices = []
-    for e in (errors or []):
+    for e in errors:
         idx = e.get("cell_index")
-        if idx is None: continue
+        if idx not in target_indices: target_indices.append(idx)
         
-        if idx not in target_indices:
-            target_indices.append(idx)
-        
-        # 清理 traceback：只保留最后 15 行（最相关的部分）
-        tb_lines = (e.get("traceback") or "").strip().split("\n")
-        cleaned_tb = "\n".join(tb_lines[-15:]) 
-        
-        # 截断可能很长的错误值（evalue）
-        evalue = e.get("evalue", "")
-        cleaned_evalue = (evalue[:300] + "...") if len(evalue) > 300 else evalue
+        tb = (e.get("traceback") or "")
+        tb_lines = tb.split("\n")
+        short_tb = "\n".join(tb_lines[-20:]) 
         
         cleaned_errors.append({
             "cell_index": idx,
             "ename": e.get("ename"),
-            "evalue": cleaned_evalue,
-            "traceback_summary": cleaned_tb, # 只发送清理后的摘要
-            "original_source_code": e.get("source", "") # 发送完整的原始代码
+            "evalue": str(e.get("evalue"))[:500],
+            "traceback_tail": short_tb,
+            "code": e.get("source")
         })
-    # [END ROBUST-FIX 1]
-    
+
     user_obj = {
-        "language": language,
-        "data_path": data_path,
-        "csv_preview": csv_preview,
-        "paper_excerpt": (paper_excerpt or "")[:1500] if paper_excerpt else "",
-        "required_headings": headings,
-        "target_cell_indices": sorted(list(set(target_indices))), # 确保索引列表唯一且排序
-        "errors": cleaned_errors, # [MODIFIED] 使用清理后的错误列表
-        "example": {"edits": [{"cell_index": int(i), "source": "# fixed code here"} for i in target_indices] or [{"cell_index": 0, "source": "# fixed"}]}
+        "context": {"data": data_path, "lang": language},
+        "errors": cleaned_errors,
+        "instruction": "Fix these cells. Return ONLY JSON.",
+        "target_indices": target_indices
     }
+    
     return [
         {"role": "system", "content": sys_prompt},
-        {"role": "user", "content": json.dumps(user_obj, ensure_ascii=False)},
+        {"role": "user", "content": json.dumps(user_obj, ensure_ascii=False)}
     ]
+
+# --- Auto Fix Logic ---
+def auto_fix_notebook(executed_path: str, run_cfg: dict) -> str:
+    import nbformat as nbf
+    
+    nb_cfg = (((run_cfg.get("phases") or {}).get("task_analysis") or {}).get("llm_notebook") or {})
+    exec_cfg = nb_cfg.get("exec", {}) or {}
+    
+    llm_resolved = resolve_llm_config(nb_cfg.get("llm", {}))
+    if not llm_resolved["api_key"]:
+        print("⚠️ [AUTO-FIX] No API Key found. Skipping.", flush=True)
+        return executed_path
+
+    nb_path = Path(executed_path)
+    if not nb_path.exists():
+        return executed_path
+
+    nb = nbf.read(str(nb_path), as_version=4)
+    errors = collect_cell_errors(nb)
+    max_rounds = int(exec_cfg.get("max_fix_rounds", 0))
+    
+    if not errors or max_rounds <= 0:
+        return str(nb_path)
+
+    print(f"🔧 [AUTO-FIX] Starting fix loop for {nb_path.name} (Errors: {len(errors)}, Rounds: {max_rounds})", flush=True)
+    
+    autofix_prompt = (run_cfg.get('prompts', {}).get('autofix', {}).get('system_prompt'))
+    paths = nb_cfg.get("paths", {})
+    
+    round_idx = 0
+    while errors and round_idx < max_rounds:
+        round_idx += 1
+        
+        messages = build_fix_messages(
+            language="python",
+            data_path=paths.get("data", ""),
+            csv_preview={}, 
+            paper_excerpt="",
+            errors=errors,
+            headings=[],
+            autofix_prompt_str=autofix_prompt
+        )
+        
+        resp = chat_json(
+            messages,
+            api_key=llm_resolved["api_key"],
+            base_url=llm_resolved["base_url"],
+            model=llm_resolved["model"],
+            temperature=0.0, 
+            max_tokens=llm_resolved["max_tokens"]
+        )
+        
+        edits = resp.get("edits") or []
+        if not edits:
+            print(f"  [Round {round_idx}] No edits returned.", flush=True)
+            break
+            
+        changed = apply_edits(nb, edits)
+        if changed == 0:
+            print(f"  [Round {round_idx}] Edits yielded no changes.", flush=True)
+            break
+            
+        suffix = f"_fixed_r{round_idx}"
+        temp_path = nb_path.with_name(nb_path.stem + suffix + ".ipynb")
+        
+        timeout_sec = int(exec_cfg.get("timeout_seconds", 1800))
+        nb, _ = execute_notebook(nb, timeout=timeout_sec)
+        nbf.write(nb, str(temp_path))
+        
+        errors = collect_cell_errors(nb)
+        print(f"  [Round {round_idx}] Fixed {changed} cells. Remaining errors: {len(errors)}", flush=True)
+
+    if round_idx > 0:
+        final_path = nb_path.with_name(nb_path.stem + f"_fixed_r{round_idx}.ipynb")
+        if final_path.exists():
+            return str(final_path)
+            
+    return str(nb_path)
