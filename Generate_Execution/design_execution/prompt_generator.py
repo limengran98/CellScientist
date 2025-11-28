@@ -1,10 +1,10 @@
-# design_execution/prompt_generator.py
 import os, json, re
 import nbformat
 from typing import Dict, Any, Tuple
 from pathlib import Path
 
 # Import centralized LLM tools
+# Assuming this is available in your environment context
 from .llm_utils import chat_text
 
 # [NEW] Robust JSON Extractor
@@ -177,6 +177,7 @@ Follow these rules strictly:
     if hypergraph_data:
         nb.metadata["execution"] = {"hypergraph": hypergraph_data}
 
+    # 1. Add Code Cells
     for c in cells_data:
         cell = nbformat.v4.new_code_cell(c.get("code", ""))
         subtask_meta = {
@@ -187,7 +188,10 @@ Follow these rules strictly:
         cell.metadata["subtask"] = subtask_meta
         nb.cells.append(cell)
         
+    # 2. [FIXED] Insert Strategy as a pure Markdown cell at index 0
     if strategy_md:
-        nb.cells.insert(0, nbformat.v4.new_markdown_cell(f"# 🧠 Research Strategy\n\n{strategy_md}"))
+        md_content = f"# 🧠 Research Strategy\n\n{strategy_md}"
+        md_cell = nbformat.v4.new_markdown_cell(md_content)
+        nb.cells.insert(0, md_cell)
     
     return nb, full_user_content, strategy_md

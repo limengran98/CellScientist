@@ -1,6 +1,6 @@
 # design_execution/prompt_executor.py
 from __future__ import annotations
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 import os, json, re, hashlib
 import nbformat
 from nbclient import NotebookClient
@@ -10,7 +10,65 @@ from copy import deepcopy
 from .llm_utils import chat_json
 
 # =============================================================================
-# Execution Utils
+# 1. Heuristic Logic (Ported & Simplified from Old Version)
+# =============================================================================
+
+def _get_heuristic_patch(evalue: str) -> Optional[str]:
+    """Return a hardcoded patch snippet for common dumb errors."""
+    msg = (evalue or "").lower()
+    
+    # Case 1: NaN / Infinity in input
+    if "input contains nan" in msg or "input contains infinity" in msg:
+        return (
+            "# [AUTO-FIX] Heuristic: Impute NaNs and Clip Infinity\n"
+            "import numpy as np, pandas as pd\n"
+            "from sklearn.impute import SimpleImputer\n"
+            "print('[AUTO-FIX] Applying heuristic data cleaning...')\n"
+            "def _clean_data(X):\n"
+            "    if hasattr(X, 'fillna'): X = X.fillna(0)\n"
+            "    X = np.nan_to_num(X, nan=0.0, posinf=None, neginf=None)\n"
+            "    return X\n"
+            "for _nm in ['X', 'X_train', 'X_test', 'y', 'y_train', 'y_test']:\n"
+            "    if _nm in globals():\n"
+            "        globals()[_nm] = _clean_data(globals()[_nm])\n"
+        )
+    
+    # Case 2: String to Float conversion failure
+    if "could not convert string to float" in msg:
+        return (
+            "# [AUTO-FIX] Heuristic: Force Numeric Conversion\n"
+            "import pandas as pd, numpy as np\n"
+            "print('[AUTO-FIX] Filtering non-numeric columns...')\n"
+            "def _force_numeric(df):\n"
+            "    if isinstance(df, pd.DataFrame):\n"
+            "        return df.select_dtypes(include=[np.number])\n"
+            "    return df\n"
+            "for _nm in ['X', 'X_train', 'X_test']:\n"
+            "    if _nm in globals(): globals()[_nm] = _force_numeric(globals()[_nm])\n"
+        )
+
+    return None
+
+def _apply_heuristics(nb: nbformat.NotebookNode, errors: List[Dict[str, Any]]) -> Tuple[int, List[int]]:
+    """Try to apply heuristics before calling LLM."""
+    changed_count = 0
+    patched_indices = []
+    
+    for e in errors:
+        idx = int(e["cell_index"])
+        patch = _get_heuristic_patch(e.get("evalue", ""))
+        
+        if patch and 0 <= idx < len(nb.cells):
+            cell = nb.cells[idx]
+            if cell.cell_type == "code" and patch not in cell.source:
+                cell.source += "\n\n" + patch
+                changed_count += 1
+                patched_indices.append(idx)
+                
+    return changed_count, patched_indices
+
+# =============================================================================
+# 2. Execution Utils
 # =============================================================================
 
 def collect_cell_errors(nb: nbformat.NotebookNode) -> List[Dict[str, Any]]:
@@ -63,7 +121,6 @@ def execute_once(
         print(f"[EXEC] Warning: Notebook execution crashed: {e}", flush=True)
         exec_nb = client.nb
 
-    # Remove guard cell from result
     if len(exec_nb.cells) > 0:
         exec_nb.cells.pop(0)
 
@@ -71,17 +128,32 @@ def execute_once(
     return exec_nb, errors
 
 # =============================================================================
-# Auto-Fix Logic
+# 3. Auto-Fix Logic (Enhanced with Hash Check)
 # =============================================================================
 
-def _apply_edits(nb: nbformat.NotebookNode, edits: List[Dict[str, Any]]) -> None:
+def _compute_cell_hash(source: str) -> str:
+    """Compute MD5 hash of cell content ignoring whitespace."""
+    return hashlib.md5(source.strip().encode('utf-8')).hexdigest()
+
+def _apply_llm_edits(nb: nbformat.NotebookNode, edits: List[Dict[str, Any]]) -> int:
+    """Apply edits and return number of effective changes (Hash Verified)."""
+    effective_changes = 0
     for ed in edits:
         try:
             idx = int(ed.get("cell_index"))
-            src = ed.get("source")
-            if idx >= 0 and idx < len(nb.cells) and src:
-                nb.cells[idx]["source"] = src
+            new_src = ed.get("source")
+            
+            if idx >= 0 and idx < len(nb.cells) and new_src:
+                old_src = nb.cells[idx]["source"]
+                
+                # HASH CHECK: Only apply if content actually changed
+                if _compute_cell_hash(old_src) != _compute_cell_hash(new_src):
+                    nb.cells[idx]["source"] = new_src
+                    effective_changes += 1
+                else:
+                    print(f"[FIX] ⚠️ Skipping edit for Cell {idx}: Content identical.", flush=True)
         except: pass
+    return effective_changes
 
 def _llm_auto_fix_once(
     nb: nbformat.NotebookNode,
@@ -90,7 +162,7 @@ def _llm_auto_fix_once(
     autofix_system_prompt: str
 ) -> Tuple[nbformat.NotebookNode, bool]:
     
-    # 1. Construct Prompt
+    # 1. Context Construction
     error_list = []
     for e in errors:
         error_list.append({
@@ -99,7 +171,6 @@ def _llm_auto_fix_once(
             "traceback": (e.get("traceback") or "")[-2000:]
         })
     
-    # Prepare Failing Code Context
     indices = {e['cell_index'] for e in errors}
     failing_cells = []
     for i in indices:
@@ -120,14 +191,9 @@ def _llm_auto_fix_once(
         {"role": "user", "content": json.dumps(user_payload, indent=2)}
     ]
 
-    # 2. Call LLM (Temperature 0.0 for precision)
+    # 2. Call LLM
     try:
-        spec = chat_json(
-            messages, 
-            llm_config=llm_cfg,
-            temperature=0.0, 
-            timeout=600
-        )
+        spec = chat_json(messages, llm_config=llm_cfg, temperature=0.0, timeout=600)
     except Exception as e:
         print(f"[FIX] LLM Call Failed: {e}", flush=True)
         return nb, False
@@ -136,9 +202,9 @@ def _llm_auto_fix_once(
     if not edits:
         return nb, False
 
-    # 3. Apply
-    _apply_edits(nb, edits)
-    return nb, True
+    # 3. Apply with Verification
+    changes = _apply_llm_edits(nb, edits)
+    return nb, (changes > 0)
 
 def run_notebook_with_autofix(
     nb_path: str,
@@ -146,7 +212,7 @@ def run_notebook_with_autofix(
     cfg: Dict[str, Any]
 ) -> str:
     """
-    Main entry for execution with auto-fix loop.
+    Main entry for execution with Robust Auto-Fix (Heuristic -> LLM).
     """
     exec_cfg = cfg.get("exec", {})
     timeout = int(exec_cfg.get("timeout_seconds", 3600))
@@ -156,45 +222,51 @@ def run_notebook_with_autofix(
     print(f"[EXEC] Initial Execution: {nb_path}", flush=True)
     
     exec_nb, errors = execute_once(nb_orig, workdir, timeout=timeout)
-    
     out_path = nb_path.replace(".ipynb", "_exec.ipynb")
     
-    # Auto-Fix Loop
     round_idx = 0
-    
-    # Get prompt from config
     prompts_map = cfg.get("prompts", {})
     autofix_prompt = prompts_map.get("autofix", {}).get("system_prompt", "You are a Python Expert. Fix the code. Return JSON.")
 
     while errors and round_idx < max_rounds:
         round_idx += 1
         print(f"\n[FIX] === ROUND {round_idx}/{max_rounds} ===", flush=True)
-        print(f"[FIX] {len(errors)} errors detected. Attempting LLM fix...", flush=True)
+        print(f"[FIX] {len(errors)} errors. Analyzing...", flush=True)
+
+        # STEP A: Try Heuristics First (Fast & Robust)
+        # We work on a copy to avoid corrupting state if heuristics fail partially
+        nb_heuristic = deepcopy(exec_nb)
+        h_changes, _ = _apply_heuristics(nb_heuristic, errors)
         
-        # Use Executed NB for fixing to keep state? 
-        # Usually better to fix original Source and re-run clean to avoid state pollution.
-        # But we need error context.
-        # Strategy: Patch `exec_nb`, then re-run.
+        if h_changes > 0:
+            print(f"[FIX] ⚡ Applied {h_changes} heuristic patches (NaN/Type fixes). Re-executing...", flush=True)
+            exec_nb, errors = execute_once(nb_heuristic, workdir, timeout=timeout)
+            if not errors:
+                print("[FIX] Success via Heuristics!", flush=True)
+                break
         
-        fixed_nb, patched = _llm_auto_fix_once(
-            deepcopy(exec_nb), 
-            errors, 
-            cfg.get("llm", {}),
-            autofix_system_prompt=autofix_prompt
-        )
-        
-        if not patched:
-            print("[FIX] LLM returned no effective patches. Stopping.", flush=True)
-            break
+        # STEP B: If errors persist, use LLM
+        if errors:
+            print(f"[FIX] 🧠 Heuristics insufficient. Calling LLM...", flush=True)
+            # Use deepcopy to ensure we don't mutate if LLM fails
+            fixed_nb, patched = _llm_auto_fix_once(
+                deepcopy(exec_nb), 
+                errors, 
+                cfg.get("llm", {}),
+                autofix_system_prompt=autofix_prompt
+            )
             
-        print("[FIX] Patches applied. Re-executing...", flush=True)
-        exec_nb, errors = execute_once(fixed_nb, workdir, timeout=timeout)
+            if not patched:
+                print("[FIX] 🛑 LLM could not provide effective edits (Hash Check Failed). Stopping.", flush=True)
+                break
+                
+            print("[FIX] LLM patches applied. Re-executing...", flush=True)
+            exec_nb, errors = execute_once(fixed_nb, workdir, timeout=timeout)
         
         if not errors:
             print("[FIX] Success! No errors remaining.", flush=True)
             break
 
-    # Save Final
     nbformat.write(exec_nb, out_path)
     print(f"[EXEC] Saved final result: {out_path}", flush=True)
     if errors:
