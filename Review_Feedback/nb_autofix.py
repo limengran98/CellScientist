@@ -10,7 +10,23 @@ from copy import deepcopy
 from llm_utils import chat_json
 
 # =============================================================================
-# 1. Execution Logic (Same as before)
+# 1. Debug Utilities (RESTORED)
+# =============================================================================
+
+def _debug_cell_mapping(nb: nbformat.NotebookNode, errors: List[Dict[str, Any]]):
+    """Visually confirm error locations."""
+    print("\n[AUTO-FIX] === CELL INDEX MAP (DEBUG) ===")
+    err_indices = {int(e['cell_index']) for e in errors}
+    for i, c in enumerate(nb.cells):
+        marker = " [ERROR] >>" if i in err_indices else "           "
+        ctype = c.get('cell_type', 'unk')[:4].upper()
+        # Get first line of code for context
+        src = c.get('source', '').strip().split('\n')[0][:60]
+        print(f"{marker} Idx {i:02d} | {ctype} | {src}")
+    print("==========================================\n")
+
+# =============================================================================
+# 2. Execution Logic
 # =============================================================================
 
 def collect_cell_errors(nb: nbformat.NotebookNode) -> List[Dict[str, Any]]:
@@ -48,7 +64,7 @@ def execute_once(nb: nbformat.NotebookNode, workdir: str, timeout: int = 1800) -
     return client.nb, collect_cell_errors(client.nb)
 
 # =============================================================================
-# 2. Heuristics (PRESERVED FOR ROBUSTNESS)
+# 3. Heuristics (PRESERVED)
 # =============================================================================
 
 def _known_fix_snippet(evalue: str) -> Optional[str]:
@@ -72,7 +88,7 @@ def apply_heuristics(nb, errors):
     return changed
 
 # =============================================================================
-# 3. LLM Fix (Enhanced with Hash Check & Centralized LLM)
+# 4. LLM Fix (Enhanced with Hash Check & Centralized LLM)
 # =============================================================================
 
 def _llm_fix_once(nb, errors, cfg, timeout):
@@ -121,6 +137,9 @@ def execute_with_autofix(ipynb_path, workdir, phase_cfg, timeout_seconds=18000, 
     
     round_idx = 0
     while errors and round_idx < max_fix_rounds:
+        # [RESTORED] Visual Debug Map
+        _debug_cell_mapping(exec_nb, errors)
+        
         round_idx += 1
         print(f"[FIX] Round {round_idx}/{max_fix_rounds} ({len(errors)} errors)")
         
@@ -148,4 +167,10 @@ def execute_with_autofix(ipynb_path, workdir, phase_cfg, timeout_seconds=18000, 
 
     nbformat.write(exec_nb, out_path)
     print(f"[EXEC] Done. Saved: {out_path}")
+    
+    # [RESTORED] Final Check Print
+    if errors:
+        print(f"[EXEC] Failed with {len(errors)} errors remaining.")
+        _debug_cell_mapping(exec_nb, errors)
+        
     return out_path
