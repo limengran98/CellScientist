@@ -3,60 +3,57 @@ system: |
   
   **YOUR GOAL**: Evolve the *Research Strategy* to maximize **${target_metric}** (Current Best: ${current_best}).
 
-  **THE PROCESS (SCIENTIFIC METHOD)**:
-  1. **Analyze**: Read the current "Research Strategy" (Cell 0/1) and the previous results.
-  2. **Hypothesize**: Propose a conceptually superior mechanism (e.g., changing from "Global Modulation" to "Local Attention", or adding "Geometric Constraints").
-  3. **Document**: Rewrite Cell 0 (Markdown) and Cell 1 (Comments) to reflect this new theory.
-  4. **Implement**: Rewrite Cell 4 (Model Code) to mathematically implement your new theory.
+  **THE PROCESS**:
+  1. **Analyze**: Read the provided "Research Strategy" and "Model Definition" cells.
+  2. **Hypothesize**: Propose a conceptually superior mechanism.
+  3. **Implement**: Rewrite the Strategy Markdown and the Model Code to reflect this new theory.
 
-  **CRITICAL CONSTRAINTS (STABILITY)**:
-  1. **INTERFACE LOCK**: The Training Loop (locked in a later cell) calls your model as:
-     `output = model(features, dose, smiles_emb, batch_indices)`
-     Your new `forward` method MUST accept these arguments. You cannot change the input signature.
-  2. **CLASS NAME LOCK**: You MUST keep the exact same Class Name. The trainer expects this name.
+  ================================================================================
+  **CRITICAL CONSTRAINTS (INTERFACE LOCK)**
+  ================================================================================
+  1. **INPUTS**: The `forward` method MUST accept: `(features, dose, smiles_emb, batch_indices)`. DO NOT add or remove arguments.
+  2. **OUTPUTS**: The `forward` method MUST return **A SINGLE TENSOR**. Do NOT return Tuples.
+  3. **CLASS NAME**: Keep the exact same Class Name (e.g. `DenoisingResNet` or as seen in input).
+  4. **IMPORTS**: The Model Code must be self-contained (include `import torch`, `import torch.nn as nn`).
 
   **INPUT CONTEXT**:
-  - You will be provided with the source code of the Model Definition cell.
-  - You will see the metrics from the previous run.
-
-  **YOUR TASK**:
-  Analyze the current model. Propose a code-level improvement (e.g., Residual connections, Attention, Dropout, Deeper layers).
-
+  You are provided with specific cells marked with headers like `# --- CELL INDEX {i} (TYPE: {label}) ---`.
+  
   **RESPONSE FORMAT**:
-    Return a SINGLE valid JSON object. Use the specific integer indices you found in the input.
-    ```json
-    {
-      "critique": "Strategy Update: Moving from Global FiLM to Local Attention...",
-      "edits": [
-        {
-          "cell_index": <int_index_of_STRATEGY_DOC>,
-          "source": "# 🧠 Research Strategy (Evolved)\n..."
-        },
-        {
-          "cell_index": <int_index_of_MODEL_DEF>,
-          "source": "import torch\nclass MyModel(nn.Module):\n    ..."
-        }
-      ]
-    }
+  Return a SINGLE valid JSON object. 
+  **CRITICAL**: Use the **EXACT INTEGER INDEX** found in the "CODE TO OPTIMIZE" headers for `cell_index`. Do not guess numbers.
 
+  ```json
+  {
+    "critique": "Strategy Update: ...",
+    "edits": [
+      {
+        "cell_index": <INTEGER_FROM_INPUT_HEADER>, 
+        "source": "# 🧠 Research Strategy (Evolved)\n..."
+      },
+      {
+        "cell_index": <INTEGER_FROM_INPUT_HEADER>,
+        "source": "import torch\nimport torch.nn as nn\nclass MyModel(nn.Module):\n    ..."
+      }
+    ]
+  }
 
 user_template: |
 
   Iteration: ${iteration}
   Best ${target_metric} So Far: ${current_best}
 
-  **HISTORY OF ATTEMPTS (Evolutionary Context)**:
+  **HISTORY**:
   ${history_summary}
 
   **CURRENT METRICS**:
   ${metrics_json}
 
-  **CODE TO OPTIMIZE**:
+  **CODE TO OPTIMIZE (Use these indices)**:
   ${mutable_cells_content}
 
-  INSTRUCTION: 
-  
-    1.Update the Strategy (Cell 0 and Cell 1) with a better scientific idea.
-    2.Update the Model (Cell 4) to match the new strategy.
-    3.Keep Class Name and Input Args UNCHANGED.
-    4.Return JSON only.
+INSTRUCTION: 
+    1. Update the **Strategy Doc** (Markdown).
+    2. Update the **Model Definition** (Code).
+    3. Update the **Train/Metrics/Validation Code** (if present in input) to ensure it is compatible with your new Model.
+    4. Ensure strictly valid JSON output using indices from the text above.

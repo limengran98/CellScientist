@@ -1,10 +1,10 @@
+# design_execution/prompt_generator.py
 import os, json, re
 import nbformat
 from typing import Dict, Any, Tuple
 from pathlib import Path
 
 # Import centralized LLM tools
-# Assuming this is available in your environment context
 from .llm_utils import chat_text
 
 # [NEW] Robust JSON Extractor
@@ -108,7 +108,9 @@ def generate_notebook_content(
     raw_ideas = _load_ideas_if_available()
     strategy_md = ""
     
+    # 1. Strategy Branching (Idea vs Freestyle)
     if raw_ideas:
+        # -- MODE: IDEA DRIVEN --
         strategy_md = _synthesize_strategy(cfg, raw_ideas, debug_dir)
         if strategy_md:
             full_user_content = f"""
@@ -126,9 +128,20 @@ def generate_notebook_content(
 """
             print("[GEN] 💻 Generating Code (Strategy-Driven)...", flush=True)
         else:
+            # Fallback if synthesis failed
+            strategy_md = "**Strategy**: Fallback to Freestyle Design (Synthesis Failed)."
             full_user_content = f"# TECHNICAL SPECIFICATION\n{spec_dump}"
             print("[GEN] 💻 Generating Code (Fallback to Freestyle)...", flush=True)
     else:
+        # -- MODE: FREESTYLE (No Idea File) --
+        # [MODIFIED] Create a default strategy text for Freestyle mode
+        strategy_md = (
+            "## 🧠 Research Strategy (Freestyle)\n\n"
+            "**Mode**: Expert Autonomous Design\n\n"
+            "This model architecture was designed autonomously by the AI Architect based on the "
+            "provided Technical Specifications, without external idea constraints. "
+            "The focus is on robust baseline performance and standard best practices."
+        )
         full_user_content = f"""
 ================================================================================
 # TECHNICAL SPECIFICATION
@@ -189,9 +202,15 @@ Follow these rules strictly:
         nb.cells.append(cell)
         
     # 2. [FIXED] Insert Strategy as a pure Markdown cell at index 0
+    # Now strategy_md is guaranteed to have content (either LLM-synth or Default text)
     if strategy_md:
-        md_content = f"# 🧠 Research Strategy\n\n{strategy_md}"
-        md_cell = nbformat.v4.new_markdown_cell(md_content)
+        # Check if it already has a header, if not add one
+        if not strategy_md.strip().startswith("#"):
+            final_md = f"# 🧠 Research Strategy\n\n{strategy_md}"
+        else:
+            final_md = strategy_md
+            
+        md_cell = nbformat.v4.new_markdown_cell(final_md)
         nb.cells.insert(0, md_cell)
     
     return nb, full_user_content, strategy_md
