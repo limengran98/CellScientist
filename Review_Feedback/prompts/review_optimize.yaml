@@ -55,5 +55,5 @@ user_template: |
 INSTRUCTION: 
     1. Update the **Strategy Doc** (Markdown).
     2. Update the **Model Definition** (Code).
-    3. Update the **Train/Metrics/Validation Code** (if present in input) to ensure it is compatible with your new Model.
+    3. Update the **Train/Metrics/Validation Code** (if present in input) ONLY to ensure it is compatible with your new Model's interface (e.g., unpacking tuples, handling new loss terms).
     4. Ensure strictly valid JSON output using indices from the text above.
