@@ -188,6 +188,12 @@ system_prompt: |
             description: Variance explained by predictions relative to ground truth.
             direction: higher_is_better
         differential_features:
+          DEG_RMSE:
+            description: RMSE calculated on Top-K most changed features (captures magnitude precision).
+            direction: lower_is_better
+          DEG_PCC:
+            description: PCC calculated on Top-K most changed features (captures trend accuracy).
+            direction: higher_is_better
           MSE_DM:
             description: MSE restricted to features significantly changed after perturbation.
             direction: lower_is_better

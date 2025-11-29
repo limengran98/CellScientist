@@ -67,26 +67,39 @@ system: |
   **SECTION 4 — METRICS AND EVALUATION**
   ======================================
 
-  4.1 — You must compute at least the following metrics for each model / variant:
+  4.1 — You must compute the following metrics for each model / variant. 
+        **CRITICAL**: You must implement the specific calculation logic defined below.
 
   **Global metrics:**
   * MSE
-  * PCC
+  * PCC (Pearson Correlation Coefficient)
   * R2
-  * DEG_PCC
+
+  **SOTA Mechanism Metrics (Top-K DEG Focus):**
+  * DEG_RMSE_20 (RMSE on Top-20 most changed genes)
+  * DEG_PCC_20  (PCC on Top-20 most changed genes)
+  * DEG_RMSE_50 (RMSE on Top-50 most changed genes)
+  * DEG_PCC_50  (PCC on Top-50 most changed genes)
 
   **Differential metrics:**
   * MSE_DM
   * PCC_DM
   * R2_DM
 
-  4.2 — Metrics must be aggregated across folds and saved.
-  4.3 — Intermediate logging is allowed and encouraged during evaluation.
-  4.4 — Candidate models and ablations must be evaluated under the same protocol.
-        The final winning model must be selected according to the primary metric (e.g. `metrics.primary` or the `primary_metric` in the config).
-  4.5 — You must construct an in-memory Python dictionary `metrics` whose structure is logically equivalent to:
+  4.2 — **DEG Calculation Logic (Strict Enforcement):**
+        To compute `DEG_RMSE_K` and `DEG_PCC_K`:
+        1. For each sample in `y_true`, calculate the absolute deviation from the training set mean (or control baseline).
+        2. Identify the indices of the **Top-K** features with the largest absolute change (e.g., K=20, K=50).
+        3. Extract the `y_true` and `y_pred` values **ONLY** for these K indices.
+        4. Compute RMSE and PCC on these subsetted vectors. 
+        5. This metric measures the model's ability to capture **significant biological signals** rather than background noise.
 
-      ```
+  4.3 — Metrics must be aggregated across folds and saved.
+  4.4 — Intermediate logging is allowed.
+  4.5 — Candidate models must be evaluated under the same protocol. The winner is selected by the primary metric.
+  4.6 — You must construct an in-memory Python dictionary `metrics` whose structure is logically equivalent to:
+
+      ```python
       metrics = {
           "models": {
               "<model_name>": {
@@ -95,7 +108,12 @@ system: |
                           "MSE": float,
                           "PCC": float,
                           "R2": float,
-                          "DEG_PCC": float,
+                          # SOTA DEG Metrics
+                          "DEG_RMSE_20": float,
+                          "DEG_RMSE_50": float,
+                          "DEG_PCC_20": float,
+                          "DEG_PCC_50": float,
+                          # Differential Metrics
                           "MSE_DM": float,
                           "PCC_DM": float,
                           "R2_DM": float,
@@ -105,7 +123,10 @@ system: |
                       "MSE": float,
                       "PCC": float,
                       "R2": float,
-                      "DEG_PCC": float,
+                      "DEG_RMSE_20": float,
+                      "DEG_RMSE_50": float,
+                      "DEG_PCC_20": float,
+                      "DEG_PCC_50": float,
                       "MSE_DM": float,
                       "PCC_DM": float,
                       "R2_DM": float,

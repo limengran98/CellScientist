@@ -1,5 +1,5 @@
 # design_execution/prompt_generator.py
-import os, json, re
+import os, json, re, ast
 import nbformat
 from typing import Dict, Any, Tuple
 from pathlib import Path
@@ -7,46 +7,51 @@ from pathlib import Path
 # Import centralized LLM tools
 from .llm_utils import chat_text
 
-# [NEW] Robust JSON Extractor
+# [OPTIMIZED] Ultra-Robust JSON Extractor
 def extract_json_from_text(text: str) -> Dict[str, Any]:
     """
     Surgical extraction of JSON object from LLM output.
-    Handles: Markdown fences, Thinking process text, Raw JSON.
+    Handles: Markdown fences, Thinking process text, Raw JSON, AND Python Dicts.
     """
     if not text:
         raise ValueError("LLM returned empty response.")
 
     text = text.strip()
+    
+    # Candidate list to try parsing
+    candidates = []
 
-    # 1. Try finding ```json ... ``` block (Most reliable)
-    # flags=re.DOTALL allows . to match newlines
-    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(1))
-        except json.JSONDecodeError:
-            pass # Continue to next strategy
+    # 1. Regex: ```json ... ``` (Most reliable)
+    match_fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if match_fenced:
+        candidates.append(match_fenced.group(1))
 
-    # 2. Try finding the outermost { ... } (Greedy match)
-    # This handles cases where model outputs text before/after JSON without fences
-    match = re.search(r"(\{.*\})", text, re.DOTALL)
-    if match:
-        candidate = match.group(1)
+    # 2. Regex: Outermost braces { ... } (Greedy match for raw JSON/Dict in text)
+    match_braces = re.search(r"(\{.*\})", text, re.DOTALL)
+    if match_braces:
+        candidates.append(match_braces.group(1))
+
+    # 3. The raw text itself (fallback)
+    candidates.append(text)
+
+    for candidate in candidates:
+        # Strategy A: Standard JSON Parse
         try:
             return json.loads(candidate)
-        except json.JSONDecodeError:
+        except:
+            pass
+        
+        # Strategy B: Python Literal Eval (The "Nuclear Option" for Robustness)
+        # LLMs often output Python dicts (single quotes, True/False) instead of strict JSON.
+        # ast.literal_eval handles this safely.
+        try:
+            return ast.literal_eval(candidate)
+        except:
             pass
 
-    # 3. Last resort: Try loading the raw text (maybe it's pure JSON)
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    # 4. If all fails, print debug info and raise
-    # Print first/last 200 chars to help debug
-    preview = text[:200] + " ... " + text[-200:]
-    raise ValueError(f"Could not parse JSON from LLM output. Preview:\n{preview}")
+    # 4. Debug Info if all fail
+    preview = text[:500] + " ... " + text[-200:]
+    raise ValueError(f"Could not parse JSON (tried json.loads and ast.literal_eval). Preview:\n{preview}")
 
 def _load_ideas_if_available() -> str:
     idea_path = os.environ.get("STAGE1_IDEA_PATH")
@@ -165,7 +170,7 @@ Follow these rules strictly:
         timeout=1200
     )
     
-    # [MODIFIED] Use robust extraction instead of simple strip
+    # [MODIFIED] Use robust extraction with ast fallback
     try:
         nb_json = extract_json_from_text(raw_text)
     except Exception as e:
@@ -202,7 +207,6 @@ Follow these rules strictly:
         nb.cells.append(cell)
         
     # 2. [FIXED] Insert Strategy as a pure Markdown cell at index 0
-    # Now strategy_md is guaranteed to have content (either LLM-synth or Default text)
     if strategy_md:
         # Check if it already has a header, if not add one
         if not strategy_md.strip().startswith("#"):

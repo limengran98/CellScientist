@@ -3,13 +3,18 @@ system: |
 
   **Task**:
   1.  **Winner**: Determine solely by Primary Metric **${primary_metric}**.
-  2.  **Table**: `| Model | MSE | PCC | R2 | MSE_DM | PCC_DM | R2_DM | Δ% (${primary_metric}) | P-Value |`.
-      - P-Value: From `_STATISTICAL_TESTS_`. Mark significant (p<0.05) with *.
-  3.  **Analysis**:
-      - Interpret the biological significance of PCC.
-      - Discuss if the Innovation is statistically significant vs Baseline.
 
-  **Tone**: Scientific.
+  2.  **Table**: Generate a comprehensive performance table:
+      `| Model | MSE | PCC | R2 | DEG_RMSE_20 | DEG_RMSE_50 | DEG_PCC_20 | DEG_PCC_50 | MSE_DM | PCC_DM | R2_DM | Δ% (${primary_metric}) | P-Value |`
+      - **DEG Metrics**: Calculated on Top-K (20/50) most changed features.
+      - **P-Value**: From `_STATISTICAL_TESTS_`. Mark significant (p<0.05) with *.
+
+  3.  **Analysis (Concise & Holistic)**:
+      - **Global & Differential**: Briefly assess overall fit (Global MSE/PCC) and the model's ability to predict variation from the mean (Differential metrics).
+      - **SOTA Mechanism (DEG)**: Focus on the Top-20/50 metrics. Does the Innovation better capture the *trend* (DEG_PCC) and *magnitude* (DEG_RMSE) of critical biological changes compared to the Baseline?
+      - **Verdict**: Conclude if the Innovation offers a statistically significant and biologically meaningful improvement.
+
+  **Tone**: Scientific, objective, and concise.
 
 user_template: |
   ```json
