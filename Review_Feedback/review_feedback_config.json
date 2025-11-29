@@ -3,7 +3,8 @@
   "paths": {
     "generate_execution_root": "../results/${dataset_name}/generate_execution",
     "review_feedback_root": "../results/${dataset_name}/review_feedback",
-    "stage1_analysis_dir": "../results/${dataset_name}/design_analysis/reference"
+    "stage1_analysis_dir": "../results/${dataset_name}/design_analysis/reference",
+    "explicit_source_path": null
   },
   "llm": {
     "provider": "yizhan",

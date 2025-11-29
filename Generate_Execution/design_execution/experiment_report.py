@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Experiment report generator (Deep Metric Hunter & NaN-Safe Version).
-Refactored to load prompts from YAML with fallback.
+Refactored to load prompts from YAML with robust path discovery and extended metrics.
 """
 
 # design_execution/experiment_report.py
@@ -20,7 +20,6 @@ except ImportError:
 try:
     from .llm_utils import chat_text
 except ImportError:
-    # Fallback if running standalone (not recommended)
     pass
 
 __all__ = ["write_experiment_report"]
@@ -38,7 +37,20 @@ def _load_prompt_template(pm: str, metrics_str: str) -> tuple[str, str]:
     Attempts to load prompts/experiment_report.yaml.
     Returns (system_prompt, user_content).
     """
-    # 1. Default Hardcoded Prompts (Fallback)
+    # 1. Define Candidate Paths to search for the yaml
+    candidates = [
+        os.path.join(os.getcwd(), "prompts", "experiment_report.yaml"),
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts", "experiment_report.yaml"),
+        os.path.join(os.path.dirname(__file__), "prompts", "experiment_report.yaml")
+    ]
+    
+    prompt_path = None
+    for p in candidates:
+        if os.path.exists(p):
+            prompt_path = p
+            break
+
+    # 2. Default Hardcoded Prompts (Fallback)
     default_system = f"""
 You are a Senior Computational Biologist. Write an `experiment_report.md`.
 
@@ -54,25 +66,30 @@ You are a Senior Computational Biologist. Write an `experiment_report.md`.
 """
     default_user = f"```json\n{metrics_str}\n```\n\nWrite report."
 
-    # 2. Try to load from YAML
-    prompt_path = os.path.join(os.getcwd(), "prompts", "experiment_report.yaml")
-    if os.path.exists(prompt_path) and yaml is not None:
-        try:
-            with open(prompt_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f)
-            
-            context = {
-                "primary_metric": pm,
-                "metrics_json": metrics_str
-            }
-            
-            sys_tmpl = data.get("system", default_system)
-            usr_tmpl = data.get("user_template", default_user)
-            
-            return _expand_vars(sys_tmpl, context), _expand_vars(usr_tmpl, context)
-            
-        except Exception as e:
-            print(f"[REPORT][WARN] Failed to load prompt yaml: {e}. Using fallback.")
+    # 3. Try to load from YAML if found
+    if prompt_path:
+        if yaml is None:
+            print(f"[REPORT] ⚠️ Found {prompt_path}, but 'PyYAML' is not installed. Using fallback.")
+        else:
+            try:
+                print(f"[REPORT] 📄 Loading prompt template from: {prompt_path}")
+                with open(prompt_path, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+                
+                context = {
+                    "primary_metric": pm,
+                    "metrics_json": metrics_str
+                }
+                
+                sys_tmpl = data.get("system", default_system)
+                usr_tmpl = data.get("user_template", default_user)
+                
+                return _expand_vars(sys_tmpl, context), _expand_vars(usr_tmpl, context)
+                
+            except Exception as e:
+                print(f"[REPORT][WARN] Failed to parse YAML: {e}. Using fallback.")
+    else:
+        print("[REPORT] ⚠️ 'experiment_report.yaml' not found in search paths. Using hardcoded fallback.")
 
     return default_system, default_user
 
@@ -81,22 +98,18 @@ You are a Senior Computational Biologist. Write an `experiment_report.md`.
 # =============================================================================
 
 def _sanitize_json_values(obj: Any) -> Any:
-    """
-    Recursively clean data to be strict JSON compliant.
-    """
-    if hasattr(obj, "item"):
-        obj = obj.item()
+    """Recursively clean data to be strict JSON compliant."""
+    if hasattr(obj, "item"): obj = obj.item()
     if isinstance(obj, float):
         if math.isnan(obj): return None 
         if math.isinf(obj): return "Infinity" if obj > 0 else "-Infinity"
         return obj
-    if isinstance(obj, dict):
-        return {k: _sanitize_json_values(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [_sanitize_json_values(x) for x in obj]
+    if isinstance(obj, dict): return {k: _sanitize_json_values(v) for k, v in obj.items()}
+    elif isinstance(obj, list): return [_sanitize_json_values(x) for x in obj]
     return obj
 
 def _simplify_metrics_for_llm(obj: Any, depth: int = 0) -> Any:
+    """Strips detailed per-fold data to save tokens."""
     obj = _sanitize_json_values(obj)
     if depth > 4: return "..."
     if isinstance(obj, dict):
@@ -278,12 +291,20 @@ def write_experiment_report(trial_dir: str,
             "results": _sanitize_json_values(stats_results)
         }
     
-    # 4. Inject Computed Aggregates
+    # 4. Inject Computed Aggregates (FIXED: Added DEG metrics to allowlist)
+    # This step ensures that if metrics are only in per_fold, they are promoted to aggregate
+    # so the LLM can actually see them in the simplified JSON.
+    metrics_allowlist = [
+        "MSE", "PCC", "R2", "MSE_DM", "PCC_DM", "R2_DM",
+        "DEG_RMSE_20", "DEG_RMSE_50", "DEG_PCC_20", "DEG_PCC_50"
+    ]
+    
     for m_name, m_data in models_data.items():
         if m_name not in slim_data: continue
         if "aggregate" not in slim_data[m_name]:
             slim_data[m_name]["aggregate"] = {}
-        for k in ["MSE", "PCC", "R2", "MSE_DM", "PCC_DM"]:
+        
+        for k in metrics_allowlist:
             val = _smart_get_metric(m_data, k)
             if val is not None:
                 slim_data[m_name]["aggregate"][k] = val
@@ -291,14 +312,14 @@ def write_experiment_report(trial_dir: str,
     metrics_str = json.dumps(slim_data, indent=2)
     print(f"[REPORT] Metrics payload prepared ({len(metrics_str)} chars). Generating analysis...")
 
-    # 5. Load Prompts (Dynamic from YAML)
+    # 5. Load Prompts (Dynamic from YAML with Robust Search)
     system_prompt, user_content = _load_prompt_template(pm, metrics_str)
 
     try:
         # Call LLM
         report_content = chat_text(
             [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
-            cfg=cfg,
+            llm_config=cfg.get("llm", {}),  # [FIX] Use llm_config key to match utils
             timeout=600,
             temperature=0.5,
             max_tokens=4000

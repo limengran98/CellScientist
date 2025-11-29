@@ -107,9 +107,39 @@ def write_review_log(workspace, iteration, suggestion, score, current_best, stat
 # 3. Path & Resource Management
 # =============================================================================
 
-def find_best_phase2_trial(cfg):
+def find_best_phase2_trial(cfg, explicit_path=None):
+    """
+    Finds the source trial directory.
+    - If explicit_path is provided (from CLI or Config), verifies and returns it.
+    - Otherwise, scans generate_execution_root for the most recent run.
+    """
+    # 1. Check Explicit Path
+    if explicit_path:
+        # Support relative paths
+        if not os.path.isabs(explicit_path):
+            # Try relative to CWD first, then relative to config location if needed (but CWD is standard)
+            abs_path = os.path.abspath(explicit_path)
+        else:
+            abs_path = explicit_path
+
+        print(f"[INIT] Checking specified path: {abs_path}")
+        
+        nb_path = os.path.join(abs_path, "notebook_prompt_exec.ipynb")
+        metrics_path = os.path.join(abs_path, "metrics.json")
+        
+        if os.path.exists(nb_path) and os.path.exists(metrics_path):
+            print(f"[INIT] Locked to specified source: {abs_path}")
+            return abs_path
+        else:
+            raise FileNotFoundError(f"Specified path exists but missing 'notebook_prompt_exec.ipynb' or 'metrics.json': {abs_path}")
+
+    # 2. Auto-detect most recent
     gen_root = cfg["paths"]["generate_execution_root"]
     prompt_root = os.path.join(gen_root, "prompt")
+    
+    if not os.path.exists(prompt_root):
+        raise FileNotFoundError(f"Generation root not found: {prompt_root}")
+
     runs = sorted(glob.glob(os.path.join(prompt_root, "prompt_run_*")), reverse=True)
     
     print(f"[INIT] Searching for Phase 2 results in: {prompt_root}")
@@ -117,9 +147,10 @@ def find_best_phase2_trial(cfg):
         nb_path = os.path.join(run, "notebook_prompt_exec.ipynb")
         metrics_path = os.path.join(run, "metrics.json")
         if os.path.exists(nb_path) and os.path.exists(metrics_path):
-            print(f"[INIT] Found valid Phase 2 source: {run}")
+            print(f"[INIT] Found valid Phase 2 source (Auto-detected): {run}")
             return run
-    raise FileNotFoundError("No valid Phase 2 execution results found.")
+            
+    raise FileNotFoundError("No valid Phase 2 execution results found (Auto-detection failed).")
 
 def setup_phase3_workspace(cfg, source_trial_path):
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -452,6 +483,8 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="review_feedback_config.json")
+    parser.add_argument("--source_path", default=None, 
+                        help="Explicit path to the previous run directory (overrides config)")
     args = parser.parse_args()
     
     # [ARCH UPGRADE] Use config_loader
@@ -459,7 +492,13 @@ def main():
     cfg = load_full_config(args.config)
 
     try:
-        source_trial = find_best_phase2_trial(cfg)
+        # Resolve source path preference: CLI > Config JSON > Auto-detect
+        explicit_source = args.source_path
+        if not explicit_source:
+            # Try loading from JSON config
+            explicit_source = cfg.get("paths", {}).get("explicit_source_path")
+            
+        source_trial = find_best_phase2_trial(cfg, explicit_source)
         workspace, base_nb = setup_phase3_workspace(cfg, source_trial)
         optimize_loop(cfg, workspace, base_nb)
     except Exception as e:
