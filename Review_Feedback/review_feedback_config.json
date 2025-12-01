@@ -1,5 +1,5 @@
 {
-  "dataset_name": "BBBC036",
+  "dataset_name": "CPG0016",
   "paths": {
     "generate_execution_root": "../results/${dataset_name}/generate_execution",
     "review_feedback_root": "../results/${dataset_name}/review_feedback",
@@ -25,7 +25,7 @@
     "direction": "maximize", 
     "max_iterations": 10,
     "pass_threshold": 0.85,
-    "force_cells": [0,1,4,6],
+    "force_cells": [0,1,4,6,7],
     "protected_sections": [
         "SECTION 1", 
         "SECTION 2", 

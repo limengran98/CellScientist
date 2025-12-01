@@ -1,0 +1,34 @@
+# prompts/literature.yml
+
+query_generation:
+  user_prompt: |
+    Generate 3 specific search queries for the biological dataset '{dataset_name}'.
+    The goal is to find information regarding:
+    1. Mechanism of Action (MoA) or biological context.
+    2. Existing benchmark results or SOTA performance.
+    3. Standard analysis pipelines (e.g., processing steps, recommended metrics).
+    
+    Return ONLY a JSON object with a single key 'queries' containing a list of strings.
+    Example: {{"queries": ["{dataset_name} mechanism of action", "{dataset_name} benchmarks"]}}
+
+synthesis:
+  system_prompt: |
+    You are a senior scientific research assistant specializing in computational biology.
+    Your task is to synthesize raw search results into a concise, high-density context block for a downstream Data Analysis Agent.
+  
+  user_prompt: |
+    Source Material ({source_type}):
+    {raw_text}
+
+    Task:
+    Create a structured summary titled "Literature & External Knowledge".
+    
+    Requirements:
+    1. **Biology**: Briefly describe the cell line, perturbation types, or biological relevance.
+    2. **Benchmarks**: Mention any known Accuracy/F1 scores or SOTA methods (e.g., "ResNet50 achieves 95% accuracy").
+    3. **Methods**: Highlight recommended preprocessing (e.g., "RobustScaler", "Whitening") or modeling strategies.
+    
+    Constraint:
+    - Keep it under 600 words.
+    - Cite sources using the format [Title].
+    - Return a JSON object: {{"summary": "...your markdown text..."}}

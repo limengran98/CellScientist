@@ -118,6 +118,10 @@ def run_loop(cfg: dict, prompt_file: str, use_idea: bool):
     pid = os.getpid()
     workspace_name = f"workspace_{start_ts}_{pid}"
     
+    # [FIX] State tracking for best run
+    best_score = -9999.0
+    best_snapshot_dir = None
+    
     print(f"[LOOP] Temporary Workspace: {workspace_name}", flush=True)
 
     for i in range(1, max_iters + 1):
@@ -126,28 +130,55 @@ def run_loop(cfg: dict, prompt_file: str, use_idea: bool):
         try:
             _setup_stage1_resources(cfg, use_idea)
             
-            # Run in the unique workspace
+            # Run in the unique workspace (NOTE: phase_generate clears this dir each time)
             res = run_full_pipeline(cfg, p_path, run_name=workspace_name)
             
             trial_dir = res.get("trial_dir")
             success, score = _check_success(res.get("metrics", {}), threshold, pm)
             
+            # 1. Check Success (Instant Stop)
             if success:
                 print(f"\n🎉 [SUCCESS] Criteria Met! Archiving and Stopping.", flush=True)
-                _archive_run(trial_dir) # No prefix
+                _archive_run(trial_dir) 
+                # Cleanup potential snapshot if exists
+                if best_snapshot_dir and os.path.exists(best_snapshot_dir):
+                    shutil.rmtree(best_snapshot_dir, ignore_errors=True)
                 return
+            
+            # 2. Track Best Score
+            # If valid run (score > -999) and better than previous best
+            if score > -999.0 and score > best_score:
+                print(f"📈 [IMPROVEMENT] New best score: {score:.4f} (Prev: {best_score:.4f}). Snapshotting...", flush=True)
+                best_score = score
+                
+                # Create a safe snapshot because next iteration will wipe workspace
+                best_snapshot_dir = trial_dir + "_best_snapshot"
+                if os.path.exists(best_snapshot_dir):
+                    shutil.rmtree(best_snapshot_dir)
+                shutil.copytree(trial_dir, best_snapshot_dir)
             
             print(f"⚠️ [CONTINUE] Threshold not met.", flush=True)
             
-            # Archive the last run even if failed
-            if i == max_iters:
-                print(f"\n🏁 [DONE] Loop finished. Archiving last run.", flush=True)
-                _archive_run(trial_dir) # No prefix
-
         except Exception as e:
             print(f"❌ [ERROR] Iteration {i} crashed: {e}", flush=True)
             import traceback
             traceback.print_exc()
+
+    # Loop Finished - No Success found.
+    # Archive the BEST run we found, not necessarily the last one.
+    print(f"\n{'='*40}\n🏁 LOOP FINISHED\n{'='*40}", flush=True)
+    
+    if best_snapshot_dir and os.path.exists(best_snapshot_dir):
+        print(f"[LOOP] Archiving BEST run found (Score: {best_score:.4f}).", flush=True)
+        _archive_run(best_snapshot_dir)
+        
+        # Cleanup the stale workspace if it still exists
+        final_workspace = best_snapshot_dir.replace("_best_snapshot", "")
+        if os.path.exists(final_workspace):
+            shutil.rmtree(final_workspace, ignore_errors=True)
+            
+    else:
+        print("[LOOP] ❌ No valid runs completed successfully to archive.", flush=True)
 
 def main():
     parser = argparse.ArgumentParser()

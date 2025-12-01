@@ -276,6 +276,15 @@ def write_experiment_report(trial_dir: str,
     
     # 1. Robust Loading & Normalization
     models_data = _normalize_metrics(metrics_obj)
+    
+    # [CRITICAL FIX] Strict check: If no models/metrics, do not hallucinate a report.
+    if not models_data:
+        print("[REPORT] ⚠️ Metrics object is empty (No models found). Generating empty report.", flush=True)
+        out_path = os.path.join(trial_dir, "experiment_report.md")
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write("# Experiment Report\n\n**Status**: No metrics data available.\n")
+        return out_path
+
     baseline_name = _guess_baseline_name(models_data)
     pm = primary_metric or "PCC"
 
@@ -291,7 +300,7 @@ def write_experiment_report(trial_dir: str,
             "results": _sanitize_json_values(stats_results)
         }
     
-    # 4. Inject Computed Aggregates (FIXED: Added DEG metrics to allowlist)
+    # 4. Inject Computed Aggregates
     # This step ensures that if metrics are only in per_fold, they are promoted to aggregate
     # so the LLM can actually see them in the simplified JSON.
     metrics_allowlist = [
