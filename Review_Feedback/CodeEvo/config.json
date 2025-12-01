@@ -1,0 +1,26 @@
+{
+  "target_project": {
+    "root_dir": "/data/users/limengran/TranSiGen/",
+    "target_files": [
+      "src/model.py",
+      "src/train_TranSiGen_full_data.py"
+    ]
+  },
+  "agent": {
+    "workspace_root": "../../results/CodeEvo"
+  },
+  "llm": {
+    "provider": "yizhan",
+    "model": "gemini-3-pro-preview-thinking",
+    "temperature": 0.5,
+    "max_tokens": 60000,
+    "timeout": 600
+  },
+  "providers": {
+    "yizhan": {
+      "base_url": "https://vip.yi-zhan.top/v1",
+      "model": "gemini-3-pro-preview-thinking",
+      "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835"
+    }
+  }
+}
