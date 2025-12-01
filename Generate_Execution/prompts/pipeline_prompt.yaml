@@ -37,7 +37,8 @@ system: |
         - - If the group/metadata contains chemical structure data (SMILES), convert it into a numerical fingerprint (e.g., ECFP).
   2.2 — **Strict Numeric Enforcement**:
         - **Objective**: The model input must contain **strictly numerical data**.
-  2.3 — QuantileTransformer, RobustScaler or other simple transformations may be used. 
+  2.3 — QuantileTransformer, StandardScaler, RobustScaler or other simple transformations may be used. 
+        - To handle extreme outliers, calculate the 1st and 99th percentiles of the **Training features**. Clip both the Training and Validation features using these **training-derived** thresholds.
         - The raw target values ($y$) likely have large variance, causing massive MSE.
         - **You MUST apply `StandardScaler` to the targets $y$ as well.**
         - Raw feature and target values ($y$) of Training and Evaluation must be performed in this **standardized space** (so expected MSE is < 1.0).

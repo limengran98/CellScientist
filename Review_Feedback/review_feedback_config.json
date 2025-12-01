@@ -1,5 +1,5 @@
 {
-  "dataset_name": "CPG0016",
+  "dataset_name": "BBBC047",
   "paths": {
     "generate_execution_root": "../results/${dataset_name}/generate_execution",
     "review_feedback_root": "../results/${dataset_name}/review_feedback",
