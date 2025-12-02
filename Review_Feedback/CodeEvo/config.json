@@ -2,8 +2,7 @@
   "target_project": {
     "root_dir": "/data/users/limengran/TranSiGen/",
     "target_files": [
-      "src/model.py",
-      "src/train_TranSiGen_full_data.py"
+      "src/model.py"
     ]
   },
   "agent": {
