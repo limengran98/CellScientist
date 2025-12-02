@@ -34,11 +34,11 @@ system: |
   ========================================
 
   2.1 — **Feature Augmentation**:
-        - - If the group/metadata contains chemical structure data (SMILES), convert it into a numerical fingerprint (e.g., ECFP).
+        - The input matrix $X$ MUST be a concatenation of two specific modalities:  **Morphology** and 
+          Chemistry**: Convert the `SMILES` strings into numerical fingerprints (e.g., Morgan/ECFP4 fingerprints using `rdkit`, radius=2, nBits=1024 or 2048).
   2.2 — **Strict Numeric Enforcement**:
         - **Objective**: The model input must contain **strictly numerical data**.
-  2.3 — QuantileTransformer, StandardScaler, RobustScaler or other simple transformations may be used. 
-        - To handle extreme outliers, calculate the 1st and 99th percentiles of the **Training features**. Clip both the Training and Validation features using these **training-derived** thresholds.
+  2.3 — QuantileTransformer, RobustScaler or other simple transformations may be used. 
         - The raw target values ($y$) likely have large variance, causing massive MSE.
         - **You MUST apply `StandardScaler` to the targets $y$ as well.**
         - Raw feature and target values ($y$) of Training and Evaluation must be performed in this **standardized space** (so expected MSE is < 1.0).
@@ -53,13 +53,15 @@ system: |
 
   3.1 — Models must be implemented using PyTorch. You MUST define `device = torch.device("cuda" if torch.cuda.is_available() else "cpu")` at the very start of the Modeling section. Print Using device.
   3.2 — The innovative model must have a distinct name, and the modeling pipeline must include multiple innovative components, and may include multiple innovative parts.
-      * A new expressive model architecture,
-      * A novel and effective loss function,
+      * MUST a novel fusion strategy to dynamically weight the importance of phenotypic features vs. structural fingerprints,
+      * MUST a new expressive model architecture to extract deeper features,
+      * MUST a novel and effective loss function,
       * Incorporation of lightweight biological or mathematical prior knowledge.
       * The innovation **must be grounded in real scientific problems of the domain**—it cannot be arbitrary or a meaningless combination of modules.
   3.3 — Explicitly handle **heterogeneity and incompleteness**:
         NaN/±inf coercion, robust standardization, and **Strict adherence to the `split_id`** for train/validation separation. Do not attempt to re-stratify based on plates manually, as this is already encoded in the input file.
-  3.4 — At least a lightweight baseline models must be included, such as MLPs, etc.
+  3.4 — At least a lightweight baseline models must be included, such as MLPs, etc. 
+        The baseline MUST employ a naive **"Early Fusion"** strategy: simply concatenate the normalized morphology vector and the fingerprint vector into a single flat input vector.
   3.5 — Under identical experimental conditions, the designed model must outperform baseline models in terms of the correlation metric (PCC) and MSE.**
   3.6 — Training must allow 200–500 epochs and may use early stopping.
   3.7 — The actual number of epochs trained must be recorded.

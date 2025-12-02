@@ -1,5 +1,5 @@
 {
-  "dataset_name": "CPG0016",
+  "dataset_name": "BBBC036",
   "workflow_phases": [
     "task_analysis"
   ],
@@ -35,7 +35,7 @@
           "presence_penalty": 0
         },
         "multi": {
-          "num_runs": 4,
+          "num_runs": 1,
           "enabled": true,
           "max_parallel_workers": 4,
           "name_template": "NB{idx:02d}-seed{seed}",

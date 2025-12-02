@@ -1,5 +1,5 @@
 {
-  "dataset_name": "BBBC047",
+  "dataset_name": "CPG0016",
   "paths": {
     "baseline_source_dir": "../baseline/${dataset_name}",
     "stage1_analysis_dir": "../results/${dataset_name}/design_analysis/reference",
