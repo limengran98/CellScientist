@@ -1,21 +1,21 @@
 {
-  "dataset_name": "CPG0016",
+  "dataset_name": "BBBC047",
   "paths": {
     "baseline_source_dir": "../baseline/${dataset_name}",
     "stage1_analysis_dir": "../results/${dataset_name}/design_analysis/reference",
     "design_execution_root": "../results/${dataset_name}/generate_execution"
   },
   "llm": {
-    "model": "gemini-3-pro-preview-thinking",
+    "model": "gemini-3-pro-all",
     "base_url": "https://vip.yi-zhan.top/v1",
     "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835",
     "max_tokens": 40000,
-    "temperature": 0.2,
+    "temperature": 0.5,
     "timeout": 600
   },
   "experiment": {
     "primary_metric": "PCC",
-    "max_iterations": 3,
+    "max_iterations": 10,
     "success_threshold": 0.5
   },
   "prompt_branch": {

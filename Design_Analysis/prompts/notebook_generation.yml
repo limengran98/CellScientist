@@ -48,7 +48,6 @@ system_prompt: |
       **(2) Clean features**
 
       * Force all morphology columns to numeric; set `±inf` to `NaN`.
-      * Drop feature columns with \>95% missing values or near-zero variance; log the names of dropped columns.
       * Median-impute any remaining `NaN` values in the feature matrix.
       * Apply `sklearn.preprocessing.RobustScaler` to the feature matrix (to handle heavy tails/outliers).
 
@@ -62,7 +61,6 @@ system_prompt: |
           1. Map this plate-specific Median Vector back to **every** sample (based on `Metadata_Plate`) as the new column `morphology_pre`.
           2. The existing morphology features of each sample become `morphology_post`.
           3. **Crucial Filter:** Create a new dataframe containing **ONLY the treatment wells** (exclude the DMSO rows). 
-          4. Drop any rows where `morphology_pre` is NaN (i.e., plates that had no controls).
       * **Result:** You should now have a dataset of Drug-Treated samples, where each row contains its own features (`post`) and its plate's control baseline (`pre`).
 
       **(4) Split & Build H5** 
@@ -128,7 +126,7 @@ system_prompt: |
   5. **Experiment & Validation Suggestions**
      - Extend logically from the innovation motivations in Step 4, with a tight integration of biological findings and computational model design.
       Task: Predicting High-Content Cellular Morphology Following Drug Perturbation
-      Your primary task is to develop a predictive model that accurately estimates the high-dimensional morphological profiles of cells (e.g., from Cell Painting) following drug treatment.
+      Your primary task is to develop a multimodal MLP model that accurately estimates the high-dimensional morphological profiles of cells (e.g., from Cell Painting) following drug treatment.
 
      - In Markdown, propose next-step experiments that explicitly link:
        * **Biological discovery → Computational modeling**: e.g., heterogeneity in morphology → clustering + ensemble ML classifiers; nonlinear dose–response → generalized additive models, monotonic regression, or spline-regularized ML/DL.
@@ -203,11 +201,6 @@ system_prompt: |
           R2_DM:
             description: R² computed on differentially modulated features only.
             direction: higher_is_better
-      Modeling Strategy (Fast & Stable First):
-          Start with simple, well-regularized models before MLP:
-          Ridge Regression (fast, stable, interpretable)
-          Random Forest Regressor (handles nonlinear patterns, robust)
-          Then optionally upgrade to multimodal MLP only if needed, where SMILES-derived embeddings and morphology_pre are combined as joint inputs.
 
      - In code, provide a prototype pipeline skeleton (scikit-learn, XGBoost, or PyTorch) that illustrates how the processed data could be modeled:
        * Baseline: logistic regression or random forest.

@@ -1,5 +1,5 @@
 {
-  "dataset_name": "BBBC036",
+  "dataset_name": "BBBC047",
   "workflow_phases": [
     "task_analysis"
   ],
@@ -9,7 +9,7 @@
       "llm_notebook": {
         "split_strategy": "smiles",
         "paths": { 
-          "data": "../data/${dataset_name}/CP_data.csv",
+          "data": "../data/${dataset_name}/CP_data_norm.csv",
           "paper": "../data/${dataset_name}/BBBC036.pdf",
           "preprocess": "../data/${dataset_name}/BBBC036_data_process.ipynb"
         },
@@ -25,7 +25,7 @@
         },
         "llm": {
           "provider": "yizhan",
-          "model": "gemini-3-pro-preview-thinking",
+          "model": "gpt-5.1-2025-11-13",
           "base_url": "https://vip.yi-zhan.top/v1",
           "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835",
           "temperature": 0.5,

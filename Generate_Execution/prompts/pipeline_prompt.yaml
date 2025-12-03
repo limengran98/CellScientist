@@ -27,7 +27,7 @@ system: |
   1.7 — **CRITICAL SPLIT ENFORCEMENT**: You MUST check for a dataset named `split_id` (or similar). 
         - If found, this column contains integers (0-4) representing the 5-fold Cross-Validation assignment.
         - You **MUST** use these pre-defined splits. For Fold `k` (0..4), samples with `split_id == k` are the Test/Validation set, and samples with `split_id != k` are the Training set.
-        - **DO NOT** perform new random splitting (e.g., do not use `KFold` or `train_test_split` to generate new indices). The scientific validity of the experiment depends on using the pre-calculated stratification.
+        - Do not attempt to re-stratify based on plates manually, as this is already encoded in the input file.
 
   ================================================================================
   **SECTION 2 — PREPROCESSING AND SAFETY**
@@ -36,14 +36,10 @@ system: |
   2.1 — **Feature Augmentation**:
         - The input matrix $X$ MUST be a concatenation of two specific modalities:  **Morphology** and 
           Chemistry**: Convert the `SMILES` strings into numerical fingerprints (e.g., Morgan/ECFP4 fingerprints using `rdkit`, radius=2, nBits=1024 or 2048).
-  2.2 — **Strict Numeric Enforcement**:
-        - **Objective**: The model input must contain **strictly numerical data**.
-  2.3 — QuantileTransformer, RobustScaler or other simple transformations may be used. 
-        - The raw target values ($y$) likely have large variance, causing massive MSE.
-        - **You MUST apply `StandardScaler` to the targets $y$ as well.**
-        - Raw feature and target values ($y$) of Training and Evaluation must be performed in this **standardized space** (so expected MSE is < 1.0).
-        - **Leakage Prevention**: Fit all scalers **strictly** on the **Training samples only** (as defined by the `split_id` in Section 1.7) for each fold. Never fit scalers on the validation/test set.
-  2.4 — **Data Cleaning**:
+  2.2 — **Data Cleaning**:
+        - NaN/±inf coercion, robust standardization, and **Strict adherence to the `split_id`** for train/validation separation. 
+        - The model input must contain **strictly numerical data**.
+        - To prevent data breaches, standardized procedures are prohibited.
         - Handle missing values (NaN) using robust imputation (e.g., median).
         - Clip infinite values to finite bounds to prevent numerical instability.
 
@@ -53,18 +49,16 @@ system: |
 
   3.1 — Models must be implemented using PyTorch. You MUST define `device = torch.device("cuda" if torch.cuda.is_available() else "cpu")` at the very start of the Modeling section. Print Using device.
   3.2 — The innovative model must have a distinct name, and the modeling pipeline must include multiple innovative components, and may include multiple innovative parts.
-      * MUST a novel fusion strategy to dynamically weight the importance of phenotypic features vs. structural fingerprints,
+      * The innovation **must be grounded in real scientific problems of the domain**—it cannot be arbitrary or a meaningless combination of modules.
       * MUST a new expressive model architecture to extract deeper features,
+      * MUST a novel fusion strategy to dynamically weight the importance of phenotypic features vs. structural fingerprints,
       * MUST a novel and effective loss function,
       * Incorporation of lightweight biological or mathematical prior knowledge.
-      * The innovation **must be grounded in real scientific problems of the domain**—it cannot be arbitrary or a meaningless combination of modules.
-  3.3 — Explicitly handle **heterogeneity and incompleteness**:
-        NaN/±inf coercion, robust standardization, and **Strict adherence to the `split_id`** for train/validation separation. Do not attempt to re-stratify based on plates manually, as this is already encoded in the input file.
-  3.4 — At least a lightweight baseline models must be included, such as MLPs, etc. 
+  3.3 — At least a lightweight baseline models must be included, such as MLPs, etc. 
         The baseline MUST employ a naive **"Early Fusion"** strategy: simply concatenate the normalized morphology vector and the fingerprint vector into a single flat input vector.
-  3.5 — Under identical experimental conditions, the designed model must outperform baseline models in terms of the correlation metric (PCC) and MSE.**
-  3.6 — Training must allow 200–500 epochs and may use early stopping.
-  3.7 — The actual number of epochs trained must be recorded.
+  3.4 — Under identical experimental conditions, the designed model must outperform baseline models in terms of the correlation metric (PCC) and MSE.**
+  3.5 — Training must allow 200–500 epochs and may use early stopping.
+  3.6 — The actual number of epochs trained must be recorded.
 
   ================================================================================
   **SECTION 4 — METRICS AND EVALUATION**
