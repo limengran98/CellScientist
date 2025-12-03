@@ -423,16 +423,17 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
     # [RESTORED] Baseline Logic
     static_baseline_score = get_baseline_metric_value(current_metrics_path, target_metric)
     if static_baseline_score is None:
-        # If no baseline found in Phase 2 metrics, we assume the initial best score IS the baseline
-        # or we treat it as -999 to force at least one valid run.
         static_baseline_score = best_score_so_far
         
     best_nb_path = base_nb_path 
     history_summary = []
 
+    # [FORMATTING FIX] Format baseline to 4 decimal places
+    baseline_display = f"{static_baseline_score:.4f}" if static_baseline_score is not None else "N/A"
+
     print(f"\n[LOOP] Starting Optimization.")
     print(f"       🎯 Target: {target_metric}")
-    print(f"       🏁 Original Baseline: {static_baseline_score if static_baseline_score else 'N/A'}")
+    print(f"       🏁 Original Baseline: {baseline_display}")
     print(f"       🥇 Current Best:      {best_score_so_far:.4f}")
 
     for i in range(1, max_iters + 1):
@@ -507,7 +508,10 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             print(f"-"*40)
             print(f"[RESULT] Iteration {i} Summary")
             print(f"  > Candidate Score: {candidate_score:.4f}")
-            print(f"  > Baseline Score:  {comparison_baseline if comparison_baseline else 'N/A'}")
+            
+            # Fix display for summary baseline
+            comp_base_disp = f"{comparison_baseline:.4f}" if comparison_baseline is not None else "N/A"
+            print(f"  > Baseline Score:  {comp_base_disp}")
             print(f"  > Best Previous:   {best_score_so_far:.4f}")
             print(f"  > Verdict:         {status}")
             print(f"-"*40)

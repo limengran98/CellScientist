@@ -1,14 +1,75 @@
 # design_execution/prompt_executor.py
 from __future__ import annotations
 from typing import List, Dict, Any, Tuple, Optional
-import os, json, re, hashlib
+import os, json, re, hashlib, ast
 import nbformat
 from nbclient import NotebookClient
 from nbclient.exceptions import CellExecutionError
 from copy import deepcopy
 
-# Import centralized LLM tools
-from .llm_utils import chat_json
+# Import robust chat utilities
+from .llm_utils import chat_json, chat_text
+
+# =============================================================================
+# 0. Robust Helper Tools (The "Nuclear" Parser v2.0)
+# =============================================================================
+
+def extract_json_from_text(text: str) -> Dict[str, Any]:
+    """
+    Surgical extraction of JSON/Dict from LLM output.
+    Enhanced to handle Python syntax (triple quotes) which is superior for 
+    embedding code strings compared to strict JSON.
+    """
+    if not text:
+        raise ValueError("LLM returned empty response.")
+
+    text = text.strip()
+    candidates = []
+
+    # Strategy 1: Extract content inside Markdown code fences
+    # Matches ```json, ```python, or just ```
+    # Using non-greedy match (.*?) to find the first valid block
+    matches = re.findall(r"```(?:json|python)?\s*(.*?)\s*```", text, re.DOTALL)
+    if matches:
+        # Prioritize the longest match as it likely contains the code payload
+        candidates.extend(sorted(matches, key=len, reverse=True))
+
+    # Strategy 2: Extract Python variable assignment (e.g., edits = {...})
+    match_assign = re.search(r"\b(?:edits|result|data)\s*=\s*(\{.*\}|\[.*\])", text, re.DOTALL)
+    if match_assign:
+        candidates.append(match_assign.group(1))
+
+    # Strategy 3: Outermost braces/brackets
+    match_braces = re.search(r"(\{.*\})", text, re.DOTALL)
+    if match_braces:
+        candidates.append(match_braces.group(1))
+    
+    # Strategy 4: Raw text (Last resort)
+    candidates.append(text)
+
+    errors = []
+    for i, candidate in enumerate(candidates):
+        candidate = candidate.strip()
+        if not candidate: continue
+
+        # A. Try Python `ast.literal_eval` (Highest Priority for Code)
+        # This handles {'key': """Multi-line\nCode"""} which JSON cannot do easily.
+        try:
+            val = ast.literal_eval(candidate)
+            if isinstance(val, (dict, list)):
+                return val if isinstance(val, dict) else {"edits": val}
+        except Exception as e:
+            errors.append(f"AST Error: {e}")
+
+        # B. Try Standard JSON
+        try:
+            return json.loads(candidate)
+        except Exception as e:
+            errors.append(f"JSON Error: {e}")
+
+    # Debug: Print failure context
+    preview = text[:500].replace("\n", " ") + "..."
+    raise ValueError(f"CRITICAL PARSE FAILURE. Tried {len(candidates)} candidates. Errors: {errors}. Raw Preview: {preview}")
 
 # =============================================================================
 # 1. Heuristic Logic (Static Analysis)
@@ -69,7 +130,7 @@ def _apply_heuristics(nb: nbformat.NotebookNode, errors: List[Dict[str, Any]]) -
     return changed_count, patched_indices
 
 # =============================================================================
-# 2. LLM Auto-Fix Logic
+# 2. LLM Auto-Fix Logic (Enhanced for Long Code)
 # =============================================================================
 
 def _compute_cell_hash(source: str) -> str:
@@ -79,6 +140,13 @@ def _compute_cell_hash(source: str) -> str:
 def _apply_llm_edits(nb: nbformat.NotebookNode, edits: List[Dict[str, Any]]) -> int:
     """Apply edits and return number of effective changes (Hash Verified)."""
     effective_changes = 0
+    # Normalize input: edits might be a list or a dict containing a list
+    if isinstance(edits, dict) and "edits" in edits:
+        edits = edits["edits"]
+    
+    if not isinstance(edits, list):
+        return 0
+
     for ed in edits:
         try:
             idx = int(ed.get("cell_index"))
@@ -109,7 +177,7 @@ def _llm_auto_fix_once(
         error_list.append({
             "cell_index": e['cell_index'],
             "error": f"{e.get('ename')}: {e.get('evalue')}",
-            "traceback": (e.get("traceback") or "")[-2000:]
+            "traceback": (e.get("traceback") or "")[-3000:] # Increased context for complex errors
         })
     
     indices = {e['cell_index'] for e in errors}
@@ -117,30 +185,63 @@ def _llm_auto_fix_once(
     for i in indices:
         if 0 <= i < len(nb.cells):
             src = nb.cells[i].source
-            if len(src) > 8000: src = src[:8000] + "\n# ... [TRUNCATED]"
+            # T5 is often long, we need most of it, but truncate extremes if necessary
+            if len(src) > 15000: src = src[:15000] + "\n# ... [TRUNCATED]"
             failing_cells.append({"cell_index": i, "source": src})
 
     user_payload = {
-        "task": "Fix specific notebook cells. maintain logic, fix errors.",
+        "task": "Fix specific notebook cells. Maintain logic, fix runtime errors.",
         "errors": error_list,
         "failing_code": failing_cells,
-        "instruction": "Return FULL corrected source for the failing cells in JSON format."
+        "instruction": (
+            "Return a Python Dictionary with a key 'edits'. "
+            "Use Python Triple Quotes (\"\"\") for the source code to handle newlines/quotes safely. "
+            "Do NOT use JSON formatting for the code block if it contains many escapes."
+        )
     }
 
+    # [OPTIMIZATION] Explicitly teach the LLM to use Python Dicts with Triple Quotes
+    # This avoids JSON string escaping issues entirely.
+    enhanced_system_prompt = (
+        f"{autofix_system_prompt}\n\n"
+        "IMPORTANT: You are fixing a Jupyter Notebook cell.\n"
+        "OUTPUT FORMAT: Return a **valid Python Dictionary** (parsable by ast.literal_eval).\n"
+        "RULE: Use triple quotes (`\"\"\"`) for the code content to avoid JSON escaping errors.\n\n"
+        "Example Response:\n"
+        "```python\n"
+        "{\n"
+        "  'edits': [\n"
+        "    {\n"
+        "      'cell_index': 5,\n"
+        "      'source': \"\"\"import torch\n"
+        "def my_func():\n"
+        "    return 'Success'\"\"\"\n"
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "```"
+    )
+
     messages = [
-        {"role": "system", "content": autofix_system_prompt},
+        {"role": "system", "content": enhanced_system_prompt},
         {"role": "user", "content": json.dumps(user_payload, indent=2)}
     ]
 
-    # 2. Call LLM
+    # 2. Call LLM (Using chat_text + extract_json for robustness)
     try:
-        spec = chat_json(messages, llm_config=llm_cfg, temperature=0.0, timeout=600)
+        raw_text = chat_text(messages, llm_config=llm_cfg, temperature=0.0, timeout=600)
+        
+        # Debug Log for transparency
+        # if raw_text: print(f"[DEBUG] Raw LLM Response Preview: {raw_text[:100]}...", flush=True)
+
+        spec = extract_json_from_text(raw_text)
     except Exception as e:
-        print(f"[FIX] LLM Call Failed: {e}", flush=True)
+        print(f"[FIX] LLM Call/Parse Failed: {e}", flush=True)
         return nb, False
 
     edits = spec.get("edits") or []
     if not edits:
+        print("[FIX] LLM returned response but no 'edits' key found.", flush=True)
         return nb, False
 
     # 3. Apply with Verification
@@ -264,7 +365,7 @@ class GraphExecutor(NotebookClient):
         for attempt in range(self.max_fix_rounds):
             errors = self._get_cell_errors(cell_idx)
             if not errors:
-                return False # Should not happen inside CellExecutionError catch
+                return False 
 
             print(f"   [FIX] {task_id} | Round {attempt+1}/{self.max_fix_rounds} | Analyzing...", flush=True)
 
@@ -276,7 +377,6 @@ class GraphExecutor(NotebookClient):
 
             # 2. LLM (Slow path)
             # Pass a COPY of notebook to LLM func to avoid partial mutations if it fails
-            # But we want the result to apply to SELF.NB if successful
             nb_copy = deepcopy(self.nb)
             
             # NOTE: We only send the CURRENT failing cell errors to the LLM
@@ -289,7 +389,6 @@ class GraphExecutor(NotebookClient):
 
             if patched:
                 # Update our live notebook's specific cell
-                # We trust _llm_auto_fix_once has modified the cell at cell_idx in nb_copy
                 new_source = nb_fixed.cells[cell_idx].source
                 if self.nb.cells[cell_idx].source != new_source:
                     self.nb.cells[cell_idx].source = new_source
@@ -324,7 +423,7 @@ def run_notebook_with_autofix(
     
     prompts_map = cfg.get("prompts", {})
     autofix_prompt = prompts_map.get("autofix", {}).get("system_prompt", 
-        "You are a Python Expert. Fix the code errors provided. Return JSON with 'edits'.")
+        "You are a Python Expert. Fix the code errors provided. Return a Python Dictionary with 'edits'.")
 
     # Instantiate Graph Executor
     executor = GraphExecutor(
@@ -351,7 +450,7 @@ def run_notebook_with_autofix(
     # Save Result
     out_path = nb_path.replace(".ipynb", "_exec.ipynb")
     
-    # Remove the injected setup cell (index 0) before saving to keep it clean (optional)
+    # Remove the injected setup cell (index 0) before saving
     if len(final_nb.cells) > 0 and "[AUTO-FIX] Guard Cell" in final_nb.cells[0].source:
         final_nb.cells.pop(0)
 
