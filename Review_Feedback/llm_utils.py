@@ -1,5 +1,10 @@
 # llm_utils.py
-import os, json, re, time, requests
+import os
+import json
+import re
+import time
+import requests
+import ast
 from typing import Dict, Any, List, Optional, Union
 
 # =============================================================================
@@ -33,7 +38,7 @@ def resolve_llm_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         or os.environ.get(f"{(provider_name or 'OPENAI').upper()}_API_KEY")
     )
 
-    # Respect user's 300s timeout for Thinking models
+    # Respect user's timeout and params
     timeout = int(llm.get("timeout", prof.get("timeout", 300)))
     temperature = float(llm.get("temperature", prof.get("temperature", 0.7)))
     max_tokens = int(llm.get("max_tokens", prof.get("max_tokens", 40000)))
@@ -48,33 +53,58 @@ def resolve_llm_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 # =============================================================================
-# 2. Robust Parsing
+# 2. Robust Parsing (Enhanced)
 # =============================================================================
 
 def extract_json_from_text(text: str) -> Union[Dict, List]:
     """
-    Surgical extraction of JSON from mixed LLM output (Thinking, Markdown, etc).
+    Surgical extraction of JSON from mixed LLM output.
+    [UPGRADE]: Added ast.literal_eval fallback for single-quoted dicts.
     """
-    if not text: raise ValueError("Empty response from LLM")
+    if not text: 
+        raise ValueError("Empty response from LLM")
     text = text.strip()
 
-    # Strategy 1: ```json ... ``` block
+    # Pre-processing: Remove potential markdown/text wrappers
+    # Removes text before the first '{' or '['
+    text = re.sub(r'^[^{[]*', '', text) 
+    # Removes text after the last '}' or ']'
+    text = re.sub(r'[^}\]]*$', '', text)
+
+    # Strategy 1: Regex extraction of code blocks (```json ... ```)
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if match:
-        try: return json.loads(match.group(1))
-        except: pass
+        try: 
+            return json.loads(match.group(1))
+        except: 
+            pass
 
-    # Strategy 2: Outer braces { ... }
+    # Strategy 2: Outer braces { ... } - Standard JSON
     match = re.search(r"(\{.*\})", text, re.DOTALL)
     if match:
-        try: return json.loads(match.group(1))
-        except: pass
+        candidate = match.group(1)
+        try: 
+            return json.loads(candidate)
+        except: 
+            # [NEW] Sub-strategy: Try ast.literal_eval (Handles Python dicts with single quotes)
+            try: 
+                return ast.literal_eval(candidate)
+            except: 
+                pass
 
     # Strategy 3: Direct Parse
-    try: return json.loads(text)
-    except: pass
+    try: 
+        return json.loads(text)
+    except: 
+        pass
+    
+    # Strategy 4: Fallback AST Parse (Last resort)
+    try:
+        return ast.literal_eval(text)
+    except:
+        pass
 
-    # Debug Preview
+    # Debug Preview if all failed
     preview = text[:200] + " ... " + text[-200:]
     raise ValueError(f"Failed to parse JSON. Preview:\n{preview}")
 
@@ -132,12 +162,31 @@ def chat_text(
 def chat_json(
     messages: List[Dict], 
     cfg: Dict[str, Any],
-    temperature: float = 0.2
+    temperature: float = 0.2,
+    max_retries: int = 3  # [NEW] Added retry parameter
 ) -> Dict[str, Any]:
     """
-    Chat Completion returning JSON (Robust Loop).
-    Used for Auto-Fix and Review Optimization.
+    Chat Completion returning JSON with Auto-Retry Logic.
+    If JSON parsing fails, it sleeps and tries again (up to max_retries).
     """
-    # Force JSON mode in prompt/payload if supported, but rely on extractor
-    text = chat_text(messages, cfg, temperature=temperature)
-    return extract_json_from_text(text)
+    last_error = None
+    
+    for attempt in range(max_retries):
+        try:
+            # On retries, slightly increase temperature to get a different response
+            curr_temp = temperature + (0.1 * attempt) if attempt > 0 else temperature
+            
+            # Call basic chat
+            text = chat_text(messages, cfg, temperature=curr_temp)
+            
+            # Attempt extract
+            return extract_json_from_text(text)
+            
+        except ValueError as e:
+            last_error = e
+            print(f"[LLM-JSON] Parse failed (Attempt {attempt+1}/{max_retries}). Retrying...")
+            time.sleep(1)
+            
+    # If all retries fail, raise the last error
+    print(f"[LLM-JSON] FATAL: Could not get valid JSON after {max_retries} attempts.")
+    raise last_error

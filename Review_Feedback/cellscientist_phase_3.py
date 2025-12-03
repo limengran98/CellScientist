@@ -16,7 +16,9 @@ from datetime import datetime
 # =============================================================================
 from config_loader import load_full_config
 from llm_utils import chat_json, resolve_llm_config
-from nb_autofix import execute_with_autofix
+
+# [UPDATED] Import decoupled execution and error handling functions
+from executor_engine import run_notebook_pure, attempt_fix_notebook, dump_error_log
 
 try:
     from experiment_report import write_experiment_report
@@ -57,7 +59,6 @@ def _resolve_relative_resources(cfg):
 def write_review_log(workspace, iteration, suggestion, score, current_best, static_baseline, status):
     """
     Writes a log comparing Candidate vs Best vs Baseline.
-    [RESTORED] Full Markdown table format with Delta and Icons.
     """
     log_path = os.path.join(workspace, "optimization_history.md")
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -69,7 +70,7 @@ def write_review_log(workspace, iteration, suggestion, score, current_best, stat
     
     # Calculate Delta
     delta_str = "-"
-    if static_baseline != -999 and score != -999:
+    if static_baseline is not None and score != -999:
         diff = score - static_baseline
         delta_str = f"{diff:+.4f}"
 
@@ -81,7 +82,7 @@ def write_review_log(workspace, iteration, suggestion, score, current_best, stat
 | :--- | :--- |
 | **Candidate (This Run)** | **{score:.4f}** |
 | Current Best (Evolution) | {current_best:.4f} |
-| Original Baseline | {static_baseline:.4f} |
+| Original Baseline | {static_baseline if static_baseline is not None else 'N/A'} |
 | **Delta (vs Baseline)** | **{delta_str}** |
 
 ### 💡 Rationale
@@ -110,14 +111,10 @@ def write_review_log(workspace, iteration, suggestion, score, current_best, stat
 def find_best_phase2_trial(cfg, explicit_path=None):
     """
     Finds the source trial directory.
-    - If explicit_path is provided (from CLI or Config), verifies and returns it.
-    - Otherwise, scans generate_execution_root for the most recent run.
     """
     # 1. Check Explicit Path
     if explicit_path:
-        # Support relative paths
         if not os.path.isabs(explicit_path):
-            # Try relative to CWD first, then relative to config location if needed (but CWD is standard)
             abs_path = os.path.abspath(explicit_path)
         else:
             abs_path = explicit_path
@@ -263,7 +260,6 @@ def _expand_vars(text, context):
 def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, iteration, best_metric_val, workspace, history_summary):
     """
     Generates optimization suggestions.
-    [UPDATED] Uses llm_utils.chat_json instead of LLMClient class.
     """
     
     # 1. Dynamic Content Construction
@@ -331,10 +327,6 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
 
     print(f"[REVIEW] Requesting optimization (Iter {iteration})...")
     
-    # [ARCH UPGRADE] Call llm_utils.chat_json
-    # This handles retries, Thinking model cleaning, and JSON extraction automatically
-    debug_dir = os.path.join(workspace, "llm_debug")
-    
     try:
         return chat_json(
             messages, 
@@ -346,7 +338,75 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
         return None
 
 # =============================================================================
-# 7. Main Optimization Loop (RESTORED PRINTS)
+# 7. Execution Loop Logic (Decoupled & New)
+# =============================================================================
+
+def execute_and_recover(nb_path, workdir, cfg):
+    """
+    Manages the Execution -> Error Reporting -> Fix Loop lifecycle.
+    Replaces the old 'execute_with_autofix' function.
+    """
+    timeout = cfg["exec"]["timeout_seconds"]
+    max_fixes = cfg["exec"]["max_fix_rounds"]
+    # [NOTE] cuda_device_id logic is removed from executor, 
+    # relying on system env or default behavior.
+    
+    current_nb_path = nb_path
+    
+    # 1. Initial Execution
+    nb = nbformat.read(current_nb_path, as_version=4)
+    print(f"[EXEC] Running Notebook: {current_nb_path}")
+    
+    # Run Pure Execution
+    executed_nb, errors = run_notebook_pure(nb, workdir, timeout, cuda_device_id=None)
+    
+    # If no errors, save and return
+    if not errors:
+        out_path = current_nb_path.replace(".ipynb", "_exec.ipynb")
+        nbformat.write(executed_nb, out_path)
+        return out_path, True
+    
+    # 2. Fix Loop
+    fix_round = 0
+    current_nb_obj = executed_nb # This contains the output traces
+    
+    while errors and fix_round < max_fixes:
+        fix_round += 1
+        print(f"\n{'!'*40}")
+        print(f"[EXEC] Errors Found (Round {fix_round}) - Initiating Recovery...")
+        
+        # A. Explicitly Dump Errors (Visible to User)
+        dump_error_log(workdir, errors, round_idx=fix_round)
+        
+        # B. Attempt Fix
+        fixed_nb, changed, method = attempt_fix_notebook(current_nb_obj, errors, cfg)
+        
+        if not changed:
+            print(f"[EXEC] Could not generate valid fix ({method}). Stopping.")
+            break
+            
+        print(f"[EXEC] Applying Fix ({method}) -> Rerunning...")
+        
+        # C. Rerun
+        current_nb_obj, errors = run_notebook_pure(fixed_nb, workdir, timeout, cuda_device_id=None)
+        
+        if not errors:
+            print(f"[EXEC] Fixed successfully!")
+            break
+
+    # 3. Final Save
+    final_out_path = nb_path.replace(".ipynb", "_exec.ipynb")
+    nbformat.write(current_nb_obj, final_out_path)
+    
+    if errors:
+        print(f"[EXEC] Final Execution Failed. Remaining Errors: {len(errors)}")
+        dump_error_log(workdir, errors, round_idx=999) # 999 indicates final failure
+        return final_out_path, False
+        
+    return final_out_path, True
+
+# =============================================================================
+# 8. Main Optimization Loop
 # =============================================================================
 
 def optimize_loop(cfg, workspace_dir, base_nb_path):
@@ -363,6 +423,8 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
     # [RESTORED] Baseline Logic
     static_baseline_score = get_baseline_metric_value(current_metrics_path, target_metric)
     if static_baseline_score is None:
+        # If no baseline found in Phase 2 metrics, we assume the initial best score IS the baseline
+        # or we treat it as -999 to force at least one valid run.
         static_baseline_score = best_score_so_far
         
     best_nb_path = base_nb_path 
@@ -370,7 +432,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
 
     print(f"\n[LOOP] Starting Optimization.")
     print(f"       🎯 Target: {target_metric}")
-    print(f"       🏁 Original Baseline: {static_baseline_score:.4f}")
+    print(f"       🏁 Original Baseline: {static_baseline_score if static_baseline_score else 'N/A'}")
     print(f"       🥇 Current Best:      {best_score_so_far:.4f}")
 
     for i in range(1, max_iters + 1):
@@ -416,16 +478,15 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
         nbformat.write(nb_next, candidate_nb_path)
         
         print(f"[EXEC] Running Candidate {i}...")
+        
+        # [UPDATED] Use execute_and_recover instead of execute_with_autofix
+        executed_nb_path, success = execute_and_recover(
+            nb_path=candidate_nb_path,
+            workdir=workspace_dir,
+            cfg=cfg
+        )
+        
         try:
-            executed_nb_path = execute_with_autofix(
-                ipynb_path=candidate_nb_path,
-                workdir=workspace_dir,
-                timeout_seconds=cfg["exec"]["timeout_seconds"],
-                max_fix_rounds=cfg["exec"]["max_fix_rounds"],
-                phase_cfg=cfg,
-                verbose=True
-            )
-            
             iter_metrics_path = os.path.join(workspace_dir, f"metrics_iter_{i}.json")
             generated_metrics = os.path.join(workspace_dir, "metrics.json")
             if os.path.exists(generated_metrics):
@@ -435,13 +496,18 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             current_run_baseline = get_baseline_metric_value(iter_metrics_path, target_metric)
             comparison_baseline = current_run_baseline if current_run_baseline is not None else static_baseline_score
             
-            status = "IMPROVED" if candidate_score > best_score_so_far else "FAILED"
+            # Determine Status based on Execution Success and Score
+            status = "FAILED"
+            if not success:
+                 status = "CRASH"
+            elif candidate_score > best_score_so_far:
+                 status = "IMPROVED"
             
             # [RESTORED] Detailed Console Summary
             print(f"-"*40)
             print(f"[RESULT] Iteration {i} Summary")
             print(f"  > Candidate Score: {candidate_score:.4f}")
-            print(f"  > Baseline Score:  {comparison_baseline:.4f}")
+            print(f"  > Baseline Score:  {comparison_baseline if comparison_baseline else 'N/A'}")
             print(f"  > Best Previous:   {best_score_so_far:.4f}")
             print(f"  > Verdict:         {status}")
             print(f"-"*40)
@@ -455,7 +521,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                 "score": candidate_score
             })
 
-            if candidate_score > best_score_so_far:
+            if status == "IMPROVED":
                 print(f"🎉 NEW BEST! Updating baseline for next iteration.")
                 best_score_so_far = candidate_score
                 best_nb_path = executed_nb_path 
@@ -467,15 +533,26 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                         write_experiment_report(workspace_dir, m_obj, cfg, primary_metric=target_metric)
                     except Exception as e: print(f"[WARN] Report gen failed: {e}")
 
-                if best_score_so_far >= threshold:
-                    print(f"[SUCCESS] Threshold reached.")
+                # --- CRITICAL FIX: STOPPING CONDITION ---
+                # Check 1: Must reach the pass threshold
+                beats_threshold = (best_score_so_far >= threshold)
+                
+                # Check 2: Must be strictly better than the original baseline (if it exists)
+                beats_baseline = True
+                if static_baseline_score is not None and static_baseline_score != -999.0:
+                    beats_baseline = (best_score_so_far > static_baseline_score)
+                
+                if beats_threshold and beats_baseline:
+                    print(f"\n[SUCCESS] Goal Reached! Score {best_score_so_far:.4f} >= Threshold ({threshold}) AND > Baseline ({static_baseline_score:.4f})")
                     break
+                elif beats_threshold and not beats_baseline:
+                    print(f"\n[CONTINUE] Threshold passed ({best_score_so_far:.4f} >= {threshold}), but NOT beating Baseline ({static_baseline_score:.4f}). Continuing...")
             else:
                 print(f"📉 Improvement failed. Reverting to previous best.")
                 
         except Exception as e:
-            print(f"[ERROR] Execution failed: {e}")
-            history_summary.append({"iter": i, "critique": "Execution Crash", "status": "CRASH", "score": -999})
+            print(f"[ERROR] Logic Error after execution: {e}")
+            history_summary.append({"iter": i, "critique": "Logic Crash", "status": "CRASH", "score": -999})
 
     print(f"\n🏁 Finished. Best: {best_score_so_far}")
     print(f"📂 Final Notebook: {best_nb_path}")
