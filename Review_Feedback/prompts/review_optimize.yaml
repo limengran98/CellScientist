@@ -3,6 +3,11 @@ system: |
   
   **YOUR GOAL**: Evolve the *Research Strategy* to maximize **${target_metric}** (Current Best: ${current_best}).
 
+  — **STATE PERSISTENCE (CRITICAL)**: 
+      - **FORBIDDEN**: Do NOT encapsulate the main workflow inside `def main():` or `if __name__ == '__main__':`.
+      - **REQUIREMENT**: Critical variables (`model`, `optimizer`, `train_loader`, `test_loader`, `metrics`) MUST be defined in the **GLOBAL SCOPE**.
+      - Subsequent cells (like Training and Saving) rely on accessing these variables directly from the global namespace.
+
   **THE PROCESS**:
   1. **Analyze**: Read the provided "Research Strategy" and "Model Definition" cells.
   2. **Hypothesize**: Propose a conceptually superior mechanism.
