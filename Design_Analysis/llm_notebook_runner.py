@@ -1,9 +1,3 @@
-# [NEW] Note: Auto-fix loop is implemented in run_llm_nb.py; this runner remains unchanged for stability.
-"""
-LLM-driven Jupyter Notebook generator & runner for Task_Analysis.
-...
-"""
-
 from __future__ import annotations
 
 import json
@@ -105,14 +99,12 @@ def _get_phase_llm_nb_cfg(config: Dict[str, Any], phase_name: str = "task_analys
     return ((config.get("phases") or {}).get(phase_name) or {}).get("llm_notebook") or {}
 
 def _resolve_paths(cfg: Dict[str, Any]) -> Tuple[str, str, str, str, str, str]:
-    # [MODIFIED] Added h5_out
     paths = cfg.get("paths") or {}
     data = paths.get("data") or "/mnt/data/CP_data.csv"
     paper = paths.get("paper") or "/mnt/data/BBBC036.pdf"
     preprocess = paths.get("preprocess") or "/mnt/data/BBBC036_data_process.ipynb"
     out = paths.get("out") or "/mnt/data/CP_llm.ipynb"
     out_exec = paths.get("out_exec") or paths.get("out-exec") or "/mnt/data/CP_llm_executed.ipynb"
-    # [MODIFIED] Add h5_out path. Default to a reasonable value if not present.
     h5_out = paths.get("h5_out") or (str(Path(out).parent / "preprocessed_data.h5"))
     return data, paper, preprocess, out, out_exec, h5_out
 
@@ -126,22 +118,19 @@ def _resolve_exec_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "force_json_mode": bool(d.get("force_json_mode", True)),
         "save_intermediate": bool(d.get("save_intermediate", True)),
         "allow_errors": bool(d.get("allow_errors", True)),
+        "cuda_device_id": d.get("cuda_device_id", None) # [NEW]
     }
 
 def _resolve_llm_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     """
     Resolve LLM connection settings with sensible precedence:
-    - API key: cfg.llm.api_key > env[cfg.llm.api_key_env] > env["OPENAI_API_KEY"] > None
-    - Base URL: cfg.llm.base_url > provider file > env[cfg.llm.base_url_env] > env["OPENAI_BASE_URL"] > hardcoded fallback
-    - Model: cfg.llm.model > provider default > env["OPENAI_MODEL"] or "gpt-4o-mini"
     """
     llm = cfg.get("llm") or {}
     base_url = llm.get("base_url") or None
     model = llm.get("model") or None
 
-    # Provider file (optional)
     try:
-        base_dir = Path(__file__).resolve().parents[1]  # .../cellscientist
+        base_dir = Path(__file__).resolve().parents[1]
         prov_file = base_dir / "llm_providers.json"
         prov_name = (llm.get("provider") or "").strip() or None
         if (not base_url or not model) and prov_name and prov_file.exists():
@@ -155,7 +144,6 @@ def _resolve_llm_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # Base URL env fallbacks
     if not base_url:
         base_url_env = llm.get("base_url_env")
         if base_url_env and os.environ.get(base_url_env):
@@ -163,17 +151,14 @@ def _resolve_llm_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
         else:
             base_url = os.environ.get("OPENAI_BASE_URL") or "https://vip.yi-zhan.top/v1"
 
-    # Model env fallback
     if not model:
         model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
-    # API key precedence (include config hardcoded key)
     api_key = llm.get("api_key") or None
     if not api_key:
         api_key_env = llm.get("api_key_env") or "OPENAI_API_KEY"
         api_key = os.environ.get(api_key_env)
 
-    # Extra knobs
     temperature = float(llm.get("temperature", 0.2))
     max_tokens = int(llm.get("max_tokens", 8192))
     top_p = float(llm.get("top_p", 1))
@@ -253,13 +238,11 @@ class OpenAICompatClient:
 # ---------------- High-level Runner ----------------
 
 def _system_prompt(language: str, headings: List[str], base_prompt_str: str, data_path: str, h5_output_path: str, split_strategy: str) -> str:
-    # [MODIFIED] Function now accepts base_prompt_str and paths
     if not base_prompt_str:
         raise ValueError("Base system prompt is empty. Check prompts/notebook_generation.yml")
     lang_label = "English" if language.startswith("en") else language
     headings_bulleted = "\n".join([f"  {h}" for h in headings])
     
-    # [MODIFIED] Inject paths and split_strategy into the prompt string
     return base_prompt_str.format(
         language_label=lang_label, 
         headings_bulleted=headings_bulleted,
@@ -275,17 +258,14 @@ def make_messages(
     csv_preview: Dict[str, Any],
     language: str,
     headings: List[str],
-    base_system_prompt_str: str, # [MODIFIED] Accept loaded system prompt
-    h5_output_path: str, # [MODIFIED] Accept H5 output path
-    split_strategy: str = "random", # [MODIFIED] Accept split strategy
+    base_system_prompt_str: str,
+    h5_output_path: str,
+    split_strategy: str = "random",
 ) -> List[Dict[str, str]]:
     """Compose the system+user messages for the LLM."""
     context = {
-        # [MODIFIED] user_prompt is now from the prompt YAML, not the config
         "user_prompt": user_prompt,
         "language": language,
-        # [MODIFIED] These paths are now injected into the system prompt,
-        # but we can keep them here for the user message context if needed.
         "data_path": data_path,
         "h5_output_path": h5_output_path,
         "paper_excerpt": (paper_excerpt or "")[:2000],
@@ -298,7 +278,6 @@ def make_messages(
         }
     }
     return [
-        # [MODIFIED] Pass all required args to _system_prompt including split_strategy
         {"role": "system", "content": _system_prompt(
             language, headings, base_system_prompt_str, data_path, h5_output_path, split_strategy
         )},
@@ -311,9 +290,9 @@ def run_llm_notebook(
     preprocess_nb: Optional[str],
     user_prompt: str,
     out_path: str,
-    base_system_prompt_str: str, # [MODIFIED] Accept loaded system prompt
-    h5_out_path: str, # [MODIFIED] Accept H5 output path
-    split_strategy: str = "random", # [MODIFIED] Accept split strategy
+    base_system_prompt_str: str, 
+    h5_out_path: str, 
+    split_strategy: str = "random", 
     executed_path: Optional[str] = None,
     model: Optional[str] = None,
     timeout_seconds: int = 1800,
@@ -327,10 +306,10 @@ def run_llm_notebook(
     base_url: Optional[str] = None,
     save_intermediate: bool = True,
     allow_errors: bool = True,
+    cuda_device_id: Optional[str] = None, # [NEW]
 ) -> str:
     """
-    Core runner with explicit arguments (no hardcoding).
-    If you prefer phase-scoped config, use run_llm_notebook_with_config(...) instead.
+    Core runner.
     """
     if headings is None:
         headings = [
@@ -346,7 +325,6 @@ def run_llm_notebook(
     paper_excerpt = read_pdf_excerpt(paper_pdf, max_pages=pdf_max_pages)
 
     # LLM messages
-    # [MODIFIED] Pass the split_strategy to make_messages
     messages = make_messages(
         user_prompt, data_path, paper_excerpt, csv_preview, 
         language=language, headings=headings, 
@@ -355,7 +333,7 @@ def run_llm_notebook(
         split_strategy=split_strategy
     )
 
-    # LLM config (explicit > env)
+    # LLM config
     model_final = model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
     api_key_final = api_key or os.environ.get("OPENAI_API_KEY")
     base_url_final = base_url or os.environ.get("OPENAI_BASE_URL")
@@ -369,34 +347,39 @@ def run_llm_notebook(
     out_p = Path(out_path); out_p.parent.mkdir(parents=True, exist_ok=True)
     out_p.write_text(nbf.writes(nb), encoding="utf-8")
 
-    # Save the "unexecuted" Notebook first
     if save_intermediate:
         out_p.write_text(nbf.writes(nb), encoding="utf-8")
 
-    # Execute (optionally allow errors to not stop execution)
+    # [NEW] Initial Execution with CUDA
+    # Note: This is the initial run. The Adaptive Fix loop in run_llm_nb.py will also need this info.
     from nbclient import NotebookClient
-    # Key: allow_errors controls "continue on error"
+    
+    # Inject CUDA device into environment
+    env_vars = os.environ.copy()
+    if cuda_device_id is not None:
+        env_vars["CUDA_VISIBLE_DEVICES"] = str(cuda_device_id)
+        print(f"🖥️  CUDA Device set to: {cuda_device_id}", flush=True)
+
+    # We must start the kernel with this env
+    # nbclient passes 'env' to the kernel manager
+    
     nb_client = NotebookClient(
         nb,
         timeout=timeout_seconds,
         kernel_name="python3",
-        allow_errors=allow_errors
+        allow_errors=allow_errors,
+        resources={'env': env_vars} # [NEW] Pass Env
     )
 
-    # Safety: prevent execution from stopping due to kernel-level exceptions
     errors_summary = []
     try:
         nb_client.execute()
     except Exception as e:
-        # If it's not a cell-level error but an executor-level exception,
-        # capture a short overview in metadata
         errors_summary.append(f"Notebook execution raised: {type(e).__name__}: {e}")
 
-    # Write execution errors into notebook metadata (optional but useful)
     if errors_summary:
         nb.metadata["execution_errors"] = errors_summary
 
-    # Save the "executed" Notebook
     exec_p = Path(executed_path or out_p.with_name(out_p.stem + "_executed.ipynb"))
     exec_p.write_text(nbf.writes(nb), encoding="utf-8")
     return str(exec_p)
@@ -411,36 +394,24 @@ def run_llm_notebook_with_config(config: Dict[str, Any], phase_name: str = "task
 
     nb_cfg = _get_phase_llm_nb_cfg(config, phase_name=phase_name)
 
-    # [MODIFIED] user_prompt and base_system_prompt_str are now loaded by config_loader
-    # 'prompt' is the user prompt, injected by config_loader
     prompt = (config.get('prompts', {}).get('notebook_generation', {}).get('user_prompt'))
-    # System prompt is from the loaded dict
     base_system_prompt_str = (config.get('prompts', {}).get('notebook_generation', {}).get('system_prompt'))
     
     if not prompt or not base_system_prompt_str:
         print("Warning: Prompts not found in config. Check config_loader and prompts/ dir.", flush=True)
-        # Add a fallback for user_prompt just in case
         if not prompt:
             prompt = "Please generate an English analysis notebook following the required structure."
-        # Add a fallback for system_prompt just in case
         if not base_system_prompt_str:
             base_system_prompt_str = "You are an expert computational biologist. Return ONLY a JSON object..."
-            print("ERROR: Using fallback system prompt. Check prompts/notebook_generation.yml", flush=True)
 
 
     language, headings = _resolve_language_and_headings(nb_cfg)
 
-    # paths / exec / llm
-    # [MODIFIED] Added h5_out
     data, paper, preprocess, out, out_exec, h5_out = _resolve_paths(nb_cfg)
     exec_cfg = _resolve_exec_cfg(nb_cfg)
     llm_basic = _resolve_llm_cfg(nb_cfg)
-
-    # [NEW] Get split strategy from config, default to random if missing
     split_strategy = nb_cfg.get("split_strategy", "random")
 
-    # Run
-    # [MODIFIED] Pass the loaded base_system_prompt_str, h5_out and split_strategy
     return run_llm_notebook(
         data_path=data,
         paper_pdf=paper,
@@ -450,7 +421,7 @@ def run_llm_notebook_with_config(config: Dict[str, Any], phase_name: str = "task
         executed_path=out_exec,
         base_system_prompt_str=base_system_prompt_str,
         h5_out_path=h5_out,
-        split_strategy=split_strategy,  # <--- PASS STRATEGY HERE
+        split_strategy=split_strategy, 
         model=llm_basic["model"],
         timeout_seconds=exec_cfg["timeout_seconds"],
         force_json_mode=exec_cfg["force_json_mode"],
@@ -463,14 +434,13 @@ def run_llm_notebook_with_config(config: Dict[str, Any], phase_name: str = "task
         base_url=llm_basic["base_url"],
         save_intermediate=bool(exec_cfg.get("save_intermediate", True)),
         allow_errors=bool(exec_cfg.get("allow_errors", True)),
+        cuda_device_id=exec_cfg.get("cuda_device_id") # [NEW]
     )
 
 def run_llm_notebook_from_file(
     config_path: str, 
-    prompts_dir_path: str, # [MODIFIED]
+    prompts_dir_path: str,
     phase_name: str = "task_analysis"
 ) -> str:
-    """Load a JSON config file and run the phase-scoped notebook generation/execution."""
-    # [MODIFIED] Use centralized loader with both paths
     cfg = load_app_config(config_path, prompts_dir_path)
     return run_llm_notebook_with_config(cfg, phase_name=phase_name)

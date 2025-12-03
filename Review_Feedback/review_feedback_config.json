@@ -1,5 +1,5 @@
 {
-  "dataset_name": "BBBC047",
+  "dataset_name": "BBBC036",
   "paths": {
     "generate_execution_root": "../results/${dataset_name}/generate_execution",
     "review_feedback_root": "../results/${dataset_name}/review_feedback",
@@ -7,18 +7,12 @@
     "explicit_source_path": null
   },
   "llm": {
-    "provider": "yizhan",
-    "model": "gemini-3-pro-preview-thinking",
+    "model": "gemini-3-pro-all",
+    "base_url": "https://vip.yi-zhan.top/v1",
+    "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835",
     "temperature": 0.7,
     "max_tokens": 40000,
     "timeout": 300
-  },
-  "providers": {
-    "yizhan": {
-      "base_url": "https://vip.yi-zhan.top/v1",
-      "model": "gemini-3-pro-preview-thinking",
-      "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835"
-    }
   },
   "review": {
     "target_metric": "PCC",
@@ -42,6 +36,7 @@
   },
   "exec": {
     "timeout_seconds": 18000,
-    "max_fix_rounds": 3
+    "max_fix_rounds": 3,
+    "cuda_device_id": 3
   }
 }

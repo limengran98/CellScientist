@@ -12,6 +12,8 @@ system_prompt: |
   - Language: {language_label}.
   - Alternate markdown and code logically; each code cell MUST be preceded by a markdown explanation.
   - Code must be executable offline (no internet).
+  - Use GPU if available (via torch.cuda.is_available() check), but keep code compatible with CPU fallback.
+  - The external environment has already set 'CUDA_VISIBLE_DEVICES' appropriately.
   - The Notebook must explicitly connect data analysis with the scientific context of the provided paper.
   - Include the following section headings (in order), using them exactly:
   {headings_bulleted}

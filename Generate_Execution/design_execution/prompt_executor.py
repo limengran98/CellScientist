@@ -4,13 +4,14 @@ from typing import List, Dict, Any, Tuple, Optional
 import os, json, re, hashlib
 import nbformat
 from nbclient import NotebookClient
+from nbclient.exceptions import CellExecutionError
 from copy import deepcopy
 
 # Import centralized LLM tools
 from .llm_utils import chat_json
 
 # =============================================================================
-# 1. Heuristic Logic (Ported & Simplified from Old Version)
+# 1. Heuristic Logic (Static Analysis)
 # =============================================================================
 
 def _get_heuristic_patch(evalue: str) -> Optional[str]:
@@ -68,67 +69,7 @@ def _apply_heuristics(nb: nbformat.NotebookNode, errors: List[Dict[str, Any]]) -
     return changed_count, patched_indices
 
 # =============================================================================
-# 2. Execution Utils
-# =============================================================================
-
-def collect_cell_errors(nb: nbformat.NotebookNode) -> List[Dict[str, Any]]:
-    errs = []
-    for i, c in enumerate(nb.cells):
-        if c.get("cell_type") != "code": continue
-        for out in (c.get("outputs") or []):
-            if out.get("output_type") == "error":
-                tb = out.get("traceback", [])
-                tb_str = "\n".join(tb) if isinstance(tb, list) else str(tb)
-                tb_clean = re.sub(r'\x1b\[[0-9;]*m', '', tb_str)
-                errs.append({
-                    "cell_index": i,
-                    "ename": out.get("ename", ""),
-                    "evalue": out.get("evalue", ""),
-                    "traceback": tb_clean,
-                })
-    return errs
-
-def execute_once(
-    nb: nbformat.NotebookNode,
-    workdir: str,
-    timeout: int = 1800,
-) -> Tuple[nbformat.NotebookNode, List[Dict[str, Any]]]:
-    
-    workdir = os.path.abspath(workdir)
-    os.makedirs(workdir, exist_ok=True)
-    os.environ["OUTPUT_DIR"] = workdir
-
-    nb_to_run = deepcopy(nb)
-    
-    # Inject Guard for sys.exit
-    guard_code = (
-        "# [AUTO-FIX] Guard Cell\n"
-        "import sys, os\n"
-        "def _guard_exit(*args, **kwargs):\n"
-        "    raise RuntimeError(\"SysExitBlocked: Use raise ValueError() instead.\")\n"
-        "sys.exit = _guard_exit\n"
-    )
-    nb_to_run.cells.insert(0, nbformat.v4.new_code_cell(guard_code))
-
-    client = NotebookClient(
-        nb_to_run, timeout=timeout, kernel_name="python3",
-        allow_errors=True, resources={"metadata": {"path": workdir}},
-    )
-    
-    try:
-        exec_nb = client.execute()
-    except Exception as e:
-        print(f"[EXEC] Warning: Notebook execution crashed: {e}", flush=True)
-        exec_nb = client.nb
-
-    if len(exec_nb.cells) > 0:
-        exec_nb.cells.pop(0)
-
-    errors = collect_cell_errors(exec_nb)
-    return exec_nb, errors
-
-# =============================================================================
-# 3. Auto-Fix Logic (Enhanced with Hash Check)
+# 2. LLM Auto-Fix Logic
 # =============================================================================
 
 def _compute_cell_hash(source: str) -> str:
@@ -180,10 +121,10 @@ def _llm_auto_fix_once(
             failing_cells.append({"cell_index": i, "source": src})
 
     user_payload = {
-        "task": "Fix specific notebook cells.",
+        "task": "Fix specific notebook cells. maintain logic, fix errors.",
         "errors": error_list,
         "failing_code": failing_cells,
-        "instruction": "Return FULL corrected source for the failing cells."
+        "instruction": "Return FULL corrected source for the failing cells in JSON format."
     }
 
     messages = [
@@ -206,70 +147,220 @@ def _llm_auto_fix_once(
     changes = _apply_llm_edits(nb, edits)
     return nb, (changes > 0)
 
+# =============================================================================
+# 3. Graph Executor (Adaptive Node-by-Node Execution)
+# =============================================================================
+
+class GraphExecutor(NotebookClient):
+    """
+    Advanced Executor that runs the notebook as a directed graph of cells.
+    Allows interrupting execution on error, fixing the specific node (cell),
+    and retrying IN-PLACE without restarting the kernel.
+    """
+    def __init__(self, nb, workdir, llm_config, autofix_prompt, max_fix_rounds=3, **kwargs):
+        super().__init__(nb, **kwargs)
+        self.workdir = os.path.abspath(workdir)
+        self.llm_config = llm_config
+        self.autofix_prompt = autofix_prompt
+        self.max_fix_rounds = max_fix_rounds
+        self.global_errors = [] # Track errors that couldn't be fixed
+
+    def execute_graph(self):
+        """Main entry point for graph execution."""
+        print(f"[GRAPH] 🚀 Initializing Kernel in {self.workdir}", flush=True)
+        
+        # 1. Setup Environment & Guard Code
+        self._inject_setup_cells()
+        
+        # 2. Start Persistent Kernel
+        self.create_kernel_manager()
+        self.start_new_kernel()
+        self.start_new_kernel_client()
+
+        try:
+            # 3. Iterate Cells (Nodes)
+            cell_idx = 0
+            while cell_idx < len(self.nb.cells):
+                cell = self.nb.cells[cell_idx]
+                
+                if cell.cell_type != 'code':
+                    cell_idx += 1
+                    continue
+
+                # Identify Task
+                task_meta = cell.metadata.get("subtask", {})
+                task_id = task_meta.get("id", f"Cell_{cell_idx}")
+                task_name = task_meta.get("name", "Unnamed")
+                
+                print(f"[GRAPH] ▶️  Running Node {task_id}: {task_name} (Idx: {cell_idx})", flush=True)
+
+                try:
+                    # Execute single cell using nbclient's low-level method
+                    self.execute_cell(cell, cell_idx)
+                    
+                    # If we are here, execution was successful
+                    cell_idx += 1 
+                
+                except CellExecutionError:
+                    print(f"[GRAPH] ❌ Error in Node {task_id}. Initiating Adaptive Fix...", flush=True)
+                    
+                    # Try to fix IN-PLACE
+                    fixed = self._attempt_node_fix(cell_idx, task_id)
+                    
+                    if fixed:
+                        print(f"[GRAPH] 🔄 Patch applied to Node {task_id}. Retrying immediately...", flush=True)
+                        # We do NOT increment cell_idx, so the loop will re-execute the SAME cell index
+                        # but with the new source code we just patched into self.nb
+                        continue 
+                    else:
+                        print(f"[GRAPH] 🛑 Failed to fix Node {task_id} after {self.max_fix_rounds} rounds.", flush=True)
+                        self.global_errors.append(f"Task {task_id} Failed.")
+                        # Stop execution here to preserve partial results or debug
+                        break
+        
+        finally:
+            print("[GRAPH] 🛑 Shutting down kernel.", flush=True)
+            self._cleanup_kernel()
+
+        return self.nb
+
+    def _inject_setup_cells(self):
+        """Inject setup code (Env vars, Guard) at the top."""
+        # Sys Exit Guard
+        guard_code = (
+            "# [AUTO-FIX] Guard Cell & Env Setup\n"
+            "import sys, os\n"
+            f"os.environ['OUTPUT_DIR'] = r'{self.workdir}'\n"
+            "def _guard_exit(*args, **kwargs):\n"
+            "    raise RuntimeError(\"SysExitBlocked: Use raise ValueError() instead.\")\n"
+            "sys.exit = _guard_exit\n"
+            "print(f'[SETUP] Environment Configured. OUTPUT_DIR={os.environ[\"OUTPUT_DIR\"]}')\n"
+        )
+        # Insert at 0
+        self.nb.cells.insert(0, nbformat.v4.new_code_cell(guard_code))
+
+    def _get_cell_errors(self, cell_idx: int) -> List[Dict[str, Any]]:
+        """Extract error details from the cell outputs."""
+        cell = self.nb.cells[cell_idx]
+        errs = []
+        for out in (cell.get("outputs") or []):
+            if out.get("output_type") == "error":
+                tb = out.get("traceback", [])
+                tb_str = "\n".join(tb) if isinstance(tb, list) else str(tb)
+                tb_clean = re.sub(r'\x1b\[[0-9;]*m', '', tb_str)
+                errs.append({
+                    "cell_index": cell_idx,
+                    "ename": out.get("ename", ""),
+                    "evalue": out.get("evalue", ""),
+                    "traceback": tb_clean,
+                })
+        return errs
+
+    def _attempt_node_fix(self, cell_idx: int, task_id: str) -> bool:
+        """
+        The Local Fix Loop.
+        Returns True if the cell source was modified and should be retried.
+        """
+        for attempt in range(self.max_fix_rounds):
+            errors = self._get_cell_errors(cell_idx)
+            if not errors:
+                return False # Should not happen inside CellExecutionError catch
+
+            print(f"   [FIX] {task_id} | Round {attempt+1}/{self.max_fix_rounds} | Analyzing...", flush=True)
+
+            # 1. Heuristics (Fast path)
+            h_changes, _ = _apply_heuristics(self.nb, errors)
+            if h_changes > 0:
+                print(f"   [FIX] ⚡ Applied heuristic patch.", flush=True)
+                return True
+
+            # 2. LLM (Slow path)
+            # Pass a COPY of notebook to LLM func to avoid partial mutations if it fails
+            # But we want the result to apply to SELF.NB if successful
+            nb_copy = deepcopy(self.nb)
+            
+            # NOTE: We only send the CURRENT failing cell errors to the LLM
+            nb_fixed, patched = _llm_auto_fix_once(
+                nb_copy, 
+                errors, 
+                self.llm_config, 
+                self.autofix_prompt
+            )
+
+            if patched:
+                # Update our live notebook's specific cell
+                # We trust _llm_auto_fix_once has modified the cell at cell_idx in nb_copy
+                new_source = nb_fixed.cells[cell_idx].source
+                if self.nb.cells[cell_idx].source != new_source:
+                    self.nb.cells[cell_idx].source = new_source
+                    print(f"   [FIX] 🧠 LLM patch generated and applied.", flush=True)
+                    return True
+                else:
+                    print(f"   [FIX] ⚠️ LLM returned identical code.", flush=True)
+            
+        return False
+
+# =============================================================================
+# 4. Main Entry Point
+# =============================================================================
+
 def run_notebook_with_autofix(
     nb_path: str,
     workdir: str,
     cfg: Dict[str, Any]
 ) -> str:
     """
-    Main entry for execution with Robust Auto-Fix (Heuristic -> LLM).
+    Executes notebook using the Adaptive Graph Executor.
     """
+    workdir = os.path.abspath(workdir)
+    os.makedirs(workdir, exist_ok=True)
+    
+    # Load Notebook
+    nb_orig = nbformat.read(nb_path, as_version=4)
+    
+    # Config
     exec_cfg = cfg.get("exec", {})
-    timeout = int(exec_cfg.get("timeout_seconds", 3600))
     max_rounds = int(exec_cfg.get("max_fix_rounds", 3))
     
-    nb_orig = nbformat.read(nb_path, as_version=4)
-    print(f"[EXEC] Initial Execution: {nb_path}", flush=True)
+    prompts_map = cfg.get("prompts", {})
+    autofix_prompt = prompts_map.get("autofix", {}).get("system_prompt", 
+        "You are a Python Expert. Fix the code errors provided. Return JSON with 'edits'.")
+
+    # Instantiate Graph Executor
+    executor = GraphExecutor(
+        nb=nb_orig,
+        workdir=workdir,
+        llm_config=cfg.get("llm", {}),
+        autofix_prompt=autofix_prompt,
+        max_fix_rounds=max_rounds,
+        # nbclient args
+        timeout=int(exec_cfg.get("timeout_seconds", 3600)),
+        kernel_name="python3",
+        allow_errors=False, # We handle errors manually
+        resources={"metadata": {"path": workdir}}
+    )
     
-    exec_nb, errors = execute_once(nb_orig, workdir, timeout=timeout)
+    # Run
+    print(f"[EXEC] Starting Adaptive Graph Execution: {nb_path}", flush=True)
+    try:
+        final_nb = executor.execute_graph()
+    except Exception as e:
+        print(f"[EXEC] ☢️ Critical Framework Error: {e}", flush=True)
+        final_nb = executor.nb
+
+    # Save Result
     out_path = nb_path.replace(".ipynb", "_exec.ipynb")
     
-    round_idx = 0
-    prompts_map = cfg.get("prompts", {})
-    autofix_prompt = prompts_map.get("autofix", {}).get("system_prompt", "You are a Python Expert. Fix the code. Return JSON.")
+    # Remove the injected setup cell (index 0) before saving to keep it clean (optional)
+    if len(final_nb.cells) > 0 and "[AUTO-FIX] Guard Cell" in final_nb.cells[0].source:
+        final_nb.cells.pop(0)
 
-    while errors and round_idx < max_rounds:
-        round_idx += 1
-        print(f"\n[FIX] === ROUND {round_idx}/{max_rounds} ===", flush=True)
-        print(f"[FIX] {len(errors)} errors. Analyzing...", flush=True)
-
-        # STEP A: Try Heuristics First (Fast & Robust)
-        # We work on a copy to avoid corrupting state if heuristics fail partially
-        nb_heuristic = deepcopy(exec_nb)
-        h_changes, _ = _apply_heuristics(nb_heuristic, errors)
-        
-        if h_changes > 0:
-            print(f"[FIX] ⚡ Applied {h_changes} heuristic patches (NaN/Type fixes). Re-executing...", flush=True)
-            exec_nb, errors = execute_once(nb_heuristic, workdir, timeout=timeout)
-            if not errors:
-                print("[FIX] Success via Heuristics!", flush=True)
-                break
-        
-        # STEP B: If errors persist, use LLM
-        if errors:
-            print(f"[FIX] 🧠 Heuristics insufficient. Calling LLM...", flush=True)
-            # Use deepcopy to ensure we don't mutate if LLM fails
-            fixed_nb, patched = _llm_auto_fix_once(
-                deepcopy(exec_nb), 
-                errors, 
-                cfg.get("llm", {}),
-                autofix_system_prompt=autofix_prompt
-            )
-            
-            if not patched:
-                print("[FIX] 🛑 LLM could not provide effective edits (Hash Check Failed). Stopping.", flush=True)
-                break
-                
-            print("[FIX] LLM patches applied. Re-executing...", flush=True)
-            exec_nb, errors = execute_once(fixed_nb, workdir, timeout=timeout)
-        
-        if not errors:
-            print("[FIX] Success! No errors remaining.", flush=True)
-            break
-
-    nbformat.write(exec_nb, out_path)
-    print(f"[EXEC] Saved final result: {out_path}", flush=True)
-    if errors:
-        print(f"[EXEC] Finished with {len(errors)} errors remaining.", flush=True)
+    nbformat.write(final_nb, out_path)
+    print(f"[EXEC] Saved final state: {out_path}", flush=True)
+    
+    if executor.global_errors:
+        print(f"[EXEC] Finished with unresolved errors: {executor.global_errors}", flush=True)
+    else:
+        print(f"[EXEC] ✅ Execution completed successfully.", flush=True)
         
     return out_path

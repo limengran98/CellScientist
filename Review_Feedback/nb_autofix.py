@@ -45,10 +45,15 @@ def collect_cell_errors(nb: nbformat.NotebookNode) -> List[Dict[str, Any]]:
                 })
     return errs
 
-def execute_once(nb: nbformat.NotebookNode, workdir: str, timeout: int = 1800) -> Tuple[nbformat.NotebookNode, List[Dict]]:
+# [MODIFIED] Added cuda_device_id parameter
+def execute_once(nb: nbformat.NotebookNode, workdir: str, timeout: int = 1800, cuda_device_id: Optional[int] = None) -> Tuple[nbformat.NotebookNode, List[Dict]]:
     workdir = os.path.abspath(workdir)
     os.makedirs(workdir, exist_ok=True)
     os.environ["OUTPUT_DIR"] = workdir
+    
+    # [NEW] Set CUDA Device if provided
+    if cuda_device_id is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(cuda_device_id)
     
     nb_run = deepcopy(nb)
     # Guard against sys.exit
@@ -130,9 +135,14 @@ def _llm_fix_once(nb, errors, cfg, timeout):
 
 def execute_with_autofix(ipynb_path, workdir, phase_cfg, timeout_seconds=18000, max_fix_rounds=3, **kwargs):
     nb = nbformat.read(ipynb_path, as_version=4)
-    print(f"[EXEC] Running: {ipynb_path}")
     
-    exec_nb, errors = execute_once(nb, workdir, timeout_seconds)
+    # [NEW] Extract CUDA ID
+    cuda_id = phase_cfg.get("exec", {}).get("cuda_device_id")
+    device_msg = f" (CUDA: {cuda_id})" if cuda_id is not None else ""
+    print(f"[EXEC] Running: {ipynb_path}{device_msg}")
+    
+    # Pass cuda_id to execute_once
+    exec_nb, errors = execute_once(nb, workdir, timeout_seconds, cuda_device_id=cuda_id)
     out_path = ipynb_path.replace(".ipynb", "_exec.ipynb")
     
     round_idx = 0
@@ -147,7 +157,8 @@ def execute_with_autofix(ipynb_path, workdir, phase_cfg, timeout_seconds=18000, 
         nb_copy = deepcopy(exec_nb)
         if apply_heuristics(nb_copy, errors) > 0:
             print(f"   -> Applied Heuristics")
-            nb_copy, errs_h = execute_once(nb_copy, workdir, timeout_seconds)
+            # Pass cuda_id to execute_once
+            nb_copy, errs_h = execute_once(nb_copy, workdir, timeout_seconds, cuda_device_id=cuda_id)
             if not errs_h:
                 exec_nb = nb_copy
                 errors = []
@@ -162,7 +173,8 @@ def execute_with_autofix(ipynb_path, workdir, phase_cfg, timeout_seconds=18000, 
                 print("   -> LLM made no effective changes. Stopping.")
                 break
             
-            exec_nb, errors = execute_once(nb_llm, workdir, timeout_seconds)
+            # Pass cuda_id to execute_once
+            exec_nb, errors = execute_once(nb_llm, workdir, timeout_seconds, cuda_device_id=cuda_id)
             if not errors: print("   -> Fixed by LLM!")
 
     nbformat.write(exec_nb, out_path)

@@ -13,6 +13,10 @@ system: |
   0.5 — At least one genuinely novel modeling idea or training procedure must be implemented and evaluated, beyond standard off-the-shelf baseline models.
   0.6 — The notebook must output understandable logs during data loading, model construction, training, and evaluation; silent execution is not allowed.
   0.7 — All section logic must be consistent and must not contradict each other.
+  0.8 — **STATE PERSISTENCE**: 
+      Critical variables (datasets, models, metrics) MUST be stored in the global scope. 
+      Do NOT encapsulate the main workflow inside a single function like `main()`. 
+      Subsequent cells depend on variables defined in previous cells.
   
   ================================================================================
   **SECTION 1 — HDF5 DYNAMIC DATA DISCOVERY**
@@ -37,7 +41,7 @@ system: |
         - The input matrix $X$ MUST be a concatenation of two specific modalities:  **Morphology** and 
           Chemistry**: Convert the `SMILES` strings into numerical fingerprints (e.g., Morgan/ECFP4 fingerprints using `rdkit`, radius=2, nBits=1024 or 2048).
   2.2 — **Data Cleaning**:
-        - NaN/±inf coercion, robust standardization, and **Strict adherence to the `split_id`** for train/validation separation. 
+        - NaN/±inf coercion and **Strict adherence to the `split_id`** for train/validation separation. 
         - The model input must contain **strictly numerical data**.
         - To prevent data breaches, standardized procedures are prohibited.
         - Handle missing values (NaN) using robust imputation (e.g., median).
@@ -47,7 +51,7 @@ system: |
   **SECTION 3 — MODELING REQUIREMENTS**
   =====================================
 
-  3.1 — Models must be implemented using PyTorch. You MUST define `device = torch.device("cuda" if torch.cuda.is_available() else "cpu")` at the very start of the Modeling section. Print Using device.
+  3.1 — Models must be implemented using PyTorch. You MUST define `device = torch.device("${cuda_device_str}" if torch.cuda.is_available() else "cpu")` at the very start of the Modeling section. Print the device being used.
   3.2 — The innovative model must have a distinct name, and the modeling pipeline must include multiple innovative components, and may include multiple innovative parts.
       * The innovation **must be grounded in real scientific problems of the domain**—it cannot be arbitrary or a meaningless combination of modules.
       * MUST a new expressive model architecture to extract deeper features,

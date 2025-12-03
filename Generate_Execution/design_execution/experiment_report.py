@@ -16,7 +16,7 @@ try:
 except ImportError:
     yaml = None
 
-# [MODIFIED] Use new centralized LLM Utils
+# Import centralized LLM tools
 try:
     from .llm_utils import chat_text
 except ImportError:
@@ -57,6 +57,7 @@ You are a Senior Computational Biologist. Write an `experiment_report.md`.
 **Task**:
 1.  **Winner**: Determine solely by Primary Metric **{pm}**.
 2.  **Table**: `| Model | MSE | PCC | R2 | MSE_DM | PCC_DM | Δ% ({pm}) | P-Value |`.
+    - Format: Use "Mean ± SD" if available.
     - P-Value: From `_STATISTICAL_TESTS_`. Mark significant (p<0.05) with *.
 3.  **Analysis**:
     - Interpret the biological significance of PCC_DM (Differential Metric).
@@ -69,10 +70,10 @@ You are a Senior Computational Biologist. Write an `experiment_report.md`.
     # 3. Try to load from YAML if found
     if prompt_path:
         if yaml is None:
-            print(f"[REPORT] ⚠️ Found {prompt_path}, but 'PyYAML' is not installed. Using fallback.")
+            print(f"[REPORT] Warning: Found {prompt_path}, but 'PyYAML' is not installed. Using fallback.")
         else:
             try:
-                print(f"[REPORT] 📄 Loading prompt template from: {prompt_path}")
+                print(f"[REPORT] Loading prompt template from: {prompt_path}")
                 with open(prompt_path, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f)
                 
@@ -89,7 +90,7 @@ You are a Senior Computational Biologist. Write an `experiment_report.md`.
             except Exception as e:
                 print(f"[REPORT][WARN] Failed to parse YAML: {e}. Using fallback.")
     else:
-        print("[REPORT] ⚠️ 'experiment_report.yaml' not found in search paths. Using hardcoded fallback.")
+        print("[REPORT] Warning: 'experiment_report.yaml' not found in search paths. Using hardcoded fallback.")
 
     return default_system, default_user
 
@@ -220,7 +221,30 @@ def _compute_statistics(models_data: Dict[str, Any], baseline_name: str, primary
     return stats_summary
 
 # =============================================================================
-# 3. Report Generators
+# 3. Formatter for Mean +/- SD
+# =============================================================================
+
+def _get_metric_fmt(model_data: Dict[str, Any], metric_key: str) -> str:
+    """
+    Format metric as 'Mean ± SD' if fold data is available.
+    """
+    # 1. Try to extract fold values
+    values = _extract_fold_values(model_data, metric_key)
+    
+    if values and len(values) >= 2:
+        mean_val = np.mean(values)
+        std_val = np.std(values, ddof=1) # Sample standard deviation
+        return f"{mean_val:.4f} ± {std_val:.4f}"
+    
+    # 2. Fallback to single aggregate value
+    val = _smart_get_metric(model_data, metric_key)
+    if val is not None:
+        return f"{val:.4f}"
+        
+    return "-"
+
+# =============================================================================
+# 4. Report Generators
 # =============================================================================
 
 def _fallback_static_report(trial_dir: str, baseline_name: str, pm: str, metrics_data: Dict, stats_data: Dict) -> str:
@@ -228,7 +252,7 @@ def _fallback_static_report(trial_dir: str, baseline_name: str, pm: str, metrics
     out_path = os.path.join(trial_dir, "experiment_report.md")
     lines = [f"# Experiment Report (Auto-Generated)", "", f"**Primary Metric**: {pm} | **Baseline**: {baseline_name}", ""]
     
-    lines.append("## Quantitative Results")
+    lines.append("## Quantitative Results (Mean ± SD)")
     headers = ["Model", "MSE", "PCC", "R2", "MSE_DM", "PCC_DM", f"Delta ({pm})", "P-Value"]
     lines.append("| " + " | ".join(headers) + " |")
     lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
@@ -239,10 +263,11 @@ def _fallback_static_report(trial_dir: str, baseline_name: str, pm: str, metrics
         if name.startswith("_") or name == "winner": continue
         row = [f"**{name}**"]
         
+        # Use formatted string with Std Dev
         for m in ["MSE", "PCC", "R2", "MSE_DM", "PCC_DM"]:
-            val = _smart_get_metric(data, m)
-            row.append(f"{val:.4f}" if val is not None else "-")
+            row.append(_get_metric_fmt(data, m))
         
+        # Delta calculation requires raw float
         curr_val = _smart_get_metric(data, pm)
         d_str = "-"
         if base_val is not None and curr_val is not None and base_val != 0:
@@ -265,6 +290,7 @@ def _fallback_static_report(trial_dir: str, baseline_name: str, pm: str, metrics
     lines.append("")
     lines.append("### Analysis Notes")
     lines.append(f"- **Primary Metric ({pm})**: Used to calculate 'Delta' and determine the winner.")
+    lines.append("- **Format**: Metrics are displayed as Mean ± Standard Deviation across folds.")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     return out_path
@@ -277,9 +303,9 @@ def write_experiment_report(trial_dir: str,
     # 1. Robust Loading & Normalization
     models_data = _normalize_metrics(metrics_obj)
     
-    # [CRITICAL FIX] Strict check: If no models/metrics, do not hallucinate a report.
+    # Strict check: If no models/metrics, do not hallucinate a report.
     if not models_data:
-        print("[REPORT] ⚠️ Metrics object is empty (No models found). Generating empty report.", flush=True)
+        print("[REPORT] Warning: Metrics object is empty (No models found). Generating empty report.", flush=True)
         out_path = os.path.join(trial_dir, "experiment_report.md")
         with open(out_path, "w", encoding="utf-8") as f:
             f.write("# Experiment Report\n\n**Status**: No metrics data available.\n")
@@ -300,9 +326,7 @@ def write_experiment_report(trial_dir: str,
             "results": _sanitize_json_values(stats_results)
         }
     
-    # 4. Inject Computed Aggregates
-    # This step ensures that if metrics are only in per_fold, they are promoted to aggregate
-    # so the LLM can actually see them in the simplified JSON.
+    # 4. Inject Computed Aggregates with Mean +/- SD format
     metrics_allowlist = [
         "MSE", "PCC", "R2", "MSE_DM", "PCC_DM", "R2_DM",
         "DEG_RMSE_20", "DEG_RMSE_50", "DEG_PCC_20", "DEG_PCC_50"
@@ -314,9 +338,10 @@ def write_experiment_report(trial_dir: str,
             slim_data[m_name]["aggregate"] = {}
         
         for k in metrics_allowlist:
-            val = _smart_get_metric(m_data, k)
-            if val is not None:
-                slim_data[m_name]["aggregate"][k] = val
+            # Inject formatted string directly into the JSON for the LLM
+            fmt_val = _get_metric_fmt(m_data, k)
+            if fmt_val != "-":
+                slim_data[m_name]["aggregate"][k] = fmt_val
 
     metrics_str = json.dumps(slim_data, indent=2)
     print(f"[REPORT] Metrics payload prepared ({len(metrics_str)} chars). Generating analysis...")
@@ -328,7 +353,7 @@ def write_experiment_report(trial_dir: str,
         # Call LLM
         report_content = chat_text(
             [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
-            llm_config=cfg.get("llm", {}),  # [FIX] Use llm_config key to match utils
+            llm_config=cfg.get("llm", {}), 
             timeout=600,
             temperature=0.5,
             max_tokens=4000

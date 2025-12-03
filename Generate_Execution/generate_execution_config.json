@@ -16,7 +16,7 @@
   "experiment": {
     "primary_metric": "PCC",
     "max_iterations": 10,
-    "success_threshold": 0.5
+    "success_threshold": 0.9
   },
   "prompt_branch": {
     "output_type": "notebook",
@@ -31,6 +31,7 @@
     "max_fix_rounds": 3,
     "enable_llm_autofix": true,
     "enable_hypergraph_viz": true,
-    "viz_format": "mermaid"
+    "viz_format": "mermaid",
+    "cuda_device_id": 3
   }
 }

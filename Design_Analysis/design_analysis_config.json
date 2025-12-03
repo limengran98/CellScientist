@@ -14,14 +14,15 @@
           "preprocess": "../data/${dataset_name}/BBBC036_data_process.ipynb"
         },
         "exec": {
-          "timeout_seconds": 360,
+          "timeout_seconds": 1800,
           "max_preview_rows": 8,
           "max_preview_cols": 20,
           "pdf_max_pages": 10,
           "force_json_mode": true,
           "save_intermediate": true,
           "allow_errors": false,
-          "max_fix_rounds": 3
+          "max_fix_rounds": 3,
+          "cuda_device_id": 0
         },
         "llm": {
           "provider": "yizhan",

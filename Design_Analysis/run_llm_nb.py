@@ -1,6 +1,9 @@
 # run_llm_nb.py
 import os, json, re, io, contextlib, importlib, time, requests
 from pathlib import Path
+import nbformat as nbf
+from nbclient import NotebookClient
+from nbclient.exceptions import CellExecutionError
 
 def _load_runner_clean():
     """Import runner quietly."""
@@ -114,51 +117,155 @@ def chat_json(messages, *, api_key, base_url, model, temperature=0.2, max_tokens
     print(f"  [chat_json] ❌ Failed to parse JSON after 3 attempts.", flush=True)
     return {"edits": []} 
 
-# --- Notebook helpers ---
-def collect_cell_errors(nb):
-    errs = []
-    for i, cell in enumerate(nb.get("cells", [])):
-        if cell.get("cell_type") != "code":
-            continue
-        for out in cell.get("outputs", []) or []:
+# --- Adaptive Graph Executor ---
+
+class AdaptiveGraphExecutor(NotebookClient):
+    """
+    Stateful execution engine.
+    Treats each cell as a 'node' in a graph. 
+    If a node fails, it invokes an LLM to fix the code, then retries the node
+    WITHOUT restarting the kernel or re-running previous nodes.
+    """
+    def __init__(self, nb, run_cfg, nb_cfg, llm_config, cuda_device_id=None, **kwargs):
+        super().__init__(nb, **kwargs)
+        self.run_cfg = run_cfg
+        self.nb_cfg = nb_cfg
+        self.llm_config = llm_config
+        self.cuda_device_id = cuda_device_id
+        
+        # Auto-fix settings
+        exec_cfg = nb_cfg.get("exec", {})
+        self.max_retries_per_node = int(exec_cfg.get("max_fix_rounds", 3))
+        self.autofix_prompt = (run_cfg.get('prompts', {}).get('autofix', {}).get('system_prompt'))
+        
+        self.total_fixes_applied = 0
+
+    def run_adaptive(self):
+        """
+        Main execution loop.
+        """
+        # 1. Setup Environment (CUDA)
+        env_vars = os.environ.copy()
+        if self.cuda_device_id is not None:
+            env_vars["CUDA_VISIBLE_DEVICES"] = str(self.cuda_device_id)
+            print(f"🖥️  [Adaptive] CUDA Device set to: {self.cuda_device_id}", flush=True)
+
+        # 2. Start Kernel (Persistent)
+        print("🔌 [Adaptive] Starting Kernel...", flush=True)
+        self.create_kernel_manager()
+        self.start_new_kernel(env=env_vars) # Pass env here
+        self.start_new_kernel_client()
+
+        try:
+            cell_idx = 0
+            while cell_idx < len(self.nb.cells):
+                cell = self.nb.cells[cell_idx]
+                if cell.cell_type != 'code':
+                    cell_idx += 1
+                    continue
+                
+                # [MODIFIED] Better logging: Show Snippet, No carriage return
+                src_snippet = cell.source.strip().split('\n')[0][:70]
+                if len(cell.source) > 70: src_snippet += "..."
+                print(f"▶️  [Adaptive] Executing Cell {cell_idx}: {src_snippet}", flush=True)
+                
+                try:
+                    self.execute_cell(cell, cell_idx)
+                    print(f"   ✅ Success (Cell {cell_idx})", flush=True)
+                    cell_idx += 1 # Move to next node
+                    
+                except CellExecutionError:
+                    print(f"   ❌ Failed (Cell {cell_idx}). Initiating Auto-Fix...", flush=True)
+                    
+                    # Attempt Fix
+                    fixed = self._attempt_fix_node(cell, cell_idx)
+                    
+                    if fixed:
+                        print(f"   🔄 Fix applied. Retrying Node {cell_idx} immediately...", flush=True)
+                        # Do NOT increment cell_idx. Loop will retry this cell in the SAME kernel state.
+                        continue
+                    else:
+                        print(f"   🛑 Failed to fix Cell {cell_idx} after retries. Aborting.", flush=True)
+                        break
+
+        finally:
+            print("🔌 [Adaptive] Shutting down Kernel.", flush=True)
+            self._cleanup_kernel()
+
+        return self.nb
+
+    def _attempt_fix_node(self, cell, cell_idx):
+        """
+        Fix a single failing node (cell) using the LLM.
+        """
+        # Extract Error info from cell outputs
+        errors = []
+        for out in cell.get("outputs", []):
             if out.get("output_type") == "error":
                 tb = "\n".join(out.get("traceback") or [])
-                errs.append({
-                    "cell_index": i,
+                errors.append({
+                    "cell_index": cell_idx,
                     "ename": out.get("ename"),
-                    "evalue": out.get("evalue"),
-                    "traceback": tb,
-                    "source": cell.get("source", ""),
+                    "evalue": str(out.get("evalue"))[:1000],
+                    "traceback_tail": "\n".join(tb.split("\n")[-20:]),
+                    "code": cell.get("source", "")
                 })
-    return errs
+        
+        if not errors:
+            print("   (No specific traceback found in outputs)", flush=True)
+            return False
 
-def apply_edits(nb, edits):
-    changed = 0
-    for ed in (edits or []):
-        try:
-            idx = int(ed.get("cell_index"))
-            src = ed.get("source") or ""
-            if idx < 0 or idx >= len(nb["cells"]):
-                continue
-            if nb["cells"][idx].get("cell_type") != "code":
-                continue
-            old = nb["cells"][idx].get("source", "")
-            if old.strip() != src.strip():
-                nb["cells"][idx]["source"] = src
-                changed += 1
-        except Exception:
-            continue
-    return changed
+        # Try loop for this specific node
+        for attempt in range(self.max_retries_per_node):
+            print(f"   🔧 Fix Attempt {attempt+1}/{self.max_retries_per_node}...", flush=True)
+            
+            # Build Prompt
+            paths = self.nb_cfg.get("paths", {})
+            messages = build_fix_messages(
+                language="python",
+                data_path=paths.get("data", ""),
+                csv_preview={}, # Context unavailable inside class easily
+                paper_excerpt="",
+                errors=errors, # Only errors for THIS cell
+                headings=[],
+                autofix_prompt_str=self.autofix_prompt
+            )
 
-def execute_notebook(nb, *, timeout=1800, allow_errors=True):
-    from nbclient import NotebookClient
-    client = NotebookClient(nb, timeout=timeout, kernel_name="python3", allow_errors=allow_errors)
-    errors_summary = []
-    try:
-        client.execute()
-    except Exception as e:
-        errors_summary.append(f"Execution Exception: {str(e)}")
-    return nb, errors_summary
+            # Call LLM
+            resp = chat_json(
+                messages,
+                api_key=self.llm_config["api_key"],
+                base_url=self.llm_config["base_url"],
+                model=self.llm_config["model"],
+                temperature=0.0, 
+                max_tokens=self.llm_config["max_tokens"]
+            )
+            
+            edits = resp.get("edits") or []
+            if not edits:
+                print("   LLM returned no edits.", flush=True)
+                continue
+
+            # Apply Edit
+            try:
+                edit = edits[0] # We expect one edit for this cell
+                new_source = edit.get("source", "")
+                
+                # Simple check to avoid loops
+                if new_source.strip() == cell.source.strip():
+                    print("   LLM suggested identical code (Skipping).", flush=True)
+                    continue
+                
+                # Apply update
+                cell.source = new_source
+                self.total_fixes_applied += 1
+                return True # Signal to retry execution
+
+            except Exception as e:
+                print(f"   Error applying fix: {e}", flush=True)
+        
+        return False
+
 
 def build_fix_messages(language, data_path, csv_preview, paper_excerpt, errors, headings, autofix_prompt_str):
     sys_prompt = autofix_prompt_str or "You are a Python expert. Fix the code errors. Return JSON {'edits': ...}."
@@ -169,16 +276,12 @@ def build_fix_messages(language, data_path, csv_preview, paper_excerpt, errors, 
         idx = e.get("cell_index")
         if idx not in target_indices: target_indices.append(idx)
         
-        tb = (e.get("traceback") or "")
-        tb_lines = tb.split("\n")
-        short_tb = "\n".join(tb_lines[-20:]) 
-        
         cleaned_errors.append({
             "cell_index": idx,
             "ename": e.get("ename"),
-            "evalue": str(e.get("evalue"))[:500],
-            "traceback_tail": short_tb,
-            "code": e.get("source")
+            "evalue": str(e.get("evalue")),
+            "traceback_tail": e.get("traceback_tail"),
+            "code": e.get("code")
         })
 
     user_obj = {
@@ -193,9 +296,12 @@ def build_fix_messages(language, data_path, csv_preview, paper_excerpt, errors, 
         {"role": "user", "content": json.dumps(user_obj, ensure_ascii=False)}
     ]
 
-# --- Auto Fix Logic ---
+# --- Main Entry Point ---
+
 def auto_fix_notebook(executed_path: str, run_cfg: dict) -> str:
-    import nbformat as nbf
+    """
+    Entry point now uses AdaptiveGraphExecutor for stateful, node-based fixing.
+    """
     
     nb_cfg = (((run_cfg.get("phases") or {}).get("task_analysis") or {}).get("llm_notebook") or {})
     exec_cfg = nb_cfg.get("exec", {}) or {}
@@ -209,64 +315,33 @@ def auto_fix_notebook(executed_path: str, run_cfg: dict) -> str:
     if not nb_path.exists():
         return executed_path
 
+    print(f"🚀 [AUTO-FIX] Starting Adaptive Execution for {nb_path.name}", flush=True)
+    
+    # Load Notebook
     nb = nbf.read(str(nb_path), as_version=4)
-    errors = collect_cell_errors(nb)
-    max_rounds = int(exec_cfg.get("max_fix_rounds", 0))
     
-    if not errors or max_rounds <= 0:
-        return str(nb_path)
+    # Configure Executor
+    timeout_sec = int(exec_cfg.get("timeout_seconds", 1800))
+    cuda_id = exec_cfg.get("cuda_device_id", None)
 
-    print(f"🔧 [AUTO-FIX] Starting fix loop for {nb_path.name} (Errors: {len(errors)}, Rounds: {max_rounds})", flush=True)
-    
-    autofix_prompt = (run_cfg.get('prompts', {}).get('autofix', {}).get('system_prompt'))
-    paths = nb_cfg.get("paths", {})
-    
-    round_idx = 0
-    while errors and round_idx < max_rounds:
-        round_idx += 1
-        
-        messages = build_fix_messages(
-            language="python",
-            data_path=paths.get("data", ""),
-            csv_preview={}, 
-            paper_excerpt="",
-            errors=errors,
-            headings=[],
-            autofix_prompt_str=autofix_prompt
-        )
-        
-        resp = chat_json(
-            messages,
-            api_key=llm_resolved["api_key"],
-            base_url=llm_resolved["base_url"],
-            model=llm_resolved["model"],
-            temperature=0.0, 
-            max_tokens=llm_resolved["max_tokens"]
-        )
-        
-        edits = resp.get("edits") or []
-        if not edits:
-            print(f"  [Round {round_idx}] No edits returned.", flush=True)
-            break
-            
-        changed = apply_edits(nb, edits)
-        if changed == 0:
-            print(f"  [Round {round_idx}] Edits yielded no changes.", flush=True)
-            break
-            
-        suffix = f"_fixed_r{round_idx}"
-        temp_path = nb_path.with_name(nb_path.stem + suffix + ".ipynb")
-        
-        timeout_sec = int(exec_cfg.get("timeout_seconds", 1800))
-        nb, _ = execute_notebook(nb, timeout=timeout_sec)
-        nbf.write(nb, str(temp_path))
-        
-        errors = collect_cell_errors(nb)
-        print(f"  [Round {round_idx}] Fixed {changed} cells. Remaining errors: {len(errors)}", flush=True)
+    executor = AdaptiveGraphExecutor(
+        nb=nb,
+        run_cfg=run_cfg,
+        nb_cfg=nb_cfg,
+        llm_config=llm_resolved,
+        cuda_device_id=cuda_id,
+        timeout=timeout_sec,
+        kernel_name="python3",
+        allow_errors=False # We handle errors manually
+    )
 
-    if round_idx > 0:
-        final_path = nb_path.with_name(nb_path.stem + f"_fixed_r{round_idx}.ipynb")
-        if final_path.exists():
-            return str(final_path)
+    # Run Stateful Loop
+    final_nb = executor.run_adaptive()
+
+    # Save Result
+    fixed_path = nb_path.with_name(nb_path.stem + "_adaptive_fixed.ipynb")
+    nbf.write(final_nb, str(fixed_path))
+    
+    print(f"💾 [AUTO-FIX] Saved stateful result to {fixed_path}", flush=True)
             
-    return str(nb_path)
+    return str(fixed_path)

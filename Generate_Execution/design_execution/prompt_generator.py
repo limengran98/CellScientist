@@ -104,11 +104,31 @@ def generate_notebook_content(
     
     os.makedirs(debug_dir, exist_ok=True)
     import yaml
+    
+    # Load technical specification
     with open(spec_path, "r", encoding="utf-8") as f:
         spec = yaml.safe_load(f)
     
-    sys_txt = spec.get("system", "You are an expert.")
-    spec_dump = yaml.safe_dump({k:v for k,v in spec.items() if k!='system'}, sort_keys=False)
+    # [NEW] Resolve CUDA device string from config
+    exec_cfg = cfg.get("exec", {})
+    cuda_id = exec_cfg.get("cuda_device_id", 0)
+    cuda_device_str = f"cuda:{cuda_id}"
+    
+    # Helper to inject variables into prompt text
+    def _inject_vars(text: str) -> str:
+        if not text: 
+            return ""
+        return text.replace("${cuda_device_str}", cuda_device_str)
+
+    # Prepare System Prompt
+    sys_txt_raw = spec.get("system", "You are an expert.")
+    sys_txt = _inject_vars(sys_txt_raw)
+
+    # Prepare User Content (Spec)
+    # Dump spec to string first, then inject variables
+    spec_content = {k: v for k, v in spec.items() if k != 'system'}
+    spec_dump_raw = yaml.safe_dump(spec_content, sort_keys=False)
+    spec_dump = _inject_vars(spec_dump_raw)
 
     raw_ideas = _load_ideas_if_available()
     strategy_md = ""
@@ -139,7 +159,7 @@ def generate_notebook_content(
             print("[GEN] 💻 Generating Code (Fallback to Freestyle)...", flush=True)
     else:
         # -- MODE: FREESTYLE (No Idea File) --
-        # [MODIFIED] Create a default strategy text for Freestyle mode
+        # Create a default strategy text for Freestyle mode
         strategy_md = (
             "## 🧠 Research Strategy (Freestyle)\n\n"
             "**Mode**: Expert Autonomous Design\n\n"
@@ -170,7 +190,7 @@ Follow these rules strictly:
         timeout=1200
     )
     
-    # [MODIFIED] Use robust extraction with ast fallback
+    # Robust extraction with ast fallback
     try:
         nb_json = extract_json_from_text(raw_text)
     except Exception as e:
@@ -206,7 +226,7 @@ Follow these rules strictly:
         cell.metadata["subtask"] = subtask_meta
         nb.cells.append(cell)
         
-    # 2. [FIXED] Insert Strategy as a pure Markdown cell at index 0
+    # 2. Insert Strategy as a pure Markdown cell at index 0
     if strategy_md:
         # Check if it already has a header, if not add one
         if not strategy_md.strip().startswith("#"):

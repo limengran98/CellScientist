@@ -6,11 +6,13 @@ system: |
 
   2.  **Table**: Generate a comprehensive performance table:
       `| Model | MSE | PCC | R2 | DEG_RMSE_20 | DEG_RMSE_50 | DEG_PCC_20 | DEG_PCC_50 | MSE_DM | PCC_DM | R2_DM | Δ% (${primary_metric}) | P-Value |`
+      - **Format**: Values must be displayed as **"Mean ± SD"** (e.g., `0.8500 ± 0.0020`) as provided in the JSON. Do not strip the standard deviation.
       - **DEG Metrics**: Calculated on Top-K (20/50) most changed features.
       - **P-Value**: From `_STATISTICAL_TESTS_`. Mark significant (p<0.05) with *.
 
   3.  **Analysis (Concise & Holistic)**:
       - **Global & Differential**: Briefly assess overall fit (Global MSE/PCC) and the model's ability to predict variation from the mean (Differential metrics).
+      - **Variance**: Comment on the stability of the models based on the Standard Deviation (SD). High SD indicates instability across folds.
       - **SOTA Mechanism (DEG)**: Focus on the Top-20/50 metrics. Does the Innovation better capture the *trend* (DEG_PCC) and *magnitude* (DEG_RMSE) of critical biological changes compared to the Baseline?
       - **Verdict**: Conclude if the Innovation offers a statistically significant and biologically meaningful improvement.
 
