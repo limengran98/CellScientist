@@ -51,11 +51,10 @@ system_prompt: |
 
       * Force all morphology columns to numeric; set `±inf` to `NaN`.
       * Median-impute any remaining `NaN` values in the feature matrix.
-      * Apply `sklearn.preprocessing.RobustScaler` to the feature matrix (to handle heavy tails/outliers).
 
       **(3) Pairing & Control Aggregation**
 
-      * **Identify control wells:** Assume `SMILES == 'DMSO'` (case-insensitive) or `dose == 0` are controls. All others are treatments.
+      * **Identify control wells:** Assume `SMILES == 'DMSO'` (case-insensitive)` are controls. All others are treatments.
       * **Compute Baseline (`morphology_pre`):** 
           1. Group the **control (DMSO)** samples by `Metadata_Plate`.
           2. For each plate, calculate the **Median Vector** of all morphology features. This robust vector represents the "Control State" for that specific plate.

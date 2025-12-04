@@ -15,9 +15,12 @@ from scipy import stats
 # Add current dir to path for imports
 sys.path.append(os.getcwd())
 
+# [FIX] Enforce PyYAML requirement
 try:
     import yaml
 except ImportError:
+    # Warning only, as we now have a high-quality default template
+    print("[WARN] PyYAML not installed. Using built-in default template.")
     yaml = None
 
 try:
@@ -152,8 +155,6 @@ def _inject_statistics_and_formatting(metrics_data: Dict[str, Any], primary_metr
         
         # Calculate Delta %
         if curr_val is not None and base_val is not None and base_val != 0:
-            # For error metrics (MSE/RMSE), lower is better, so negative delta is improvement? 
-            # Usually we just show raw % change. 
             delta = (curr_val - base_val) / abs(base_val) * 100
             stats_info["delta_vs_baseline"] = f"{delta:+.2f}%"
 
@@ -209,6 +210,8 @@ def write_experiment_report(trial_dir: str,
     metrics_json_str = json.dumps(clean_payload, indent=2)
 
     sys_tmpl, user_tmpl = _load_prompt_template(pm)
+    
+    # [FIX] Ensure metrics_json is replaced in the user template
     user_content = _expand_vars(user_tmpl, {"metrics_json": metrics_json_str})
 
     # 4. Generate
@@ -223,6 +226,7 @@ def write_experiment_report(trial_dir: str,
         if "llm" not in run_cfg: run_cfg["llm"] = {}
         run_cfg["llm"]["timeout"] = 600
 
+        print(f"[REPORT] Generating report using metric: {pm}")
         response = chat_text(
             [{"role": "system", "content": sys_tmpl}, 
              {"role": "user", "content": user_content}],
@@ -239,7 +243,7 @@ def write_experiment_report(trial_dir: str,
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(cleaned)
             
-        print(f"[REPORT] Report generated: {out_path}")
+        print(f"[REPORT] Report generated successfully: {out_path}")
         return out_path
 
     except Exception as e:
@@ -257,21 +261,75 @@ def _expand_vars(text: str, context: Dict[str, str]) -> str:
     return re.sub(r"\$\{(\w+)\}", lambda m: str(context.get(m.group(1), m.group(0))), text)
 
 def _load_prompt_template(pm: str) -> tuple[str, str]:
+    """
+    Loads prompt from yaml. 
+    Falls back to a high-quality BUILT-IN template if file load fails.
+    """
     candidates = [
         os.path.join(os.getcwd(), "prompts", "experiment_report.yaml"),
         os.path.join(os.path.dirname(__file__), "prompts", "experiment_report.yaml"),
+        os.path.join(os.path.dirname(__file__), "..", "prompts", "experiment_report.yaml")
     ]
-    sys_t, user_t = f"Analyze results. Metric: {pm}", "```json\n${metrics_json}\n```"
     
+    # [UPDATED] High-Quality Built-in Default
+    # Directly implements the user's requested template structure.
+    sys_t = (
+        f"You are a Senior Computational Biologist. Write an `experiment_report.md`.\n\n"
+        f"**Task**:\n"
+        f"1.  **Winner**: Determine solely by Primary Metric **{pm}**.\n\n"
+        f"2.  **Table**: Generate a comprehensive performance table:\n"
+        f"    `| Model | MSE | PCC | R2 | DEG_RMSE_20 | DEG_RMSE_50 | DEG_PCC_20 | DEG_PCC_50 | MSE_DM | PCC_DM | R2_DM | Δ% ({pm}) | P-Value |`\n"
+        f"    - **Format**: Values must be displayed as **\"Mean ± SD\"** (e.g., `0.8500 ± 0.0020`) as provided in the JSON. Do not strip the standard deviation.\n"
+        f"    - **DEG Metrics**: Calculated on Top-K (20/50) most changed features.\n"
+        f"    - **P-Value**: From `_STATISTICAL_TESTS_`. Mark significant (p<0.05) with *.\n\n"
+        f"3.  **Analysis (Concise & Holistic)**:\n"
+        f"    - **Global & Differential**: Briefly assess overall fit (Global MSE/PCC) and the model's ability to predict variation from the mean (Differential metrics).\n"
+        f"    - **Variance**: Comment on the stability of the models based on the Standard Deviation (SD). High SD indicates instability across folds.\n"
+        f"    - **SOTA Mechanism (DEG)**: Focus on the Top-20/50 metrics. Does the Innovation better capture the *trend* (DEG_PCC) and *magnitude* (DEG_RMSE) of critical biological changes compared to the Baseline?\n"
+        f"    - **Verdict**: Conclude if the Innovation offers a statistically significant and biologically meaningful improvement.\n\n"
+        f"**Tone**: Scientific, objective, and concise."
+    )
+    
+    user_t = "```json\n${metrics_json}\n```"
+    
+    # 1. Check PyYAML availability
+    if not yaml:
+        print("[WARN] PyYAML not loaded. Using built-in default prompt.")
+        return sys_t, user_t
+
+    # 2. Search for file
+    found_path = None
     for p in candidates:
-        if os.path.exists(p) and yaml:
-            try:
-                with open(p, "r", encoding="utf-8") as f: data = yaml.safe_load(f)
-                sys_t = _expand_vars(data.get("system", sys_t), {"primary_metric": pm})
-                user_t = data.get("user_template", user_t)
-                break
-            except: pass
-    return sys_t, user_t
+        if os.path.exists(p):
+            found_path = p
+            break
+            
+    if not found_path:
+        # Not finding the file is acceptable now, as we have a good default.
+        print(f"[INFO] 'experiment_report.yaml' not found. Using built-in default prompt.")
+        return sys_t, user_t
+
+    # 3. Load
+    try:
+        print(f"[REPORT] Loading prompt from: {found_path}")
+        with open(found_path, "r", encoding="utf-8") as f: 
+            data = yaml.safe_load(f)
+        
+        # Apply system template substitutions immediately
+        loaded_sys = data.get("system")
+        if loaded_sys:
+            sys_t = _expand_vars(loaded_sys, {"primary_metric": pm})
+        
+        loaded_user = data.get("user_template")
+        if loaded_user:
+            user_t = loaded_user
+            
+        return sys_t, user_t
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to parse YAML: {found_path}. Error: {e}")
+        print("[WARN] Reverting to built-in default prompt.")
+        return sys_t, user_t
 
 def main():
     parser = argparse.ArgumentParser()

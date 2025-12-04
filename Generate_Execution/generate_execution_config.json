@@ -1,5 +1,5 @@
 {
-  "dataset_name": "BBBC047",
+  "dataset_name": "BBBC036",
   "paths": {
     "baseline_source_dir": "../baseline/${dataset_name}",
     "stage1_analysis_dir": "../results/${dataset_name}/design_analysis/reference",
@@ -32,6 +32,6 @@
     "enable_llm_autofix": true,
     "enable_hypergraph_viz": true,
     "viz_format": "mermaid",
-    "cuda_device_id": 3
+    "cuda_device_id": 2
   }
 }

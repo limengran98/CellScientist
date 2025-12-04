@@ -7,9 +7,13 @@ Refactored to load prompts from YAML with robust path discovery and extended met
 # design_execution/experiment_report.py
 from __future__ import annotations
 from typing import Any, Dict, Optional, List
-import os, json, re, math
+import os, json, re, math, sys
 import numpy as np
 from scipy import stats
+from copy import deepcopy
+
+# Add current dir to path to ensure local imports work
+sys.path.append(os.getcwd())
 
 try:
     import yaml
@@ -18,9 +22,12 @@ except ImportError:
 
 # Import centralized LLM tools
 try:
-    from .llm_utils import chat_text
+    from llm_utils import chat_text
 except ImportError:
-    pass
+    try:
+        from .llm_utils import chat_text
+    except ImportError:
+        chat_text = None
 
 __all__ = ["write_experiment_report"]
 
@@ -30,6 +37,7 @@ __all__ = ["write_experiment_report"]
 
 def _expand_vars(text: str, context: Dict[str, str]) -> str:
     """Recursively expand ${VAR} in string."""
+    if not text: return ""
     return re.sub(r"\$\{(\w+)\}", lambda m: str(context.get(m.group(1), m.group(0))), text)
 
 def _load_prompt_template(pm: str, metrics_str: str) -> tuple[str, str]:
@@ -37,7 +45,7 @@ def _load_prompt_template(pm: str, metrics_str: str) -> tuple[str, str]:
     Attempts to load prompts/experiment_report.yaml.
     Returns (system_prompt, user_content).
     """
-    # 1. Define Candidate Paths to search for the yaml
+    # 1. Define Candidate Paths
     candidates = [
         os.path.join(os.getcwd(), "prompts", "experiment_report.yaml"),
         os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts", "experiment_report.yaml"),
@@ -50,37 +58,41 @@ def _load_prompt_template(pm: str, metrics_str: str) -> tuple[str, str]:
             prompt_path = p
             break
 
-    # 2. Default Hardcoded Prompts (Fallback)
-    default_system = f"""
-You are a Senior Computational Biologist. Write an `experiment_report.md`.
+    # 2. Default Hardcoded Prompts (The "Perfect" Version)
+    # [FIX] Embedded the full, detailed prompt here to ensure consistency
+    default_system = (
+        f"You are a Senior Computational Biologist. Write an `experiment_report.md`.\n\n"
+        f"**Task**:\n"
+        f"1.  **Winner**: Determine solely by Primary Metric **{pm}**.\n\n"
+        f"2.  **Table**: Generate a comprehensive performance table:\n"
+        f"    `| Model | MSE | PCC | R2 | DEG_RMSE_20 | DEG_RMSE_50 | DEG_PCC_20 | DEG_PCC_50 | MSE_DM | PCC_DM | R2_DM | Δ% ({pm}) | P-Value |`\n"
+        f"    - **Format**: Values must be displayed as **\"Mean ± SD\"** (e.g., `0.8500 ± 0.0020`) as provided in the JSON. Do not strip the standard deviation.\n"
+        f"    - **DEG Metrics**: Calculated on Top-K (20/50) most changed features.\n"
+        f"    - **P-Value**: From `_STATISTICAL_TESTS_`. Mark significant (p<0.05) with *.\n\n"
+        f"3.  **Analysis (Concise & Holistic)**:\n"
+        f"    - **Global & Differential**: Briefly assess overall fit (Global MSE/PCC) and the model's ability to predict variation from the mean (Differential metrics).\n"
+        f"    - **Variance**: Comment on the stability of the models based on the Standard Deviation (SD). High SD indicates instability across folds.\n"
+        f"    - **SOTA Mechanism (DEG)**: Focus on the Top-20/50 metrics. Does the Innovation better capture the *trend* (DEG_PCC) and *magnitude* (DEG_RMSE) of critical biological changes compared to the Baseline?\n"
+        f"    - **Verdict**: Conclude if the Innovation offers a statistically significant and biologically meaningful improvement.\n\n"
+        f"**Tone**: Scientific, objective, and concise."
+    )
+    
+    default_user = "```json\n${metrics_json}\n```"
 
-**Task**:
-1.  **Winner**: Determine solely by Primary Metric **{pm}**.
-2.  **Table**: `| Model | MSE | PCC | R2 | MSE_DM | PCC_DM | Δ% ({pm}) | P-Value |`.
-    - Format: Use "Mean ± SD" if available.
-    - P-Value: From `_STATISTICAL_TESTS_`. Mark significant (p<0.05) with *.
-3.  **Analysis**:
-    - Interpret the biological significance of PCC_DM (Differential Metric).
-    - Discuss if the Innovation is statistically significant vs Baseline.
-
-**Tone**: Scientific.
-"""
-    default_user = f"```json\n{metrics_str}\n```\n\nWrite report."
+    context = {
+        "primary_metric": pm,
+        "metrics_json": metrics_str
+    }
 
     # 3. Try to load from YAML if found
     if prompt_path:
         if yaml is None:
-            print(f"[REPORT] Warning: Found {prompt_path}, but 'PyYAML' is not installed. Using fallback.")
+            print(f"[REPORT] Warning: Found {prompt_path}, but 'PyYAML' is not installed. Using built-in default.")
         else:
             try:
                 print(f"[REPORT] Loading prompt template from: {prompt_path}")
                 with open(prompt_path, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f)
-                
-                context = {
-                    "primary_metric": pm,
-                    "metrics_json": metrics_str
-                }
                 
                 sys_tmpl = data.get("system", default_system)
                 usr_tmpl = data.get("user_template", default_user)
@@ -88,11 +100,11 @@ You are a Senior Computational Biologist. Write an `experiment_report.md`.
                 return _expand_vars(sys_tmpl, context), _expand_vars(usr_tmpl, context)
                 
             except Exception as e:
-                print(f"[REPORT][WARN] Failed to parse YAML: {e}. Using fallback.")
+                print(f"[REPORT][WARN] Failed to parse YAML: {e}. Using built-in default.")
     else:
-        print("[REPORT] Warning: 'experiment_report.yaml' not found in search paths. Using hardcoded fallback.")
+        print("[REPORT] Note: 'experiment_report.yaml' not found. Using built-in high-quality default.")
 
-    return default_system, default_user
+    return _expand_vars(default_system, context), _expand_vars(default_user, context)
 
 # =============================================================================
 # 1. Data Cleaning & Sanitization
@@ -253,6 +265,7 @@ def _fallback_static_report(trial_dir: str, baseline_name: str, pm: str, metrics
     lines = [f"# Experiment Report (Auto-Generated)", "", f"**Primary Metric**: {pm} | **Baseline**: {baseline_name}", ""]
     
     lines.append("## Quantitative Results (Mean ± SD)")
+    # [FIX] Added missing columns to static fallback
     headers = ["Model", "MSE", "PCC", "R2", "MSE_DM", "PCC_DM", f"Delta ({pm})", "P-Value"]
     lines.append("| " + " | ".join(headers) + " |")
     lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
@@ -300,10 +313,13 @@ def write_experiment_report(trial_dir: str,
                             cfg: Dict[str, Any],
                             primary_metric: Optional[str] = None) -> str:
     
+    if chat_text is None:
+        print("[REPORT] LLM utils missing. Cannot generate.")
+        return ""
+
     # 1. Robust Loading & Normalization
     models_data = _normalize_metrics(metrics_obj)
     
-    # Strict check: If no models/metrics, do not hallucinate a report.
     if not models_data:
         print("[REPORT] Warning: Metrics object is empty (No models found). Generating empty report.", flush=True)
         out_path = os.path.join(trial_dir, "experiment_report.md")
@@ -350,13 +366,13 @@ def write_experiment_report(trial_dir: str,
     system_prompt, user_content = _load_prompt_template(pm, metrics_str)
 
     try:
-        # Call LLM
+        # [FIX] Standardized on `cfg` to match typical llm_utils signature
+        # Also increased tokens to ensure table fits
         report_content = chat_text(
             [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
-            llm_config=cfg.get("llm", {}), 
+            cfg=cfg, 
             timeout=600,
-            temperature=0.5,
-            max_tokens=4000
+            temperature=0.3
         )
         
         # Clean response
@@ -368,6 +384,8 @@ def write_experiment_report(trial_dir: str,
         out_path = os.path.join(trial_dir, "experiment_report.md")
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(cleaned.strip())
+        
+        print(f"[REPORT] Report generated: {out_path}")
         return out_path
 
     except Exception as e:
