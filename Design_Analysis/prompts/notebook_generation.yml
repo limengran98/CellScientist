@@ -203,11 +203,6 @@ system_prompt: |
             description: R² computed on differentially modulated features only.
             direction: higher_is_better
 
-     - In code, provide a prototype pipeline skeleton (scikit-learn, XGBoost, or PyTorch) that illustrates how the processed data could be modeled:
-       * Baseline: logistic regression or random forest.
-       * Advanced: biologically-motivated model (e.g., monotonic regressor, graph-based model, multimodal fusion).
-       * Training: leakage-safe split + evaluation with both ML metrics and biological interpretability checks.
-
   General rules:
   - Every code cell must be explained by a Markdown cell immediately before it.  
   - Markdown must include clear subheadings (## Data Patterns, ## Hidden Information, etc.).  
