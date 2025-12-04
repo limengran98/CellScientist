@@ -1,5 +1,5 @@
 {
-  "dataset_name": "CPG0016",
+  "dataset_name": "BBBC047",
   "workflow_phases": [
     "task_analysis"
   ],
@@ -7,9 +7,9 @@
     "task_analysis": {
       "enabled": true,
       "llm_notebook": {
-        "split_strategy": "smiles",
+        "split_strategy": "plate",
         "paths": { 
-          "data": "../data/${dataset_name}/CP_data_norm.csv",
+          "data": "../data/${dataset_name}/CP_data.csv",
           "paper": "../data/${dataset_name}/BBBC036.pdf",
           "preprocess": "../data/${dataset_name}/BBBC036_data_process.ipynb"
         },

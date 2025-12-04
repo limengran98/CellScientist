@@ -20,76 +20,85 @@ system_prompt: |
 
   Section expectations:
   1. **Data Loading & Initial Exploration**
-      ...
-      **Required HDF5 schema (exact names):**
-      ```
-      /
-      ├─ smiles           : str         – drug SMILES
-      ├─ morphology_pre   : float32 (N, F) – Control (DMSO) morphology vector
-      ├─ morphology_post  : float32 (N, F) – drug-treated morphology vector
-      ├─ dose             : float32    – concentration
-      ├─ plate_id         : str         – plate identifier
-      └─ split_id         : int8        – 5-fold CV index (0-4) using strategy: {split_strategy}
-      ```
-      
-      **Data Splitting Requirement:**
-      You MUST perform 5-fold cross-validation based on the provided strategy: **{split_strategy}**.
-      - If `{split_strategy}` is `random`: Use `KFold(n_splits=5, shuffle=True, random_state=42)`.
-      - If `{split_strategy}` is `plate`: Use `GroupKFold(n_splits=5)` on the `Metadata_Plate` column.
-      - If `{split_strategy}` is `smiles`: Use `GroupKFold(n_splits=5)` on the `SMILES` column.
-      - Save the fold index (0-4) in the `split_id` column of the HDF5 file.
+    ### **Required HDF5 schema (exact names)**
+    ```
+    ├─ smiles           : str              – SMILES string
+    ├─ morphology_pre   : float32 (N, F)   – plate-wise DMSO baseline row for each sample
+    ├─ morphology_post  : float32 (N, F)   – scaled morphology values for drug-treated samples
+    ├─ dose             : float32
+    ├─ plate_id         : str
+    └─ split_id         : int8  (values 0,1,2,3,4)
+    ```
+    Note: N refers to the number of non-DMSO treatment samples after filtering, and F is the number of remaining morphology features.
 
-      **4-step pipeline (must appear in order):**
+    ### **Data Splitting Requirement**
+    You MUST perform 5-fold cross-validation using **{split_strategy}**.
+    * If `{split_strategy}` is `plate` → use `GroupKFold(n_splits=5)` based on `Metadata_Plate`
+    * If `{split_strategy}` is `smiles` → use `GroupKFold(n_splits=5)` based on `SMILES`
+    The fold index (`0–4`) must be stored as `split_id` in the HDF5 file.
 
-      **(1) Inspect data**
+    ===================
+    PROCESSING PIPELINE
+    ===================
 
-      * Load raw file (use the path from `Context.Input CSV path` verbatim).
-      * Separate morphology feature columns vs metadata columns (`dose`, `SMILES`, `Metadata_Plate`).
-      * Report original shape, initial missingness summary, and counts of doses/plates.
+    (1) LOAD RAW CSV & EXPLORE
+        - Load raw file (use the path from `Context.Input CSV path` verbatim).
+        - Separate morphology feature columns vs metadata columns (`dose`, `SMILES`, `Metadata_Plate`).
+        - Report shape, DMSO count, missingness stats
 
-      **(2) Clean features**
+    (2) GLOBAL STRUCTURAL CLEANING (allowed before splitting)
+        - Convert feature values to numeric, replace ±inf with NaN
+        - Remove columns where >95% values are invalid (NaN, inf, abs > 1e10)
+        - DO NOT impute values or transform distributions here
 
-      * Force all morphology columns to numeric; set `±inf` to `NaN`.
-      * Median-impute any remaining `NaN` values in the feature matrix.
+    (3) 5-FOLD SPLITTING
+        - Perform 5-fold CV using the selected grouping strategy (plate or smiles).
+        - Assign fold indices to split_id (0–4).
+            train_idx, test_idx = fold split
 
-      **(3) Pairing & Control Aggregation**
+    (4) FOLD-WISE PREPROCESSING (fit only on TRAIN, apply to TEST)
+        For each fold independently:
+        (4.1) Median Imputation (TRAIN ONLY)
+            - Compute train column median
+            - Apply to both train/test
+        (4.2) Log Transform Selection (TRAIN ONLY)
+            - Determine cols_to_log = columns where train.min >= 0 AND train.max > 50
+            - Apply log1p only to those columns on both train/test
+        (4.3) Robust Scaling using TRAIN DMSO
+            - Use only the TRAIN subset’s DMSO samples to estimate the control distribution.
+            - Compute feature-wise median and MAD, and use them to normalize both TRAIN and TEST.
+            - If TRAIN has no DMSO samples, use all TRAIN samples instead.
+            - The TEST set must never influence scaling.
+        (4.4) Train-based Clamping
+            - Using thresholds determined from the TRAIN subset only, clip all values to the fixed range [-10, 10], then apply the same limits to TEST.
+        (4.5) Plate-wise DMSO Baseline Pairing (morphology_pre)
+            - Compute a baseline morphology vector per plate using TRAIN DMSO samples.
+            - Assign each TEST sample the baseline of its plate; if a plate is not seen in TRAIN, use the global TRAIN DMSO baseline.
+            - Store this as morphology_pre, and the normalized/clamped values as morphology_post.
+            - Keep only non-DMSO rows for the final dataset.
+        (4.6) Keep only NON-DMSO rows in that fold's test set.
+            - DMSO rows should be identified using the value 'DMSO' in the `compound_column` field.
+            - DO NOT infer DMSO using `dose == 0`. Ignore `dose` when determining control/treatment identity.
 
-      * **Identify control wells:** Assume `SMILES == 'DMSO'` (case-insensitive)` are controls. All others are treatments.
-      * **Compute Baseline (`morphology_pre`):** 
-          1. Group the **control (DMSO)** samples by `Metadata_Plate`.
-          2. For each plate, calculate the **Median Vector** of all morphology features. This robust vector represents the "Control State" for that specific plate.
-      * **Map & Filter:**
-          1. Map this plate-specific Median Vector back to **every** sample (based on `Metadata_Plate`) as the new column `morphology_pre`.
-          2. The existing morphology features of each sample become `morphology_post`.
-          3. **Crucial Filter:** Create a new dataframe containing **ONLY the treatment wells** (exclude the DMSO rows). 
-      * **Result:** You should now have a dataset of Drug-Treated samples, where each row contains its own features (`post`) and its plate's control baseline (`pre`).
 
-      **(4) Split & Build H5** 
+    (5) BUILD FINAL HDF5
+        - Concatenate all fold test results across k=0..4
+        - Ensure shapes match (N,F)
+        - Validate no NaN values remain
+        - Write using gzip compression level 4
+        - Print summary and absolute path
 
-      * **Generate Split IDs:** Perform the 5-fold cross-validation (as defined in 'Data Splitting Requirement') on the final paired dataset. Assign each sample a fold index (0-4) in a new `split_id` array.
-      * Create a dictionary matching the HDF5 schema (ensuring ALL keys: `smiles`, `morphology_pre`, `morphology_post`, `dose`, `plate_id`, and `split_id` are present).
-      * **Get the required output path from `Context.Required H5 output path`.**
-      * **Ensure the directory for this path exists (e.g., `os.makedirs(os.path.dirname(output_path), exist_ok=True)`).**
-      * **Save the HDF5 file to this exact path.**
-      * Use `h5py` for writing, enabling `gzip` compression (level 4).
-      * Read-back check: Assert the shapes of the saved arrays match the data and that no `NaN` values exist in the final feature arrays.
-      * PRINT the absolute final file path, N-samples, N-features, and a "Done" message.
 
-      **Code rules:**
+    ## **Final Markdown Cell**
 
-      * Alternate markdown/code; every code cell must be preceded by a one-sentence explanation of its purpose.
-      * Assume control wells are identified by `SMILES == 'DMSO'`.
-      * Keep code concise and efficient.
-
-      **Final markdown cell (mandatory):**
-
-      ```markdown
-      ## ML-Ready Data Summary
-      - Rows = paired samples (drug ↔ plate-control)
-      - Columns = morphology features (Robust-scaled)
-      - Pairing strategy: **Many-to-one (within-plate)**. All treatments on a plate are paired against the **median or a similar robust measure of all DMSO controls** from that same plate.
-      - Final counts: N-samples samples, F features, N-unique-drugs unique compounds, N-plates plates
-      - File location: [PRINT THE H5 OUTPUT PATH HERE]
+    ```markdown
+    ## ML-Ready Data Summary
+    - Rows = paired samples (drug ↔ plate-control)
+    - Columns = morphology features (robust-scaled)
+    - Pairing strategy: **Many-to-one (within-plate)**. All treatments are aligned to the **median DMSO baseline** from that same plate.
+    - Final counts: N-samples samples, F features, N-unique-drugs unique compounds, N-plates plates
+    - File location: [PRINT THE H5 OUTPUT PATH HERE]
+    ```
 
   2. **Data Patterns**
      - Build directly on the processed matrix from Step 1.
