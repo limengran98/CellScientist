@@ -40,12 +40,6 @@ system: |
   2.1 — **Feature Augmentation**:
         - The input matrix $X$ MUST be a concatenation of two specific modalities:  **Morphology** and 
           Chemistry**: Convert the `SMILES` strings into numerical fingerprints (e.g., Morgan/ECFP4 fingerprints using `rdkit`, radius=2, nBits=1024 or 2048).
-  2.2 — **Data Cleaning**:
-        - NaN/±inf coercion and **Strict adherence to the `split_id`** for train/validation separation. 
-        - The model input must contain **strictly numerical data**.
-        - To prevent data breaches, standardized procedures are prohibited.
-        - Handle missing values (NaN) using robust imputation (e.g., median).
-        - Clip infinite values to finite bounds to prevent numerical instability.
 
   ================================================================================
   **SECTION 3 — MODELING REQUIREMENTS**

@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Experiment report generator (Dynamic & Universal).
-Refactored to support Mean +/- SD formatting and robust stats.
+Experiment report generator (Robust Hybrid Version).
+Features:
+1. Dynamic Metrics Processing (Mean ± SD).
+2. LLM-based Analysis (Primary).
+3. Python-based Static Fallback (Guaranteed Table Format).
 """
 
 from __future__ import annotations
@@ -15,12 +18,9 @@ from scipy import stats
 # Add current dir to path for imports
 sys.path.append(os.getcwd())
 
-# [FIX] Enforce PyYAML requirement
 try:
     import yaml
 except ImportError:
-    # Warning only, as we now have a high-quality default template
-    print("[WARN] PyYAML not installed. Using built-in default template.")
     yaml = None
 
 try:
@@ -39,42 +39,16 @@ except ImportError:
 __all__ = ["write_experiment_report"]
 
 # =============================================================================
-# 1. Dynamic Data Cleaning
-# =============================================================================
-
-def _smart_prune(obj: Any) -> Any:
-    if isinstance(obj, (int, float, str, bool)) or obj is None:
-        if isinstance(obj, float) and (obj != obj): return None # NaN check
-        return obj
-
-    if isinstance(obj, list):
-        return f"<List len={len(obj)} omitted>"
-
-    if isinstance(obj, dict):
-        new_dict = {}
-        for k, v in obj.items():
-            # Prune large internal structures to save context
-            if k.lower() in ["per_fold", "folds", "history", "predictions", "gradients", "per_fold_details", "config"]:
-                continue
-            cleaned_val = _smart_prune(v)
-            new_dict[k] = cleaned_val
-        return new_dict
-    
-    return str(obj)
-
-# =============================================================================
-# 2. Statistical Helpers & Formatters
+# 1. Data Helpers & Statistics
 # =============================================================================
 
 def _recursive_find_metric(data: Any, target_key: str) -> Optional[float]:
     """Recursively search for a metric value (float) in a nested dict."""
     if isinstance(data, dict):
-        # Direct match?
         for k, v in data.items():
             if k.lower() == target_key.lower():
                 if isinstance(v, (int, float)) and not isinstance(v, bool):
                     return float(v)
-        # Recurse
         for v in data.values():
             if isinstance(v, (dict, list)):
                 val = _recursive_find_metric(v, target_key)
@@ -88,7 +62,6 @@ def _extract_fold_values(model_data: Dict[str, Any], metric_key: str) -> Optiona
         return None
     
     values = []
-    # Sort keys numerically if possible (0, 1, 2...)
     sorted_keys = sorted(container.keys(), key=lambda x: int(x) if str(x).isdigit() else x)
     
     for k in sorted_keys:
@@ -97,96 +70,198 @@ def _extract_fold_values(model_data: Dict[str, Any], metric_key: str) -> Optiona
         
     return values if len(values) >= 2 else None
 
-def _format_mean_sd(model_data: Dict[str, Any], metric_key: str) -> Union[str, float, None]:
+def _format_mean_sd(model_data: Dict[str, Any], metric_key: str) -> str:
     """
-    Returns string 'Mean ± SD' if fold data exists, else returns float value or None.
+    Returns string 'Mean ± SD' if fold data exists, else returns float formatted string or '-'.
     """
-    # 1. Try to calculate from folds
+    # 1. Try fold data
     fold_vals = _extract_fold_values(model_data, metric_key)
     if fold_vals:
         mean_val = np.mean(fold_vals)
-        std_val = np.std(fold_vals, ddof=1) # Sample SD
+        std_val = np.std(fold_vals, ddof=1)
         return f"{mean_val:.4f} ± {std_val:.4f}"
     
-    # 2. Fallback to pre-calculated aggregate
+    # 2. Try aggregate or direct
     val = _recursive_find_metric(model_data.get("aggregate", {}), metric_key)
+    if val is None:
+        val = _recursive_find_metric(model_data, metric_key)
+        
     if val is not None:
-        return float(val)
-
-    # 3. Fallback to recursive search in model root
-    return _recursive_find_metric(model_data, metric_key)
-
-def _inject_statistics_and_formatting(metrics_data: Dict[str, Any], primary_metric: str) -> Dict[str, Any]:
-    """
-    1. Calculates Delta and P-Values vs Baseline.
-    2. Formats all key metrics as 'Mean ± SD'.
-    """
-    data_copy = deepcopy(metrics_data)
-    root = data_copy.get("models", data_copy.get("methods", data_copy))
-    if not isinstance(root, dict): return data_copy
-
-    # Identify Baseline
-    baseline_key = next((k for k in root.keys() if "baseline" in k.lower()), list(root.keys())[0])
-    baseline_data = root.get(baseline_key, {})
+        return f"{val:.4f}"
     
-    # Get Baseline Primary Metric for Comparison
-    base_val = _recursive_find_metric(baseline_data, primary_metric)
-    base_folds = _extract_fold_values(baseline_data, primary_metric)
+    return "-"
 
-    # Metrics to format
-    metrics_to_format = [
-        "MSE", "PCC", "R2", "MSE_DM", "PCC_DM", "R2_DM",
-        "DEG_RMSE_20", "DEG_RMSE_50", "DEG_PCC_20", "DEG_PCC_50"
+def _smart_prune(obj: Any) -> Any:
+    """Prepare JSON for LLM by removing bulky raw data."""
+    if isinstance(obj, (int, float, str, bool)) or obj is None:
+        if isinstance(obj, float) and (obj != obj): return None 
+        return obj
+    if isinstance(obj, list):
+        return f"<List len={len(obj)} omitted>"
+    if isinstance(obj, dict):
+        new_dict = {}
+        for k, v in obj.items():
+            if k.lower() in ["per_fold", "folds", "history", "predictions", "gradients", "config"]:
+                continue
+            new_dict[k] = _smart_prune(v)
+        return new_dict
+    return str(obj)
+
+def _prepare_metrics_payload(metrics_obj: Dict[str, Any], primary_metric: str) -> Dict[str, Any]:
+    """Injects formatted stats into the metrics object for the LLM/Report."""
+    data = deepcopy(metrics_obj)
+    root = data.get("models", data.get("methods", data))
+    
+    # Define the exact columns user wants
+    target_metrics = [
+        "MSE", "PCC", "R2", 
+        "DEG_RMSE_20", "DEG_RMSE_50", "DEG_PCC_20", "DEG_PCC_50", 
+        "MSE_DM", "PCC_DM", "R2_DM"
     ]
-    # Ensure primary metric is included
-    if primary_metric not in metrics_to_format:
-        metrics_to_format.append(primary_metric)
+    if primary_metric not in target_metrics: target_metrics.append(primary_metric)
+
+    baseline_key = next((k for k in root.keys() if "baseline" in k.lower()), list(root.keys())[0])
+    base_folds = _extract_fold_values(root.get(baseline_key, {}), primary_metric)
 
     for name, model_data in root.items():
-        # --- A. Statistical Comparison ---
-        stats_info = {
-            "is_baseline": (name == baseline_key),
-            "primary_metric_name": primary_metric,
-            "delta_vs_baseline": "-",
-            "p_value_vs_baseline": "-"
-        }
-
-        curr_val = _recursive_find_metric(model_data, primary_metric)
+        if "aggregate" not in model_data: model_data["aggregate"] = {}
         
-        # Calculate Delta %
-        if curr_val is not None and base_val is not None and base_val != 0:
-            delta = (curr_val - base_val) / abs(base_val) * 100
-            stats_info["delta_vs_baseline"] = f"{delta:+.2f}%"
+        # 1. Format Mean ± SD for all target metrics
+        for m in target_metrics:
+            model_data["aggregate"][m] = _format_mean_sd(root[name], m) # Use root[name] to access folds
 
-        # Calculate P-Value
-        # Note: We need to access original un-modified data to get fold lists
-        orig_model = metrics_data.get("models", {}).get(name, {})
-        curr_folds = _extract_fold_values(orig_model, primary_metric)
-        
+        # 2. P-Value Calculation
+        curr_folds = _extract_fold_values(root[name], primary_metric)
+        p_str = "-"
         if name != baseline_key and base_folds and curr_folds and len(base_folds) == len(curr_folds):
             try:
                 _, p = stats.ttest_rel(curr_folds, base_folds)
                 mark = "*" if p < 0.05 else ""
-                stats_info["p_value_vs_baseline"] = f"{p:.4e}{mark}"
+                p_str = f"{p:.4e}{mark}"
             except: pass
+        
+        model_data["aggregate"]["p_value_vs_baseline"] = p_str
 
-        model_data["_STATISTICS_HELPER_"] = stats_info
-
-        # --- B. Format Metrics (Mean ± SD) ---
-        # We inject these formatted strings into the 'aggregate' block or root
-        if "aggregate" not in model_data:
-            model_data["aggregate"] = {}
-            
-        for m_key in metrics_to_format:
-            # Get formatted string using the original data (to ensure we have folds)
-            fmt_val = _format_mean_sd(orig_model, m_key)
-            if fmt_val is not None:
-                model_data["aggregate"][m_key] = fmt_val
-
-    return data_copy
+    return data
 
 # =============================================================================
-# 3. Main Execution
+# 2. Static Fallback Report Generator (The Fix)
+# =============================================================================
+
+def _fallback_static_report(trial_dir: str, metrics_payload: Dict[str, Any], pm: str) -> str:
+    """
+    Generates the markdown report via Python logic if LLM fails.
+    Strictly adheres to the requested table format.
+    """
+    root = metrics_payload.get("models", metrics_payload.get("methods", metrics_payload))
+    baseline_key = next((k for k in root.keys() if "baseline" in k.lower()), list(root.keys())[0])
+    base_val = _recursive_find_metric(root.get(baseline_key, {}), pm)
+
+    lines = [
+        f"# Experiment Report (Static Fallback)", 
+        "", 
+        f"**Primary Metric**: {pm} | **Baseline**: {baseline_key}", 
+        ""
+    ]
+    
+    # --- TABLE GENERATION ---
+    lines.append("## Quantitative Results (Mean ± SD)")
+    
+    # EXACT Columns requested by user
+    headers = [
+        "Model", 
+        "MSE", "PCC", "R2", 
+        "DEG_RMSE_20", "DEG_RMSE_50", "DEG_PCC_20", "DEG_PCC_50", 
+        "MSE_DM", "PCC_DM", "R2_DM", 
+        f"Delta ({pm})", "P-Value"
+    ]
+    
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+
+    metric_keys = [
+        "MSE", "PCC", "R2", 
+        "DEG_RMSE_20", "DEG_RMSE_50", "DEG_PCC_20", "DEG_PCC_50", 
+        "MSE_DM", "PCC_DM", "R2_DM"
+    ]
+
+    for name, data in root.items():
+        if name == "winner" or name.startswith("_"): continue
+        
+        agg = data.get("aggregate", {})
+        row = [f"**{name}**"]
+        
+        # 1. Standard Metrics
+        for k in metric_keys:
+            row.append(str(agg.get(k, "-")))
+        
+        # 2. Delta %
+        curr_val = _recursive_find_metric(data, pm)
+        d_str = "-"
+        if base_val is not None and curr_val is not None and base_val != 0:
+            imp = (curr_val - base_val) / abs(base_val) * 100
+            d_str = f"{imp:+.2f}%"
+        row.append(d_str)
+
+        # 3. P-Value
+        row.append(str(agg.get("p_value_vs_baseline", "-")))
+
+        lines.append("| " + " | ".join(row) + " |")
+
+    lines.append("")
+    lines.append("### Note")
+    lines.append("- This report was generated by the static fallback engine (LLM unavailable).")
+    lines.append("- **DEG Metrics**: Calculated on Top-20/50 most changed features.")
+    
+    out_path = os.path.join(trial_dir, "experiment_report.md")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    
+    return out_path
+
+# =============================================================================
+# 3. Prompt & LLM Handling
+# =============================================================================
+
+def _load_prompt_template(pm: str) -> tuple[str, str]:
+    # Search paths for yaml
+    candidates = [
+        os.path.join(os.getcwd(), "prompts", "experiment_report.yaml"),
+        os.path.join(os.path.dirname(__file__), "prompts", "experiment_report.yaml"),
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts", "experiment_report.yaml"),
+    ]
+    
+    # DEFAULT PROMPT (Updated to match your requirements exactly)
+    sys_t = f"""
+You are a Senior Computational Biologist. Write an `experiment_report.md`.
+**Task**:
+1. **Table**: Generate a table with these EXACT columns:
+   `| Model | MSE | PCC | R2 | DEG_RMSE_20 | DEG_RMSE_50 | DEG_PCC_20 | DEG_PCC_50 | MSE_DM | PCC_DM | R2_DM | Δ% ({pm}) | P-Value |`
+   - Use "Mean ± SD" format.
+2. **Analysis**: Discuss biological significance of DEG (Top-K genes) and Differential Metrics.
+"""
+    user_t = "```json\n${metrics_json}\n```"
+
+    for p in candidates:
+        if os.path.exists(p):
+            if yaml:
+                try:
+                    with open(p, "r", encoding="utf-8") as f: 
+                        data = yaml.safe_load(f)
+                    # Expand vars inside the prompt text immediately
+                    sys_t = data.get("system", sys_t).replace("${primary_metric}", pm)
+                    user_t = data.get("user_template", user_t)
+                    print(f"[REPORT] Loaded prompt from: {p}")
+                    break
+                except Exception as e:
+                    print(f"[REPORT] Error parsing {p}: {e}")
+            else:
+                print(f"[REPORT] Found {p} but PyYAML not installed.")
+
+    return sys_t, user_t
+
+# =============================================================================
+# 4. Main Entry Point
 # =============================================================================
 
 def write_experiment_report(trial_dir: str,
@@ -194,142 +269,55 @@ def write_experiment_report(trial_dir: str,
                             cfg: Dict[str, Any],
                             primary_metric: Optional[str] = None) -> str:
     
-    if chat_text is None:
-        print("[REPORT] LLM utils missing. Cannot generate.")
-        return ""
-
     pm = primary_metric or "PCC"
     
-    # 1. Inject Stats & Format Metrics
-    data_processed = _inject_statistics_and_formatting(metrics_obj, pm)
-
-    # 2. Smart Prune (Removes raw folds, keeps formatted aggregates)
-    clean_payload = _smart_prune(data_processed)
-
-    # 3. Prompt Loading
+    # 1. Prepare Data (Calc Stats + Format Strings)
+    # This ensures both LLM and Fallback see "0.123 ± 0.001"
+    full_payload = _prepare_metrics_payload(metrics_obj, pm)
+    clean_payload = _smart_prune(full_payload)
     metrics_json_str = json.dumps(clean_payload, indent=2)
 
-    sys_tmpl, user_tmpl = _load_prompt_template(pm)
-    
-    # [FIX] Ensure metrics_json is replaced in the user template
-    user_content = _expand_vars(user_tmpl, {"metrics_json": metrics_json_str})
-
-    # 4. Generate
-    try:
-        debug_dir = os.path.join(trial_dir, "llm_report_debug")
-        os.makedirs(debug_dir, exist_ok=True)
-        with open(os.path.join(debug_dir, "payload_full_dynamic.json"), "w") as f:
-            f.write(metrics_json_str)
-
-        # Copy config and set timeout
-        run_cfg = deepcopy(cfg)
-        if "llm" not in run_cfg: run_cfg["llm"] = {}
-        run_cfg["llm"]["timeout"] = 600
-
-        print(f"[REPORT] Generating report using metric: {pm}")
-        response = chat_text(
-            [{"role": "system", "content": sys_tmpl}, 
-             {"role": "user", "content": user_content}],
-            cfg=run_cfg,
-            temperature=0.3,
-            debug_dir=debug_dir 
-        )
-        
-        # Clean Output
-        cleaned = re.sub(r"^```[a-z]*\n", "", response.strip())
-        cleaned = re.sub(r"\n```$", "", cleaned)
-        
-        out_path = os.path.join(trial_dir, "experiment_report.md")
-        with open(out_path, "w", encoding="utf-8") as f:
-            f.write(cleaned)
+    # 2. Try LLM Generation
+    if chat_text:
+        try:
+            sys_tmpl, user_tmpl = _load_prompt_template(pm)
             
-        print(f"[REPORT] Report generated successfully: {out_path}")
-        return out_path
+            # Simple variable expansion
+            user_content = user_tmpl.replace("${metrics_json}", metrics_json_str)
 
-    except Exception as e:
-        print(f"[REPORT] Error: {e}")
-        import traceback
-        traceback.print_exc()
-        return ""
-
-# =============================================================================
-# 4. Helpers & Main
-# =============================================================================
-
-def _expand_vars(text: str, context: Dict[str, str]) -> str:
-    if not text: return ""
-    return re.sub(r"\$\{(\w+)\}", lambda m: str(context.get(m.group(1), m.group(0))), text)
-
-def _load_prompt_template(pm: str) -> tuple[str, str]:
-    """
-    Loads prompt from yaml. 
-    Falls back to a high-quality BUILT-IN template if file load fails.
-    """
-    candidates = [
-        os.path.join(os.getcwd(), "prompts", "experiment_report.yaml"),
-        os.path.join(os.path.dirname(__file__), "prompts", "experiment_report.yaml"),
-        os.path.join(os.path.dirname(__file__), "..", "prompts", "experiment_report.yaml")
-    ]
-    
-    # [UPDATED] High-Quality Built-in Default
-    # Directly implements the user's requested template structure.
-    sys_t = (
-        f"You are a Senior Computational Biologist. Write an `experiment_report.md`.\n\n"
-        f"**Task**:\n"
-        f"1.  **Winner**: Determine solely by Primary Metric **{pm}**.\n\n"
-        f"2.  **Table**: Generate a comprehensive performance table:\n"
-        f"    `| Model | MSE | PCC | R2 | DEG_RMSE_20 | DEG_RMSE_50 | DEG_PCC_20 | DEG_PCC_50 | MSE_DM | PCC_DM | R2_DM | Δ% ({pm}) | P-Value |`\n"
-        f"    - **Format**: Values must be displayed as **\"Mean ± SD\"** (e.g., `0.8500 ± 0.0020`) as provided in the JSON. Do not strip the standard deviation.\n"
-        f"    - **DEG Metrics**: Calculated on Top-K (20/50) most changed features.\n"
-        f"    - **P-Value**: From `_STATISTICAL_TESTS_`. Mark significant (p<0.05) with *.\n\n"
-        f"3.  **Analysis (Concise & Holistic)**:\n"
-        f"    - **Global & Differential**: Briefly assess overall fit (Global MSE/PCC) and the model's ability to predict variation from the mean (Differential metrics).\n"
-        f"    - **Variance**: Comment on the stability of the models based on the Standard Deviation (SD). High SD indicates instability across folds.\n"
-        f"    - **SOTA Mechanism (DEG)**: Focus on the Top-20/50 metrics. Does the Innovation better capture the *trend* (DEG_PCC) and *magnitude* (DEG_RMSE) of critical biological changes compared to the Baseline?\n"
-        f"    - **Verdict**: Conclude if the Innovation offers a statistically significant and biologically meaningful improvement.\n\n"
-        f"**Tone**: Scientific, objective, and concise."
-    )
-    
-    user_t = "```json\n${metrics_json}\n```"
-    
-    # 1. Check PyYAML availability
-    if not yaml:
-        print("[WARN] PyYAML not loaded. Using built-in default prompt.")
-        return sys_t, user_t
-
-    # 2. Search for file
-    found_path = None
-    for p in candidates:
-        if os.path.exists(p):
-            found_path = p
-            break
+            run_cfg = deepcopy(cfg)
+            if "llm" not in run_cfg: run_cfg["llm"] = {}
+            run_cfg["llm"]["timeout"] = 600 # Ensure enough time
             
-    if not found_path:
-        # Not finding the file is acceptable now, as we have a good default.
-        print(f"[INFO] 'experiment_report.yaml' not found. Using built-in default prompt.")
-        return sys_t, user_t
-
-    # 3. Load
-    try:
-        print(f"[REPORT] Loading prompt from: {found_path}")
-        with open(found_path, "r", encoding="utf-8") as f: 
-            data = yaml.safe_load(f)
-        
-        # Apply system template substitutions immediately
-        loaded_sys = data.get("system")
-        if loaded_sys:
-            sys_t = _expand_vars(loaded_sys, {"primary_metric": pm})
-        
-        loaded_user = data.get("user_template")
-        if loaded_user:
-            user_t = loaded_user
+            print("[REPORT] Sending to LLM...")
+            response = chat_text(
+                [{"role": "system", "content": sys_tmpl}, 
+                 {"role": "user", "content": user_content}],
+                cfg=run_cfg,
+                temperature=0.3
+            )
             
-        return sys_t, user_t
-        
-    except Exception as e:
-        print(f"[ERROR] Failed to parse YAML: {found_path}. Error: {e}")
-        print("[WARN] Reverting to built-in default prompt.")
-        return sys_t, user_t
+            if response:
+                # Cleanup markdown fences
+                cleaned = re.sub(r"^```[a-z]*\n", "", response.strip())
+                cleaned = re.sub(r"\n```$", "", cleaned)
+                
+                out_path = os.path.join(trial_dir, "experiment_report.md")
+                with open(out_path, "w", encoding="utf-8") as f:
+                    f.write(cleaned)
+                print(f"[REPORT] LLM Report generated: {out_path}")
+                return out_path
+            else:
+                print("[REPORT] LLM returned empty response. Switching to Fallback.")
+
+        except Exception as e:
+            print(f"[REPORT] LLM Generation Failed: {e}")
+    else:
+        print("[REPORT] LLM utils not available. Switching to Fallback.")
+
+    # 3. Static Fallback (Guaranteed Output)
+    print("[REPORT] Generating Static Fallback Report...")
+    return _fallback_static_report(trial_dir, clean_payload, pm)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -343,7 +331,9 @@ def main():
     
     with open(args.metrics, 'r') as f: m_data = json.load(f)
     
-    if load_full_config: cfg = load_full_config(args.config)
+    cfg = {}
+    if load_full_config: 
+        cfg = load_full_config(args.config)
     else:
         with open(args.config, 'r') as f: cfg = json.load(f)
 

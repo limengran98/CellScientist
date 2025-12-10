@@ -15,7 +15,7 @@
   },
   "experiment": {
     "primary_metric": "PCC",
-    "max_iterations": 5,
+    "max_iterations": 10,
     "success_threshold": 0.9
   },
   "prompt_branch": {
@@ -27,11 +27,11 @@
     "max_tokens": 40000
   },
   "exec": {
-    "timeout_seconds": 18000,
+    "timeout_seconds": 36000,
     "max_fix_rounds": 3,
     "enable_llm_autofix": true,
     "enable_hypergraph_viz": true,
     "viz_format": "mermaid",
-    "cuda_device_id": 3
+    "cuda_device_id": 2
   }
 }
