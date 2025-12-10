@@ -57,7 +57,7 @@ system: |
   3.3 — At least a lightweight baseline models must be included, such as MLPs, etc. 
         The baseline MUST employ a naive **"Early Fusion"** strategy: simply concatenate the normalized morphology vector and the fingerprint vector into a single flat input vector.
   3.4 — Under identical experimental conditions, the designed model must outperform baseline models in terms of the correlation metric (PCC) and MSE.**
-  3.5 — Training must allow up to 100 epochs and must use early stopping with a patience of 10 epochs.
+  3.5 — Training must allow up to 200 epochs and must use early stopping with a patience of 20 epochs.
   3.6 — The actual number of epochs trained must be recorded.
 
   ================================================================================

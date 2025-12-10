@@ -18,6 +18,7 @@ from config_loader import load_full_config
 from llm_utils import chat_json, resolve_llm_config
 
 # [UPDATED] Import decoupled execution and error handling functions
+# Ensure executor_engine.py is updated to accept extra_env and mutable_indices!
 from executor_engine import run_notebook_pure, attempt_fix_notebook, dump_error_log
 
 try:
@@ -27,30 +28,46 @@ except ImportError:
     write_experiment_report = None
 
 # =============================================================================
-# 1. Helper: Relative Path Resolver
+# 1. Helper: Resource Resolver (H5 Path Logic Ported from Phase 2)
 # =============================================================================
 
-def _resolve_relative_resources(cfg):
-    """Allows user to use relative paths in config."""
+def _resolve_h5_path(cfg):
+    """
+    Resolves the absolute path of the STAGE 1 H5 Data.
+    Mimics Phase 2's robust finding logic.
+    """
     s1_dir = cfg.get("paths", {}).get("stage1_analysis_dir")
-    if not s1_dir: return
+    if not s1_dir: 
+        return None
 
+    # 1. Try as absolute path or relative to cwd
     abs_s1_dir = os.path.abspath(s1_dir)
-    print(f"[PATH] Resolving relative path '{s1_dir}' -> '{abs_s1_dir}'")
-
+    
     if not os.path.exists(abs_s1_dir):
-        print(f"[ERROR] Directory not found: {abs_s1_dir}")
-        return
+        print(f"[WARN] Data directory not found: {abs_s1_dir}")
+        return None
 
+    # 2. Look for REFERENCE_DATA.h5 first (Standard Convention)
+    cand_h5 = os.path.join(abs_s1_dir, "REFERENCE_DATA.h5")
+    if os.path.exists(cand_h5):
+        print(f"[DATA] Found Stage 1 Data (Explicit): {cand_h5}")
+        return cand_h5
+
+    # 3. Fallback: Any .h5 file
     h5_files = glob.glob(os.path.join(abs_s1_dir, "*.h5"))
     if h5_files:
         target_h5 = h5_files[0]
-        os.environ["STAGE1_H5_PATH"] = target_h5
-        print(f"[DATA] HDF5 Resource Locked: {target_h5}")
+        print(f"[DATA] Found Stage 1 Data (Auto-detected): {target_h5}")
+        return target_h5
     
-    idea_files = glob.glob(os.path.join(abs_s1_dir, "idea.json"))
-    if idea_files:
-        os.environ["STAGE1_IDEA_PATH"] = idea_files[0]
+    print(f"[WARN] No .h5 files found in {abs_s1_dir}")
+    return None
+
+def _resolve_relative_resources(cfg):
+    """(Legacy wrapper, kept for backward compatibility)"""
+    path = _resolve_h5_path(cfg)
+    if path:
+        os.environ["STAGE1_H5_PATH"] = path
 
 # =============================================================================
 # 2. Logging & Analysis Logic
@@ -260,12 +277,11 @@ def _expand_vars(text, context):
 def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, iteration, best_metric_val, workspace, history_summary):
     """
     Generates optimization suggestions.
-    [FIXED] Now correctly populates 'immutable_context_content' to prevent NameErrors.
     """
     
     # 1. Content Construction: Split into Mutable (Target) and Immutable (Context)
     mutable_content = ""
-    immutable_context_content = ""  # <--- [FIX] New: Collects context code
+    immutable_context_content = "" 
     
     for idx, cell in enumerate(nb.cells):
         src = cell.source
@@ -289,8 +305,7 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
             # Code to be optimized
             mutable_content += f"\n# --- CELL INDEX {idx} (TARGET TO OPTIMIZE: {label}) ---\n{src}\n"
         else:
-            # [FIX] Read-Only Context (Critical for maintaining variable definitions)
-            # Only including CODE cells to save tokens, unless strict markdown context is needed
+            # Read-Only Context (Critical for maintaining variable definitions)
             if cell.cell_type == "code":
                 immutable_context_content += f"\n# --- CELL INDEX {idx} (READ-ONLY CONTEXT) ---\n{src}\n"
 
@@ -322,7 +337,7 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
                 "current_best": str(best_metric_val),
                 "iteration": str(iteration),
                 "mutable_cells_content": mutable_content,
-                "immutable_context_content": immutable_context_content, # <--- [FIX] Pass context
+                "immutable_context_content": immutable_context_content,
                 "metrics_json": json.dumps(current_metrics, indent=2),
                 "history_summary": history_text
             }
@@ -352,9 +367,10 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
 # 7. Execution Loop Logic
 # =============================================================================
 
-def execute_and_recover(nb_path, workdir, cfg):
+def execute_and_recover(nb_path, workdir, cfg, mutable_indices=None, extra_env=None):
     """
     Manages the Execution -> Error Reporting -> Fix Loop lifecycle.
+    [UPDATED] Accepts mutable_indices (locks) and extra_env (paths).
     """
     timeout = cfg["exec"]["timeout_seconds"]
     max_fixes = cfg["exec"]["max_fix_rounds"]
@@ -365,8 +381,14 @@ def execute_and_recover(nb_path, workdir, cfg):
     nb = nbformat.read(current_nb_path, as_version=4)
     print(f"[EXEC] Running Notebook: {current_nb_path}")
     
-    # Run Pure Execution
-    executed_nb, errors = run_notebook_pure(nb, workdir, timeout, cuda_device_id=None)
+    # Run Pure Execution (With Environment Injection)
+    executed_nb, errors = run_notebook_pure(
+        nb, 
+        workdir, 
+        timeout, 
+        cuda_device_id=None,
+        extra_env=extra_env # <--- INJECTED HERE
+    )
     
     # If no errors, save and return
     if not errors:
@@ -386,8 +408,13 @@ def execute_and_recover(nb_path, workdir, cfg):
         # A. Explicitly Dump Errors (Visible to User)
         dump_error_log(workdir, errors, round_idx=fix_round)
         
-        # B. Attempt Fix
-        fixed_nb, changed, method = attempt_fix_notebook(current_nb_obj, errors, cfg)
+        # B. Attempt Fix (With Mutability Lock)
+        fixed_nb, changed, method = attempt_fix_notebook(
+            current_nb_obj, 
+            errors, 
+            cfg,
+            mutable_indices=mutable_indices # <--- LOCKED HERE
+        )
         
         if not changed:
             print(f"[EXEC] Could not generate valid fix ({method}). Stopping.")
@@ -395,8 +422,14 @@ def execute_and_recover(nb_path, workdir, cfg):
             
         print(f"[EXEC] Applying Fix ({method}) -> Rerunning...")
         
-        # C. Rerun
-        current_nb_obj, errors = run_notebook_pure(fixed_nb, workdir, timeout, cuda_device_id=None)
+        # C. Rerun (With Environment Injection)
+        current_nb_obj, errors = run_notebook_pure(
+            fixed_nb, 
+            workdir, 
+            timeout, 
+            cuda_device_id=None,
+            extra_env=extra_env # <--- INJECTED HERE TOO
+        )
         
         if not errors:
             print(f"[EXEC] Fixed successfully!")
@@ -418,8 +451,14 @@ def execute_and_recover(nb_path, workdir, cfg):
 # =============================================================================
 
 def optimize_loop(cfg, workspace_dir, base_nb_path):
-    _resolve_relative_resources(cfg)
-    
+    # [NEW] 1. Resolve H5 Path & Prepare Env
+    h5_path = _resolve_h5_path(cfg)
+    exec_env = {}
+    if h5_path:
+        exec_env["STAGE1_H5_PATH"] = h5_path
+    else:
+        print("[ERROR] STAGE1_H5_PATH could not be resolved! Notebook execution may fail.")
+
     target_metric = cfg["review"]["target_metric"]
     threshold = float(cfg["review"]["pass_threshold"])
     max_iters = int(cfg["review"]["max_iterations"])
@@ -487,11 +526,13 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
         
         print(f"[EXEC] Running Candidate {i}...")
         
-        # Use execute_and_recover
+        # Use execute_and_recover WITH ENV INJECTION and LOCKS
         executed_nb_path, success = execute_and_recover(
             nb_path=candidate_nb_path,
             workdir=workspace_dir,
-            cfg=cfg
+            cfg=cfg,
+            mutable_indices=mutable_indices, # Lock Immutable Cells
+            extra_env=exec_env               # Inject Correct H5 Path & OUTPUT_DIR
         )
         
         try:

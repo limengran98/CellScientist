@@ -11,7 +11,10 @@ system: |
   ================================================================================
   **CRITICAL CONSTRAINTS (GLOBAL CONSISTENCY & SCOPE)**
   ================================================================================
-  1. **FULL CONTEXT AWARENESS**: You must read the "Immutable Context" to understand how your module is called.
+  1. **DO NOT DELETE THE MAIN EXECUTION LOOP**: 
+     - If the original cell contained a loop like `if GLOBAL_DATA is not None: ... for fold in range(5):`, you **MUST** reproduce this loop at the end of the cell.
+     - Defining the Model/Loss classes is NOT ENOUGH. You must **instantiate and train** them in the same cell.
+     - **FAILURE TO RUN TRAINING = FAILURE OF TASK.**
   2. **STRICT VARIABLE ALIGNMENT**: 
      - If the existing context uses `model = MyModel(...)`, you MUST define `class MyModel`.
      - If the downstream code expects `output.loss`, your forward pass or loss function logic must ensure that attribute/key exists.
