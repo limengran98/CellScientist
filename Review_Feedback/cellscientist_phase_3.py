@@ -27,7 +27,7 @@ except ImportError:
     write_experiment_report = None
 
 # =============================================================================
-# 1. Helper: Relative Path Resolver (PRESERVED)
+# 1. Helper: Relative Path Resolver
 # =============================================================================
 
 def _resolve_relative_resources(cfg):
@@ -53,7 +53,7 @@ def _resolve_relative_resources(cfg):
         os.environ["STAGE1_IDEA_PATH"] = idea_files[0]
 
 # =============================================================================
-# 2. Logging & Analysis Logic (FULLY RESTORED)
+# 2. Logging & Analysis Logic
 # =============================================================================
 
 def write_review_log(workspace, iteration, suggestion, score, current_best, static_baseline, status):
@@ -168,7 +168,7 @@ def setup_phase3_workspace(cfg, source_trial_path):
     return workspace, dst_nb
 
 # =============================================================================
-# 4. Notebook Analysis (PRESERVED)
+# 4. Notebook Analysis
 # =============================================================================
 
 def identify_mutable_cells(nb, cfg):
@@ -209,7 +209,7 @@ def identify_mutable_cells(nb, cfg):
     return mutable_indices
 
 # =============================================================================
-# 5. Metric Extraction (PRESERVED)
+# 5. Metric Extraction
 # =============================================================================
 
 def _extract_val_from_model_data(model_data, metric_name):
@@ -250,7 +250,7 @@ def get_baseline_metric_value(metrics_path, metric_name="PCC"):
         return None
 
 # =============================================================================
-# 6. LLM Logic (Adapted to llm_utils)
+# 6. LLM Logic (Enhanced for Context)
 # =============================================================================
 
 def _expand_vars(text, context):
@@ -260,14 +260,17 @@ def _expand_vars(text, context):
 def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, iteration, best_metric_val, workspace, history_summary):
     """
     Generates optimization suggestions.
+    [FIXED] Now correctly populates 'immutable_context_content' to prevent NameErrors.
     """
     
-    # 1. Dynamic Content Construction
+    # 1. Content Construction: Split into Mutable (Target) and Immutable (Context)
     mutable_content = ""
-    for idx in mutable_indices:
-        cell = nb.cells[idx]
+    immutable_context_content = ""  # <--- [FIX] New: Collects context code
+    
+    for idx, cell in enumerate(nb.cells):
         src = cell.source
         
+        # Simple Labeling
         label = "CODE"
         if cell.cell_type == "markdown":
             if any(k in src for k in ["Strategy", "Idea", "Hypothesis", "Research Plan"]):
@@ -282,7 +285,14 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
             elif idx < 5 and ("import " in src or "from " in src):
                 label = "SETUP/IMPORTS"
             
-        mutable_content += f"\n# --- CELL INDEX {idx} (TYPE: {label}) ---\n{src}\n"
+        if idx in mutable_indices:
+            # Code to be optimized
+            mutable_content += f"\n# --- CELL INDEX {idx} (TARGET TO OPTIMIZE: {label}) ---\n{src}\n"
+        else:
+            # [FIX] Read-Only Context (Critical for maintaining variable definitions)
+            # Only including CODE cells to save tokens, unless strict markdown context is needed
+            if cell.cell_type == "code":
+                immutable_context_content += f"\n# --- CELL INDEX {idx} (READ-ONLY CONTEXT) ---\n{src}\n"
 
     # 2. History Context
     history_text = ""
@@ -312,6 +322,7 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
                 "current_best": str(best_metric_val),
                 "iteration": str(iteration),
                 "mutable_cells_content": mutable_content,
+                "immutable_context_content": immutable_context_content, # <--- [FIX] Pass context
                 "metrics_json": json.dumps(current_metrics, indent=2),
                 "history_summary": history_text
             }
@@ -338,18 +349,15 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
         return None
 
 # =============================================================================
-# 7. Execution Loop Logic (Decoupled & New)
+# 7. Execution Loop Logic
 # =============================================================================
 
 def execute_and_recover(nb_path, workdir, cfg):
     """
     Manages the Execution -> Error Reporting -> Fix Loop lifecycle.
-    Replaces the old 'execute_with_autofix' function.
     """
     timeout = cfg["exec"]["timeout_seconds"]
     max_fixes = cfg["exec"]["max_fix_rounds"]
-    # [NOTE] cuda_device_id logic is removed from executor, 
-    # relying on system env or default behavior.
     
     current_nb_path = nb_path
     
@@ -420,7 +428,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
     current_metrics_path = os.path.join(workspace_dir, "metrics_base.json")
     best_score_so_far = get_candidate_metric_value(current_metrics_path, target_metric)
     
-    # [RESTORED] Baseline Logic
+    # Baseline Logic
     static_baseline_score = get_baseline_metric_value(current_metrics_path, target_metric)
     if static_baseline_score is None:
         static_baseline_score = best_score_so_far
@@ -428,7 +436,6 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
     best_nb_path = base_nb_path 
     history_summary = []
 
-    # [FORMATTING FIX] Format baseline to 4 decimal places
     baseline_display = f"{static_baseline_score:.4f}" if static_baseline_score is not None else "N/A"
 
     print(f"\n[LOOP] Starting Optimization.")
@@ -480,7 +487,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
         
         print(f"[EXEC] Running Candidate {i}...")
         
-        # [UPDATED] Use execute_and_recover instead of execute_with_autofix
+        # Use execute_and_recover
         executed_nb_path, success = execute_and_recover(
             nb_path=candidate_nb_path,
             workdir=workspace_dir,
@@ -497,19 +504,17 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             current_run_baseline = get_baseline_metric_value(iter_metrics_path, target_metric)
             comparison_baseline = current_run_baseline if current_run_baseline is not None else static_baseline_score
             
-            # Determine Status based on Execution Success and Score
+            # Determine Status
             status = "FAILED"
             if not success:
                  status = "CRASH"
             elif candidate_score > best_score_so_far:
                  status = "IMPROVED"
             
-            # [RESTORED] Detailed Console Summary
+            # Summary
             print(f"-"*40)
             print(f"[RESULT] Iteration {i} Summary")
             print(f"  > Candidate Score: {candidate_score:.4f}")
-            
-            # Fix display for summary baseline
             comp_base_disp = f"{comparison_baseline:.4f}" if comparison_baseline is not None else "N/A"
             print(f"  > Baseline Score:  {comp_base_disp}")
             print(f"  > Best Previous:   {best_score_so_far:.4f}")
@@ -537,11 +542,8 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                         write_experiment_report(workspace_dir, m_obj, cfg, primary_metric=target_metric)
                     except Exception as e: print(f"[WARN] Report gen failed: {e}")
 
-                # --- CRITICAL FIX: STOPPING CONDITION ---
-                # Check 1: Must reach the pass threshold
+                # Stopping Condition
                 beats_threshold = (best_score_so_far >= threshold)
-                
-                # Check 2: Must be strictly better than the original baseline (if it exists)
                 beats_baseline = True
                 if static_baseline_score is not None and static_baseline_score != -999.0:
                     beats_baseline = (best_score_so_far > static_baseline_score)
@@ -568,15 +570,12 @@ def main():
                         help="Explicit path to the previous run directory (overrides config)")
     args = parser.parse_args()
     
-    # [ARCH UPGRADE] Use config_loader
     if not os.path.exists(args.config): return
     cfg = load_full_config(args.config)
 
     try:
-        # Resolve source path preference: CLI > Config JSON > Auto-detect
         explicit_source = args.source_path
         if not explicit_source:
-            # Try loading from JSON config
             explicit_source = cfg.get("paths", {}).get("explicit_source_path")
             
         source_trial = find_best_phase2_trial(cfg, explicit_source)

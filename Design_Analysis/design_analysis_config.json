@@ -1,5 +1,5 @@
 {
-  "dataset_name": "CPG0016",
+  "dataset_name": "BBBC036",
   "workflow_phases": [
     "task_analysis"
   ],
@@ -7,7 +7,7 @@
     "task_analysis": {
       "enabled": true,
       "llm_notebook": {
-        "split_strategy": "plate",
+        "split_strategy": "smiles",
         "paths": { 
           "data": "../data/${dataset_name}/CP_data.csv",
           "paper": "../data/${dataset_name}/BBBC036.pdf",
@@ -26,7 +26,7 @@
         },
         "llm": {
           "provider": "yizhan",
-          "model": "gpt-5.1-2025-11-13",
+          "model": "gemini-3-pro-all",
           "base_url": "https://vip.yi-zhan.top/v1",
           "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835",
           "temperature": 0.5,
