@@ -184,20 +184,40 @@ def _llm_fix_request(nb: nbformat.NotebookNode, errors: List[Dict], cfg: Dict[st
 
 def attempt_fix_notebook(nb: nbformat.NotebookNode, 
                          errors: List[Dict], 
-                         cfg: Dict[str, Any]) -> Tuple[nbformat.NotebookNode, bool, str]:
+                         cfg: Dict[str, Any],
+                         mutable_indices: Optional[List[int]] = None) -> Tuple[nbformat.NotebookNode, bool, str]:
     """
     Attempts to fix the notebook. First Heuristics, then LLM.
+    [UPDATED] Supports 'mutable_indices' to lock read-only cells.
     Returns: (NewNotebook, Changed(bool), Method(str))
     """
     nb_next = deepcopy(nb)
     
-    # 1. Try Heuristics
-    h_changes = _apply_heuristics(nb_next, errors)
+    # 0. Filter Errors based on Mutability Constraints
+    # If mutable_indices is provided, we only attempt to fix errors in those cells.
+    target_errors = errors
+    if mutable_indices is not None:
+        target_errors = []
+        skipped_counts = 0
+        for e in errors:
+            idx = int(e["cell_index"])
+            if idx in mutable_indices:
+                target_errors.append(e)
+            else:
+                print(f"[FIX] Skipping fix for Immutable Cell {idx} (Error: {e.get('ename')})")
+                skipped_counts += 1
+        
+        # If we filtered out all errors (meaning only immutable cells failed), abort.
+        if not target_errors:
+            return nb, False, "Aborted:ImmutableErrorsOnly"
+
+    # 1. Try Heuristics (only on allowed cells)
+    h_changes = _apply_heuristics(nb_next, target_errors)
     if h_changes > 0:
         return nb_next, True, "Heuristics"
         
-    # 2. Try LLM
-    nb_llm, l_changes = _llm_fix_request(nb_next, errors, cfg)
+    # 2. Try LLM (only on allowed cells)
+    nb_llm, l_changes = _llm_fix_request(nb_next, target_errors, cfg)
     if l_changes:
         return nb_llm, True, "LLM"
         
