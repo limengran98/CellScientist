@@ -1,5 +1,5 @@
 {
-  "dataset_name": "CPG0016",
+  "dataset_name": "BBBC036",
   "paths": {
     "baseline_source_dir": "../baseline/${dataset_name}",
     "stage1_analysis_dir": "../results/${dataset_name}/design_analysis/reference",
@@ -16,7 +16,7 @@
   "experiment": {
     "primary_metric": "PCC",
     "max_iterations": 10,
-    "success_threshold": 0.9
+    "success_threshold": 0.5
   },
   "prompt_branch": {
     "output_type": "notebook",
