@@ -21,6 +21,8 @@ pip install -r requirements.txt
 CellScientist/
 ├── Design_Analysis/
 ├── Generate_Execution/
+├── Review_Feedback/
+    ├── CodeEvo/
 ├── llm_providers.json
 ├── requirements.txt
 └── README.md
@@ -28,5 +30,6 @@ CellScientist/
 
 * **Design_Analysis/** – handles design and analytical logic
 * **Generate_Execution/** – manages generation and execution processes
+* **Review_Feedback/** – reviews and iteratives optimization process
 * **llm_providers.json** – defines available LLM configurations
 * **requirements.txt** – Python dependencies
