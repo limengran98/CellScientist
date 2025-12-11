@@ -1,43 +1,54 @@
-**Role:**
-You are an elite AI Scientist specializing in Graph Neural Networks for Molecular Discovery and a Senior Python Software Architect obsessed with code stability and interface compliance.
+role: "You are an elite AI Scientist specializing in Graph Neural Networks for Molecular Discovery and a Senior Python Software Architect obsessed with code stability and interface compliance."
 
-**Objective:**
-I need you to implement a **new** molecular prediction model into my existing `torch_molecule` framework.
+objective: |
+  I need you to implement a new molecular prediction model into my existing `torch_molecule` framework.
 
-1.  **The Innovation (Science):** You must design a model named **`[INSERT_MODEL_NAME_HERE]`**.
-      * **Core Idea:** `[INSERT_YOUR_NEW_ALGORITHM_IDEA_HERE, e.g., A Mamba-based GNN that linearizes graphs to capture long-range dependencies using State Space Models]`
-2.  **The Constraints (Engineering):** You must **strictly** follow the engineering structure of the **Golden Template** provided below. **DO NOT simplify, refactor, or modernize the engineering logic.**
+  1. The Innovation (Science):
+     You must design a model named **[INSERT_MODEL_NAME_HERE]**.
+       * Core Idea: "[INSERT_YOUR_NEW_ALGORITHM_IDEA_HERE, e.g., A Mamba-based GNN that linearizes graphs to capture long-range dependencies using State Space Models]"
 
-**Golden Template (Reference Code):**
-*(Treat the code below as the absolute source of truth for the class structure, logging, progress bars, and optimization loops. Only change the parts specific to the new model's architecture and data preprocessing.)*
+  2. The Constraints (Engineering):
+     You must strictly follow the engineering structure of the Golden Template provided below.
+     DO NOT simplify, refactor, or modernize the engineering logic.
 
-```python
-# [PASTE THE CONTENT OF YOUR FIXED modeling_equiformer.py HERE]
-```
+golden_template: |
+  ```python
+  # [PASTE THE CONTENT OF YOUR FIXED modeling_equiformer.py HERE]
+  ```
+  (Treat the code above as the absolute source of truth for class structure, logging,
+  progress bars, and optimization loops. Only modify model-specific logic.)
 
-**Requirements:**
+requirements:
+  file_structure:
+    - "model.py: Implement the new [ModelName]Model class (nn.Module). Use native PyTorch primitives as much as possible."
+    - "modeling_[model_name_lowercase].py: Implement the [ModelName]MolecularPredictor class."
 
-1.  **File Structure**:
+  strict_interface_compliance:
+    init:
+      must_accept: "**kwargs and all hyperparameters required for autofit."
+    convert_to_pytorch_data: |
+      - If the new model requires 3D coordinates, keep rdkit embedding logic with try-except exactly as in the template.
+      - If only 2D topology is needed, adapt standard GNN logic but keep the function signature identical.
 
-      * **`model.py`**: Implement the new `[ModelName]Model` class (nn.Module). Use native PyTorch primitives as much as possible to avoid complex dependency hell (like version conflicts with e3nn/clifford).
-      * **`modeling_[model_name_lowercase].py`**: Implement the `[ModelName]MolecularPredictor` class.
+    training_loops:
+      constraints:
+        - "Must implement `_train_epoch` and `_evaluation_epoch`."
+        - "Must preserve tqdm progress bar with `set_postfix` exactly as in the template."
+        - "No replacement with print statements."
 
-2.  **Strict Interface Compliance (Zero Errors allowed)**:
+    autofit:
+      signature: "def autofit(self, X_train, y_train, X_val=None, y_val=None, **kwargs):"
+      constraints:
+        - "Never use *args or positional argument tricks."
+        - "Must retain full Optuna optimization logic."
 
-      * **`__init__`**: Must accept `**kwargs` and all hyperparameters required for `autofit`.
-      * **`_convert_to_pytorch_data`**:
-          * If your new model needs 3D coordinates, keep the `rdkit` embedding logic with `try-except` blocks exactly as seen in the template.
-          * If it only needs 2D topology, adapt it from standard GNN logic but keep the function signature identical.
-      * **Training Loops (`_train_epoch`, `_evaluation_epoch`)**:
-          * **MUST** implement these abstract methods.
-          * **MUST** preserve the `tqdm` progress bar with `set_postfix` (showing Epoch, Loss, etc.) exactly as in the template. **Do not replace this with simple print statements.**
-      * **`autofit`**:
-          * **MUST** use the signature: `def autofit(self, X_train, y_train, X_val=None, y_val=None, **kwargs):`.
-          * **NEVER** use `*args` or hardcoded indices like `args[0]`.
-          * **MUST** retain the full Optuna optimization logic intact.
-      * **`_get_model_params`**:
-          * **MUST** accept `(self, checkpoint=None)`.
-          * **MUST** return the dictionary of parameters needed to re-initialize the model.
+    get_model_params:
+      must_accept: "(self, checkpoint=None)"
+      must_return: "Dictionary of parameters needed to re-initialize the model."
 
-**Output:**
-Provide the full, unsimplified code for both `model.py` and `modeling_[name].py`. Do not use placeholders like `...` for the engineering parts; write them out fully so I can copy-paste and run immediately.
+output:
+  description: "Provide full, unsimplified code for both model.py and modeling_[name].py."
+  requirement: "Do not use placeholders like ... for engineering sections."
+
+notes: |
+  This YAML file encodes the entire instruction block in a fully parseable form.
