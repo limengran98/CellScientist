@@ -10,7 +10,7 @@
     "workspace_root": "../../results/CodeEvo"
   },
   "execution": {
-    "command": "python src/train_TranSiGen_full_data.py --data_path data/LINCS2020/data_example/processed_data_id.h5 --molecule_path data/LINCS2020/idx2smi.pickle --dev cuda:3",
+    "command": "python src/train_TranSiGen_full_data.py --data_path data/LINCS2020/data_example/processed_data_id.h5 --molecule_path data/LINCS2020/idx2smi.pickle --dev cuda:3 --n_epochs 500",
     "log_file": "training_log.txt",
     "metrics_probing_pattern": "results/**/icml_comparison_table.csv",
     "timeout_seconds": 360000
