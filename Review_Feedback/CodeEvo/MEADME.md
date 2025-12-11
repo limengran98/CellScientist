@@ -3,7 +3,7 @@
 ### 1. Run Immediately
 Execute in terminal:
 ```bash
-python main_agent.py
+python main_agent.py --config config.json --prompt prompts/code_optimizer.yaml
 ````
 
 
