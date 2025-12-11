@@ -6,8 +6,12 @@ A lightweight toolkit for cell-related analysis and intelligent workflow generat
 ## Installation
 
 ```bash
+conda create --name CellScientist python=3.11.14
+conda activate CellScientist
 git clone https://github.com/limengran98/CellScientist.git
 cd CellScientist
+pip install torch==2.0.1+cu118 torchvision==0.15.2+cu118 torchaudio==2.0.2+cu118 -f https://download.pytorch.org/whl/cu118/torch_stable.html
+pip install torch-scatter torch-sparse torch-cluster torch-spline-conv -f https://data.pyg.org/whl/torch-2.0.1+cu118.html
 pip install -r requirements.txt
 ```
 
