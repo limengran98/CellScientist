@@ -70,6 +70,7 @@ def save_checkpoint(src_dir: str, backup_dir: str):
         shutil.rmtree(backup_dir)
         
     print(f"[CHECKPOINT] 💾 Saving Best State to: {backup_dir}")
+    # Ignore agent_iterations to prevent infinite recursion, ignore results to save space
     shutil.copytree(src_dir, backup_dir, dirs_exist_ok=True, 
                     ignore=shutil.ignore_patterns('agent_iterations', 'results', '*.git', '__pycache__', '*.pyc', 'wandb'))
 
@@ -92,7 +93,7 @@ def rollback_checkpoint(backup_dir: str, dest_dir: str):
             shutil.copy2(s, d)
 
 # =============================================================================
-# 3. Executor Engine (Real-time Streaming Version)
+# 3. Executor Engine (Robust Search + Streaming)
 # =============================================================================
 
 class Executor:
@@ -106,6 +107,70 @@ class Executor:
         # Evaluation Settings
         self.target_metric = cfg["evaluation"]["metric_column"]
         self.direction = cfg["evaluation"]["direction"] # "maximize" or "minimize"
+
+    def _find_file_robustly(self, pattern: str) -> Optional[str]:
+        """
+        Robustly finds the metrics file using 3 strategies:
+        1. Configured Pattern.
+        2. Workspace Scan (os.walk).
+        3. Parent Directory Scan (Handle 'File Escape' where script writes to ../results).
+        """
+        target_filename = os.path.basename(pattern)
+        candidates = []
+
+        # --- Strategy A: Configured Glob Pattern ---
+        if pattern:
+            search_path = os.path.join(self.work_dir, pattern)
+            glob_found = glob.glob(search_path, recursive=True)
+            candidates.extend(glob_found)
+
+        # --- Strategy B: Full Workspace Scan ---
+        for root, _, files in os.walk(self.work_dir):
+            if target_filename in files:
+                candidates.append(os.path.join(root, target_filename))
+
+        # --- Strategy C: Parent Directory Scan (Escape Detection) ---
+        # The agent runs in .../CodeEvo/TranSiGen_Time/.
+        # If script writes to "../results", it goes to .../CodeEvo/results.
+        parent_dir = os.path.dirname(self.work_dir) # ../
+        potential_escape_dirs = [
+            os.path.join(parent_dir, "results"),
+            os.path.join(parent_dir, "output"),
+            os.path.join(parent_dir, "data"),
+        ]
+        
+        for escape_dir in potential_escape_dirs:
+            if os.path.exists(escape_dir):
+                for root, _, files in os.walk(escape_dir):
+                    if target_filename in files:
+                        candidates.append(os.path.join(root, target_filename))
+
+        if not candidates:
+            return None
+
+        # --- Final Decision: Sort by Modification Time (Latest First) ---
+        # Remove duplicates
+        candidates = list(set(candidates))
+        try:
+            # Sort by time, newest at the end
+            candidates.sort(key=lambda x: os.path.getmtime(x))
+            best_file = candidates[-1]
+            
+            # If the file was found OUTSIDE the workspace, bring it back
+            if not best_file.startswith(self.work_dir):
+                print(f"       ⚠️ [ESCAPE DETECTED] File found OUTSIDE workspace: {best_file}")
+                print(f"       🔄 Copying it back to workspace for analysis...")
+                
+                local_dest_dir = os.path.join(self.work_dir, "recovered_results")
+                os.makedirs(local_dest_dir, exist_ok=True)
+                local_file = os.path.join(local_dest_dir, target_filename)
+                shutil.copy(best_file, local_file)
+                return local_file
+                
+            return best_file
+        except Exception as e:
+            print(f"       ⚠️ Error sorting candidate files: {e}")
+            return None
 
     def run(self, iteration_idx: int) -> Tuple[str, float]:
         """
@@ -123,7 +188,6 @@ class Executor:
         timed_out = False
         
         # 1. Execute Shell Command with Real-time Streaming
-        # Using Popen to capture stdout pipe
         with open(log_path, "w", encoding="utf-8") as f_log:
             try:
                 # Merge stderr into stdout (stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -181,17 +245,18 @@ class Executor:
         status = "SUCCESS" if exit_code == 0 else "FAILED"
         print(f"\n[EXEC] Finished. Status: {status} (Exit Code: {exit_code}) | Time: {duration:.2f}s")
 
-        # 2. Probe for Metrics File
+        # 2. Probe for Metrics File (Using Robust Search)
         metric_val = -999.0 if self.direction == "maximize" else 999.0 # Default bad value
         csv_content = ""
         found_csv_path = None
 
         if self.metrics_pattern:
-            search_path = os.path.join(self.work_dir, self.metrics_pattern)
-            found_files = glob.glob(search_path, recursive=True)
+            found_csv_path = self._find_file_robustly(self.metrics_pattern)
             
-            if found_files:
-                found_csv_path = found_files[0]
+            if found_csv_path:
+                mod_time = datetime.fromtimestamp(os.path.getmtime(found_csv_path)).strftime('%H:%M:%S')
+                print(f"       🎯 Found Metrics File ({mod_time}): {found_csv_path}")
+
                 try:
                     with open(found_csv_path, 'r', encoding='utf-8', errors='replace') as f:
                         csv_content = f.read()
@@ -210,7 +275,8 @@ class Executor:
                 except Exception as e:
                     print(f"       ⚠️ Found CSV but failed to read/parse: {e}")
             else:
-                print(f"       ⚠️ Metrics file not found (Pattern: {self.metrics_pattern})")
+                print(f"       ⚠️ Metrics file NOT found. Searched workspace AND parent directories.")
+                print(f"          (Target: {os.path.basename(self.metrics_pattern)})")
 
         # 3. Construct Feedback Report for LLM
         feedback = f"=== EXECUTION REPORT (Iter {iteration_idx}) ===\n"
