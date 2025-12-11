@@ -7,6 +7,7 @@ import time
 import subprocess
 import glob
 import csv
+import argparse  # <--- [ADDED]
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 
@@ -367,8 +368,9 @@ def apply_modifications(shadow_dir: str, modifications: List[Dict]):
 # 5. LLM Interaction
 # =============================================================================
 
-def generate_optimization(cfg: Dict, code_context: str, execution_feedback: str, iter_idx: int) -> Dict:
-    prompt_path = os.path.join(current_dir, "prompts", "code_optimizer.yaml")
+# [MODIFIED] Added prompt_path argument
+def generate_optimization(cfg: Dict, code_context: str, execution_feedback: str, iter_idx: int, prompt_path: str) -> Dict:
+    # prompt_path is now passed from main()
     
     if not os.path.exists(prompt_path):
         raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
@@ -402,9 +404,23 @@ def generate_optimization(cfg: Dict, code_context: str, execution_feedback: str,
 # =============================================================================
 
 def main():
-    config_path = os.path.join(current_dir, "config.json")
+    # [MODIFIED] Added Argument Parsing
+    parser = argparse.ArgumentParser(description="CodeEvo Agent")
+    parser.add_argument("--config", type=str, default=os.path.join(current_dir, "config.json"), 
+                        help="Path to the configuration file")
+    parser.add_argument("--prompt", type=str, default=os.path.join(current_dir, "prompts", "code_optimizer.yaml"), 
+                        help="Path to the prompt YAML file")
+    args = parser.parse_args()
+
+    config_path = args.config
+    prompt_path = args.prompt
+
     if not os.path.exists(config_path):
         print(f"[ERROR] Config not found: {config_path}")
+        return
+    
+    if not os.path.exists(prompt_path):
+        print(f"[ERROR] Prompt not found: {prompt_path}")
         return
     
     cfg = load_full_config(config_path)
@@ -451,7 +467,8 @@ def main():
             ) + last_feedback
             
             # C. LLM Analysis & Generation
-            opt_result = generate_optimization(cfg, current_code, contextual_feedback, i)
+            # [MODIFIED] Pass args.prompt (prompt_path)
+            opt_result = generate_optimization(cfg, current_code, contextual_feedback, i, prompt_path)
             
             if not opt_result or "modifications" not in opt_result:
                 print("[WARN] Invalid LLM response. Retrying/Skipping.")
