@@ -7,7 +7,7 @@ import time
 import subprocess
 import glob
 import csv
-import argparse  # <--- [ADDED]
+import argparse
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 
@@ -65,24 +65,24 @@ class MetricParser:
 def save_checkpoint(src_dir: str, backup_dir: str):
     """
     Saves the current code state to a backup directory (Best Checkpoint).
-    Excludes heavy logs/results folders to save space.
     """
     if os.path.exists(backup_dir):
         shutil.rmtree(backup_dir)
         
-    print(f"[CHECKPOINT] 💾 Saving Best State to: {backup_dir}")
-    # Ignore agent_iterations to prevent infinite recursion, ignore results to save space
+    print(f"[CHECKPOINT] 💾 Saving Best State (Code + Results) to: {backup_dir}")
+    
+    # [修复点 1] 删除了 'results'，确保结果文件被备份
+    # agent_iterations 依然忽略，避免递归备份日志
     shutil.copytree(src_dir, backup_dir, dirs_exist_ok=True, 
-                    ignore=shutil.ignore_patterns('agent_iterations', 'results', '*.git', '__pycache__', '*.pyc', 'wandb'))
+                    ignore=shutil.ignore_patterns('agent_iterations', '*.git', '__pycache__', '*.pyc', 'wandb'))
 
 def rollback_checkpoint(backup_dir: str, dest_dir: str):
     """
     Restores the code from the Best Checkpoint to the working directory.
     """
-    print(f"[ROLLBACK] 🔙 Performance degraded. Reverting code to previous best state...")
+    print(f"[ROLLBACK] 🔙 Restoring content from Best Checkpoint...")
     
     # We overwrite files in dest_dir with files from backup_dir
-    # We do NOT delete dest_dir entirely to preserve the 'agent_iterations' logs for history
     for item in os.listdir(backup_dir):
         s = os.path.join(backup_dir, item)
         d = os.path.join(dest_dir, item)
@@ -160,7 +160,7 @@ class Executor:
             # If the file was found OUTSIDE the workspace, bring it back
             if not best_file.startswith(self.work_dir):
                 print(f"       ⚠️ [ESCAPE DETECTED] File found OUTSIDE workspace: {best_file}")
-                print(f"       🔄 Copying it back to workspace for analysis...")
+                print(f"       🔄 Copying it back to workspace for safety...")
                 
                 local_dest_dir = os.path.join(self.work_dir, "recovered_results")
                 os.makedirs(local_dest_dir, exist_ok=True)
@@ -191,7 +191,7 @@ class Executor:
         # 1. Execute Shell Command with Real-time Streaming
         with open(log_path, "w", encoding="utf-8") as f_log:
             try:
-                # Merge stderr into stdout (stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                # Merge stderr into stdout
                 process = subprocess.Popen(
                     self.cmd, 
                     shell=True, 
@@ -276,8 +276,8 @@ class Executor:
                 except Exception as e:
                     print(f"       ⚠️ Found CSV but failed to read/parse: {e}")
             else:
-                print(f"       ⚠️ Metrics file NOT found. Searched workspace AND parent directories.")
-                print(f"          (Target: {os.path.basename(self.metrics_pattern)})")
+                print(f"       ⚠️ Metrics file NOT found anywhere in project.")
+                print(f"          (Searched for: {os.path.basename(self.metrics_pattern)})")
 
         # 3. Construct Feedback Report for LLM
         feedback = f"=== EXECUTION REPORT (Iter {iteration_idx}) ===\n"
@@ -368,7 +368,6 @@ def apply_modifications(shadow_dir: str, modifications: List[Dict]):
 # 5. LLM Interaction
 # =============================================================================
 
-# [MODIFIED] Added prompt_path argument
 def generate_optimization(cfg: Dict, code_context: str, execution_feedback: str, iter_idx: int, prompt_path: str) -> Dict:
     # prompt_path is now passed from main()
     
@@ -404,7 +403,6 @@ def generate_optimization(cfg: Dict, code_context: str, execution_feedback: str,
 # =============================================================================
 
 def main():
-    # [MODIFIED] Added Argument Parsing
     parser = argparse.ArgumentParser(description="CodeEvo Agent")
     parser.add_argument("--config", type=str, default=os.path.join(current_dir, "config.json"), 
                         help="Path to the configuration file")
@@ -467,7 +465,6 @@ def main():
             ) + last_feedback
             
             # C. LLM Analysis & Generation
-            # [MODIFIED] Pass args.prompt (prompt_path)
             opt_result = generate_optimization(cfg, current_code, contextual_feedback, i, prompt_path)
             
             if not opt_result or "modifications" not in opt_result:
@@ -524,6 +521,21 @@ def main():
                     f"Instruction: Try a DIFFERENT approach. Do not repeat the same logic.\n"
                     f"***************************\n\n"
                 ) + current_feedback
+
+        # --- [修复点 2] 最终收尾工作 ---
+        print(f"\n{'='*60}")
+        print(f"🧹 FINALIZING WORKSPACE (Restoring Best State & Cleanup)")
+        print(f"{'='*60}")
+        
+        # 1. 再次执行回滚，确保主文件夹里是 Best State
+        rollback_checkpoint(best_checkpoint_dir, shadow_dir)
+        
+        # 2. 删除临时的 checkpoint 文件夹
+        print(f"[CLEANUP] Deleting temporary checkpoint: {best_checkpoint_dir}")
+        try:
+            shutil.rmtree(best_checkpoint_dir)
+        except Exception as e:
+            print(f"[WARN] Failed to delete checkpoint folder: {e}")
 
         print(f"\n{'='*60}")
         print(f"✅ EVOLUTION COMPLETE")
