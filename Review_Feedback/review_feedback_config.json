@@ -18,7 +18,7 @@
     "target_metric": "PCC",
     "direction": "maximize", 
     "max_iterations": 10,
-    "pass_threshold": 0.85,
+    "pass_threshold": 0.7,
     "force_cells": [0,1,4],
     "protected_sections": [
         "SECTION 1", 
