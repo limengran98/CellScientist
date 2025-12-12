@@ -1,23 +1,25 @@
 {
   "target_project": {
-    "root_dir": "/data/users/limengran/TranSiGen/",
+    "root_dir": "/data/users/limengran/torch-molecule-main",
     "target_files": [
-      "src/model.py"
+      "torch_molecule/predictor/gnn/model.py"
     ]
   },
   "evolution": {
-    "max_iterations": 3,
-    "workspace_root": "../../results/CodeEvo"
+    "max_iterations": 5,
+    "workspace_root": "../../results/CodeEvo_Molecule"
   },
   "execution": {
-    "command": "python src/train_TranSiGen_full_data.py --data_path data/LINCS2020/data_example/processed_data_id.h5 --molecule_path data/LINCS2020/idx2smi.pickle --dev cuda:3",
+    "command": "python plym_predict.py --dataset chembl2k",
     "log_file": "training_log.txt",
-    "metrics_probing_pattern": "results/**/icml_comparison_table.csv",
-    "timeout_seconds": 360000
+    
+    "metrics_probing_pattern": "output_prediction/chembl2k/leaderboard_5fold.csv",
+    
+    "timeout_seconds": 3600
   },
   "evaluation": {
-  "metric_column": "Pearson (DEG)", 
-  "direction": "maximize"
+    "metric_column": ["ROC-AUC"], 
+    "direction": "maximize"
   },
   "llm": {
     "provider": "yizhan",

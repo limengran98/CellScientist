@@ -8,6 +8,7 @@ import subprocess
 import glob
 import csv
 import argparse
+import re  # <--- [ADDED] Import re module
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 
@@ -26,34 +27,58 @@ except ImportError as e:
     raise e
 
 # =============================================================================
-# 1. Helper: Metric Parser
+# 1. Helper: Metric Parser (Robust Regex Version)
 # =============================================================================
 
 class MetricParser:
     @staticmethod
-    def parse(csv_content: str, target_metric: str) -> float:
+    def parse(csv_content: str, target_metrics: object) -> float:
         """
-        Parses the CSV content string to extract the target metric value.
-        Assumes the CSV has headers. logic retrieves the value from the LAST row.
+        Parses CSV and extracts the first float value found in the target column.
+        Handles formats like "0.7960 ± 0.0095", "0.85 (0.01)", etc.
         """
         try:
             lines = csv_content.strip().splitlines()
             if not lines: return -999.0
             
-            # Use csv module for robust parsing
             reader = csv.DictReader(lines)
             rows = list(reader)
             if not rows: return -999.0
             
-            # Get the last row (assuming it represents the final result of the run)
             last_row = rows[-1]
+            headers = list(last_row.keys())
             
-            if target_metric not in last_row:
-                print(f"[EVAL] Warning: Metric '{target_metric}' not found in CSV headers: {list(last_row.keys())}")
+            # 1. Determine which column to look for
+            candidates = []
+            if isinstance(target_metrics, list):
+                candidates = target_metrics
+            else:
+                candidates = [str(target_metrics)]
+            
+            found_col = None
+            for col in candidates:
+                if col in headers:
+                    found_col = col
+                    break
+            
+            if not found_col:
+                print(f"[EVAL] Warning: None of {candidates} found in CSV headers: {headers}")
                 return -999.0
             
-            val_str = last_row[target_metric]
-            return float(val_str)
+            val_str = str(last_row[found_col])
+            
+            # [MODIFIED] Use regex to extract the first valid number
+            # Pattern: Optional sign + digits + optional decimal + digits
+            match = re.search(r"[-+]?\d*\.\d+|\d+", val_str)
+            
+            if match:
+                clean_val = float(match.group())
+                print(f"       ✅ Extracted Metric: '{clean_val}' (from raw: '{val_str}') in col '{found_col}'")
+                return clean_val
+            else:
+                print(f"[EVAL] Could not find a valid number in string: '{val_str}'")
+                return -999.0
+
         except Exception as e:
             print(f"[EVAL] Parse Error: {e}")
             return -999.0
@@ -65,14 +90,13 @@ class MetricParser:
 def save_checkpoint(src_dir: str, backup_dir: str):
     """
     Saves the current code state to a backup directory (Best Checkpoint).
+    Excludes heavy logs/results folders to save space.
     """
     if os.path.exists(backup_dir):
         shutil.rmtree(backup_dir)
         
-    print(f"[CHECKPOINT] 💾 Saving Best State (Code + Results) to: {backup_dir}")
-    
-    # [修复点 1] 删除了 'results'，确保结果文件被备份
-    # agent_iterations 依然忽略，避免递归备份日志
+    print(f"[CHECKPOINT] 💾 Saving Best State to: {backup_dir}")
+    # Ignore agent_iterations to prevent infinite recursion, ignore results to save space
     shutil.copytree(src_dir, backup_dir, dirs_exist_ok=True, 
                     ignore=shutil.ignore_patterns('agent_iterations', '*.git', '__pycache__', '*.pyc', 'wandb'))
 
@@ -87,10 +111,8 @@ def rollback_checkpoint(backup_dir: str, dest_dir: str):
         s = os.path.join(backup_dir, item)
         d = os.path.join(dest_dir, item)
         if os.path.isdir(s):
-            # Recursively copy/overwrite directories
             shutil.copytree(s, d, dirs_exist_ok=True)
         else:
-            # Overwrite files
             shutil.copy2(s, d)
 
 # =============================================================================
@@ -160,7 +182,7 @@ class Executor:
             # If the file was found OUTSIDE the workspace, bring it back
             if not best_file.startswith(self.work_dir):
                 print(f"       ⚠️ [ESCAPE DETECTED] File found OUTSIDE workspace: {best_file}")
-                print(f"       🔄 Copying it back to workspace for safety...")
+                print(f"       🔄 Copying it back to workspace for analysis...")
                 
                 local_dest_dir = os.path.join(self.work_dir, "recovered_results")
                 os.makedirs(local_dest_dir, exist_ok=True)
@@ -265,19 +287,18 @@ class Executor:
                     # Backup result
                     shutil.copy(found_csv_path, os.path.join(iter_dir, "results_backup.csv"))
                     
-                    # Parse Metric
+                    # Parse Metric using the new Regex-based parser
                     parsed_val = MetricParser.parse(csv_content, self.target_metric)
                     if parsed_val != -999.0:
                         metric_val = parsed_val
-                        print(f"       📊 Extracted {self.target_metric}: {metric_val}")
                     else:
                         print(f"       ⚠️ Failed to extract {self.target_metric} from CSV.")
                         
                 except Exception as e:
                     print(f"       ⚠️ Found CSV but failed to read/parse: {e}")
             else:
-                print(f"       ⚠️ Metrics file NOT found anywhere in project.")
-                print(f"          (Searched for: {os.path.basename(self.metrics_pattern)})")
+                print(f"       ⚠️ Metrics file NOT found. Searched workspace AND parent directories.")
+                print(f"          (Target: {os.path.basename(self.metrics_pattern)})")
 
         # 3. Construct Feedback Report for LLM
         feedback = f"=== EXECUTION REPORT (Iter {iteration_idx}) ===\n"
@@ -522,7 +543,7 @@ def main():
                     f"***************************\n\n"
                 ) + current_feedback
 
-        # --- [修复点 2] 最终收尾工作 ---
+        # --- [FINALIZATION PHASE] ---
         print(f"\n{'='*60}")
         print(f"🧹 FINALIZING WORKSPACE (Restoring Best State & Cleanup)")
         print(f"{'='*60}")
