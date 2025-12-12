@@ -3,7 +3,8 @@ anthropic>=0.18.0
 google-generativeai>=0.5.0
 requests>=2.31.0
 tqdm>=4.66.0
-numpy>=1.24.0
+numpy==1.24.3
+scipy==1.14.1
 pandas>=2.2.0
 matplotlib>=3.8.0
 ipykernel>=6.25.0
