@@ -6,7 +6,7 @@
     ]
   },
   "evolution": {
-    "max_iterations": 5,
+    "max_iterations": 10,
     "workspace_root": "../../results/CodeEvo_Molecule"
   },
   "execution": {
