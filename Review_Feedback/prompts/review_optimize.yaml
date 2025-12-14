@@ -11,12 +11,15 @@ system: |
   2. **SELECT STRATEGY**: Choose a specific strategy from the "INNOVATION GUIDE" below.
   3. **IMPLEMENT**: Rewrite the Strategy Markdown and the Model Code.
 
-  **INNOVATION GUIDE (Select ONE focus per iteration)**:
-  A. **Feature Interaction**: Move beyond concatenation. Use FiLM (Feature-wise Linear Modulation) or Cross-Attention to let Drug embeddings strictly modulate Gene features.
-  B. **Residual Learning**: Enforce a strict ResNet-style structure where the model *only* learns the perturbation delta ($\delta$). Ensure the identity path ($X_{basal}$) is clean.
-  C. **Loss Engineering**: If PCC is low, the model lacks ranking ability. Introduce **Pearson Loss** (1-PCC) or **RankMSE** on the Top-50 genes specifically.
-  D. **Latent Regularization**: If overfitting, introduce Variational layers (VAE), Dropout, or manifold constraints in the bottleneck.
-  E. **Capacity Scaling**: If underfitting, carefully increase MLP depth/width or add Skip Connections.
+  **THE PROCESS (DEEP REFLECTION)**:
+  1. **REVIEW HISTORY**: Critically analyze `${experiment_history}`. 
+     - *Why* did previous architectures fail? (e.g., "The loss didn't converge," "Overfitting on training set," "Ranking metric low despite good MSE").
+     - **DO NOT** repeat failed mechanisms.
+  2. **FIRST-PRINCIPLES REASONING**: Instead of picking from a list, **INVENT** a solution based on the failure mode.
+     - *If ranking is bad*: Can you design a Loss Function that penalizes disorder?
+     - *If interaction is weak*: Can you use Hypernetworks, Cross-Attention, or Geometric priors?
+     - *If distribution shifts*: Can you use Normalizing Flows or VAEs?
+  3. **IMPLEMENT**: Write the code.
 
   ================================================================================
   **CRITICAL CONSTRAINTS (GLOBAL CONSISTENCY & SCOPE)**
@@ -48,16 +51,16 @@ system: |
 
   ```json
     {
-      "reflection_on_history": "Iteration 1 used Strategy A (Attention) but failed to improve PCC. The loss curve suggests optimization difficulty.",
-      "selected_strategy": "C. Loss Engineering (Pearson Loss)",
-      "critique": "Strategy Update: Implementing Pearson Loss to directly optimize the target metric...",
+      "reflection_on_history": "Analysis of the past trajectory. (e.g. 'Previous attempts with simple MLPs plateaued. The history shows ResNets stabilized training but didn't improve ranking.')",
+      "selected_strategy": "A short, descriptive title of your NEW idea (e.g. 'Dual-Stream Attention with RankNet Loss')",
+      "critique": "Scientific justification: Why this specific math/architecture will fix the issues identified in history.",
       "edits": [
         {
-          "cell_index": <INTEGER_FROM_INPUT_HEADER>, 
-          "source": "# 🧠 Strategy C: Pearson Loss\n..."
+          "cell_index": <INTEGER>, 
+          "source": "# 🧠 Strategy: <Your Title>\n..."
         },
         {
-          "cell_index": <INTEGER_FROM_INPUT_HEADER>,
+          "cell_index": <INTEGER>,
           "source": "import torch\nimport torch.nn as nn\nclass MyModel(nn.Module):\n    ..."
         }
       ]

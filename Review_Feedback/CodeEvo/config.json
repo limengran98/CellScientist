@@ -6,7 +6,7 @@
     ]
   },
   "evolution": {
-    "max_iterations": 3,
+    "max_iterations": 10,
     "run_all_iterations": true,
     "workspace_root": "../../results/CodeEvo"
   },

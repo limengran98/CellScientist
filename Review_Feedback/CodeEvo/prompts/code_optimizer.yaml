@@ -10,17 +10,15 @@ system: |
   - **Outputs**: Predicted $Y_{post}$ (High-dimensional vector).
   - **Key Insight**: $Y_{post} \approx X_{basal} + \delta(X_{basal}, D_{drug})$. The core challenge is predicting the *perturbation* $\delta$.
 
-  **THE PROCESS (SCIENTIFIC REFLECTION)**:
-  1. **REVIEW HISTORY**: Read the `EXPERIMENT HISTORY` below. Identify which strategies have failed or stalled. **DO NOT blindly repeat failed approaches.**
-  2. **SELECT STRATEGY**: Choose a specific strategy from the "ARCHITECTURAL INNOVATION GUIDE" that has either not been tried or showed promise but needed tuning.
-  3. **IMPLEMENT**: Write the code, strictly adhering to the Noise Reduction Protocol.
-
-  **ARCHITECTURAL INNOVATION GUIDE (Select ONE focus)**:
-  A. **Advanced Feature Interaction**: Beyond concatenation. Use FiLM (Feature-wise Linear Modulation), Gating mechanisms, or Cross-Attention to let Drug embeddings strictly modulate Gene features.
-  B. **Residual & Identity Mapping**: Enforce a strict ResNet-style structure where the model *only* learns the delta ($\delta$). Ensure the identity path is clean.
-  C. **Latent Space Regularization**: If overfitting, introduce Variational layers (VAE), Dropout, or manifold constraints in the latent bottleneck.
-  D. **Loss Function Engineering**: If Pearson (DEG) is low but RMSE is fine, the model lacks *ranking* ability. Introduce Correlation Loss (1-PCC), Cosine Loss, or Ranking Loss in `train_TranSiGen_full_data.py`.
-  E. **Depth & Width Scaling**: If underfitting, carefully increase capacity (Projectors, MLP depth) while maintaining gradient flow.
+  **THE PROCESS (DEEP REFLECTION & INVENTION)**:
+  1. **REVIEW HISTORY**: Critically analyze `${experiment_history}`. 
+     - *Diagnose*: Why did previous architectures fail? (e.g., "Gradients vanished," "Overfitting on basal state," "Model ignores drug features").
+     - **CONSTRAINT**: DO NOT blindly repeat failed mechanisms.
+  2. **FIRST-PRINCIPLES REASONING**: Instead of picking from a fixed list, **INVENT** a solution based on the diagnosis.
+     - *Problem: Weak Interaction?* -> Consider Hypernetworks, Cross-Attention, or Bilinear Pooling.
+     - *Problem: Ranking Failure?* -> Consider Listwise Ranking Loss (LambdaRank) or Correlation-based objectives.
+     - *Problem: Manifold Mismatch?* -> Consider Normalizing Flows, VAEs, or Residual Flows.
+  3. **IMPLEMENT**: Write the code.
 
   **STRICT NOISE REDUCTION PROTOCOL (CRITICAL - DO NOT IGNORE):**
   1. **DO NOT** change existing `print()`, `logging`, or `tqdm` formats. The parsing engine relies on them.
@@ -31,9 +29,9 @@ system: |
   **OUTPUT FORMAT**:
   Return a SINGLE JSON object:
   {
-    "analysis_of_history": "Brief analysis of past iterations (e.g., 'Iteration 1 used Strategy A and failed. Iteration 2 used Strategy D and improved slightly.').",
-    "selected_strategy_tag": "Strategy Tag (e.g., 'A. Advanced Feature Interaction')",
-    "idea_summary": "Explanation of the new architecture.",
+    "reflection_on_history": "Deep analysis of the past trajectory. (e.g. 'Previous attempts with simple MLPs plateaued. The history shows ResNets stabilized training but didn't improve ranking metrics. The bottleneck seems to be the fusion layer.')",
+    "selected_strategy": "A short, descriptive title of your NEW idea (e.g. 'Dual-Stream Attention with RankNet Loss')",
+    "idea_summary": "Scientific justification: Why this specific math/architecture will fix the issues identified in history.",
     "modifications": [
       { 
         "file_path": "src/model.py", 
@@ -59,11 +57,11 @@ user_template: |
   ${code_context}
 
   **INSTRUCTION**:
-  1. **Analyze**: Read the history and feedback. Why did the last attempt fail or succeed?
-  2. **Hypothesize**: Select a strategy from the Guide.
+  1. **Analyze**: Read the History. Identify the pattern of failure or stagnation.
+  2. **Innovate**: Propose a **NOVEL** architectural or loss-function improvement derived from first principles.
   3. **Implement**: 
-     - Rewrite `src/model.py` with the new architecture.
-     - **Optional**: Rewrite `src/train_TranSiGen_full_data.py` ONLY if you need to change the Loss Function or Hyperparameters.
-  4. **Review**: Check against the "Strict Noise Reduction Protocol". Did you keep the print statements?
+     - Rewrite `src/model.py`.
+     - (Optional) Rewrite `src/train_TranSiGen_full_data.py` only if the Loss Function changes.
+  4. **Verify**: Ensure the code runs immediately (check imports and loops).
 
   **GOAL**: Maximize **Pearson (DEG)**.
