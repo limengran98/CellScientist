@@ -35,6 +35,7 @@ class MetricParser:
     def parse(csv_content: str, target_metrics: object) -> float:
         """
         Parses CSV and extracts the first float value found in the target column.
+        Handles formats like "0.7960 ± 0.0095", "0.85 (0.01)", etc.
         """
         try:
             lines = csv_content.strip().splitlines()
@@ -426,10 +427,12 @@ def apply_modifications(shadow_dir: str, agent_result_dir: str, modifications: L
         print(f"[UPDATE] Rewrote: {rel_path}")
 
 # =============================================================================
-# 5. LLM Interaction
+# 5. LLM Interaction (Refined for Reflection & Memory)
 # =============================================================================
 
-def generate_optimization(cfg: Dict, code_context: str, execution_feedback: str, iter_idx: int, prompt_path: str) -> Dict:
+def generate_optimization(cfg: Dict, code_context: str, execution_feedback: str, 
+                          experiment_history: List[Dict], # [NEW PARAM]
+                          iter_idx: int, prompt_path: str) -> Dict:
     if not os.path.exists(prompt_path):
         raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
     
@@ -439,9 +442,23 @@ def generate_optimization(cfg: Dict, code_context: str, execution_feedback: str,
     sys_prompt = prompt_data.get("system", "")
     user_tmpl = prompt_data.get("user_template", "")
     
+    # [NEW LOGIC] Format History
+    history_str = ""
+    if not experiment_history:
+        history_str = "No previous experiments. This is the first attempt."
+    else:
+        history_str = "--- PREVIOUS EXPERIMENTS HISTORY (READ CAREFULLY) ---\n"
+        for exp in experiment_history:
+            icon = "✅" if exp['improved'] else "❌"
+            history_str += (f"Iteration {exp['iter']} {icon}:\n"
+                            f"  - Strategy: {exp.get('idea', 'N/A')}\n"
+                            f"  - Score: {exp['score']}\n"
+                            f"  - Result: {'IMPROVED' if exp['improved'] else 'FAILED (Reverted)'}\n\n")
+
     user_content = user_tmpl.replace("${code_context}", code_context)
     user_content = user_content.replace("${execution_feedback}", execution_feedback)
     user_content = user_content.replace("${iteration_count}", str(iter_idx))
+    user_content = user_content.replace("${experiment_history}", history_str) # [NEW]
 
     messages = [
         {"role": "system", "content": sys_prompt},
@@ -501,9 +518,16 @@ def main():
         
         target_files = cfg["target_project"]["target_files"]
         max_iters = cfg["evolution"]["max_iterations"]
+        
+        # [NEW CONFIG] Evolution Mode Control
+        # If True: Runs all max_iterations, keeping the best. 
+        # If False: Stops immediately after the first improvement.
+        run_all_iterations = cfg["evolution"].get("run_all_iterations", True)
+        
         direction = cfg["evaluation"]["direction"]
         
         best_iter_idx = 0
+        experiment_history = [] # [NEW] Initialize Memory
         
         # 2. Iteration 0: Baseline Run
         print(f"\n{'='*60}")
@@ -532,16 +556,10 @@ def main():
             # A. Read Code
             current_code = read_code_context(shadow_dir, target_files)
             
-            # B. Contextual Feedback
-            contextual_feedback = (
-                f"*** HISTORY CONTEXT ***\n"
-                f"Current Best Metric ({executor.target_metric}): {best_score}\n"
-                f"Goal: {direction} this metric.\n"
-                f"***********************\n\n"
-            ) + last_feedback
+            # B. Contextual Feedback (Simplified, as Memory handles History)
             
-            # C. LLM Generation
-            opt_result = generate_optimization(cfg, current_code, contextual_feedback, i, prompt_path)
+            # C. LLM Generation [UPDATED CALL]
+            opt_result = generate_optimization(cfg, current_code, last_feedback, experiment_history, i, prompt_path)
             
             if not opt_result or "modifications" not in opt_result:
                 print("[WARN] Invalid LLM response. Retrying/Skipping.")
@@ -580,6 +598,14 @@ def main():
                 else: 
                     if current_score < best_score: is_improved = True
 
+            # [NEW] Record to History
+            experiment_history.append({
+                "iter": i,
+                "idea": idea,
+                "score": current_score,
+                "improved": is_improved
+            })
+
             if is_improved:
                 print(f"\n✅ IMPROVEMENT DETECTED ({best_score} -> {current_score})")
                 print(f"   Action: Keeping changes and updating checkpoint.")
@@ -587,6 +613,14 @@ def main():
                 best_iter_idx = i
                 save_checkpoint(shadow_dir, best_checkpoint_dir)
                 last_feedback = current_feedback
+                
+                # [NEW] CHECK CONFIG: Stop or Continue?
+                if not run_all_iterations:
+                    print(f"🛑 [CONFIG] run_all_iterations=False. Improvement found, stopping early.")
+                    break
+                else:
+                    print(f"🔄 [CONFIG] run_all_iterations=True. Saved improvement, continuing evolution...")
+                    
             else:
                 print(f"\n❌ NO IMPROVEMENT ({best_score} vs {current_score})")
                 print(f"   Action: Rolling back to previous best state.")
@@ -596,7 +630,7 @@ def main():
                     f"Your last attempt FAILED to improve the metric.\n"
                     f"Attempted Score: {current_score} vs Best Score: {best_score}.\n"
                     f"Action Taken: The code has been ROLLED BACK to the previous best state.\n"
-                    f"Instruction: Try a DIFFERENT approach. Do not repeat the same logic.\n"
+                    f"Instruction: Check the EXPERIMENT HISTORY. Do not repeat the same failure pattern.\n"
                     f"***************************\n\n"
                 ) + current_feedback
 

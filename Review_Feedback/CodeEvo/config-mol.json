@@ -7,10 +7,11 @@
   },
   "evolution": {
     "max_iterations": 3,
+    "run_all_iterations": true,
     "workspace_root": "../../results/CodeEvo_Molecule"
   },
   "execution": {
-    "command": "python plym_predict.py --dataset chembl2k",
+    "command": "python plym_predict.py --dataset chembl2k --device cuda:1",
     "log_file": "training_log.txt",
     
     "metrics_probing_pattern": "output_prediction/chembl2k/leaderboard_scaffold_5fold.csv",
@@ -23,7 +24,7 @@
   },
   "llm": {
     "provider": "yizhan",
-    "model": "gpt-5.2-pro",
+    "model": "gemini-3-pro-preview-thinking",
     "temperature": 0.7,
     "max_tokens": 60000,
     "timeout": 600

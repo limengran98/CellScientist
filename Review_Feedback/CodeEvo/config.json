@@ -7,6 +7,7 @@
   },
   "evolution": {
     "max_iterations": 3,
+    "run_all_iterations": true,
     "workspace_root": "../../results/CodeEvo"
   },
   "execution": {
@@ -29,7 +30,6 @@
   "providers": {
     "yizhan": {
       "base_url": "https://vip.yi-zhan.top/v1",
-      "model": "gemini-3-pro-preview-thinking",
       "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835"
     }
   }

@@ -10,11 +10,17 @@ system: |
   - **Outputs**: Predicted $Y_{post}$ (High-dimensional vector).
   - **Key Insight**: $Y_{post} \approx X_{basal} + \delta(X_{basal}, D_{drug})$. The core challenge is predicting the *perturbation* $\delta$.
 
-  **OBJECTIVE**:
-  Surpass the current Strong Baseline (Pearson State: ~0.969, **Pearson DEG: ~0.604**).
-  - **Primary Metric**: **Pearson (DEG)** (Pearson Correlation of Top-K Differentially Expressed Genes).
-  - **Secondary Metric**: Precision@100.
-  - **Constraint**: Maintain acceptable RMSE (do not let it explode).
+  **THE PROCESS (SCIENTIFIC REFLECTION)**:
+  1. **REVIEW HISTORY**: Read the `EXPERIMENT HISTORY` below. Identify which strategies have failed or stalled. **DO NOT blindly repeat failed approaches.**
+  2. **SELECT STRATEGY**: Choose a specific strategy from the "ARCHITECTURAL INNOVATION GUIDE" that has either not been tried or showed promise but needed tuning.
+  3. **IMPLEMENT**: Write the code, strictly adhering to the Noise Reduction Protocol.
+
+  **ARCHITECTURAL INNOVATION GUIDE (Select ONE focus)**:
+  A. **Advanced Feature Interaction**: Beyond concatenation. Use FiLM (Feature-wise Linear Modulation), Gating mechanisms, or Cross-Attention to let Drug embeddings strictly modulate Gene features.
+  B. **Residual & Identity Mapping**: Enforce a strict ResNet-style structure where the model *only* learns the delta ($\delta$). Ensure the identity path is clean.
+  C. **Latent Space Regularization**: If overfitting, introduce Variational layers (VAE), Dropout, or manifold constraints in the latent bottleneck.
+  D. **Loss Function Engineering**: If Pearson (DEG) is low but RMSE is fine, the model lacks *ranking* ability. Introduce Correlation Loss (1-PCC), Cosine Loss, or Ranking Loss in `train_TranSiGen_full_data.py`.
+  E. **Depth & Width Scaling**: If underfitting, carefully increase capacity (Projectors, MLP depth) while maintaining gradient flow.
 
   **STRICT NOISE REDUCTION PROTOCOL (CRITICAL - DO NOT IGNORE):**
   1. **DO NOT** change existing `print()`, `logging`, or `tqdm` formats. The parsing engine relies on them.
@@ -22,24 +28,12 @@ system: |
   3. **DO NOT** remove valid imports or global variables used by the training loop.
   4. **Keep the `forward` signature IDENTICAL**: `def forward(self, features, dose, smiles_emb, batch_indices=None):`
 
-  **ALGORITHMIC GUIDANCE & STRATEGY**:
-  1.  **Diagnosis First**: Look at `PREVIOUS EXECUTION FEEDBACK`.
-      - **If Error**: Fix the bug immediately.
-      - **If Overfitting**: Add Dropout, Weight Decay, or simplify the interaction head.
-      - **If Low Pearson DEG**: The model is failing to rank the *magnitude of change*.
-  
-  2.  **Architectural Directions**:
-      - **Residual Learning (Mandatory)**: Ensure the identity path ($X_{basal}$) is strictly preserved. Focus on learning the residual $\delta$.
-      - **Feature Interaction**: Simply concatenating [Gene, Drug] is insufficient. Use:
-          - **FiLM (Feature-wise Linear Modulation)**: Use Drug embeddings to generate scale ($\gamma$) and shift ($\beta$) parameters to modulate Gene features.
-          - **Cross-Attention**: Attention mechanism between Gene slots and Drug slots.
-          - **Gating Mechanisms**: Sigmoid gates to control how much drug info affects specific genes.
-      - **Loss Function Engineering**: Standard MSE optimizes the mean. To improve Pearson DEG (ranking), consider adding a **Correlation Loss** (1 - PCC) or a **Ranking Loss** to the training objective in `train_TranSiGen_full_data.py`.
-
   **OUTPUT FORMAT**:
   Return a SINGLE JSON object:
   {
-    "idea_summary": "Analysis of Iteration N feedback + Explanation of the new strategy (e.g., 'Previous run showed good RMSE but low DEG. Switching to a Residual FiLM architecture with Correlation Loss to force better ranking').",
+    "analysis_of_history": "Brief analysis of past iterations (e.g., 'Iteration 1 used Strategy A and failed. Iteration 2 used Strategy D and improved slightly.').",
+    "selected_strategy_tag": "Strategy Tag (e.g., 'A. Advanced Feature Interaction')",
+    "idea_summary": "Explanation of the new architecture.",
     "modifications": [
       { 
         "file_path": "src/model.py", 
@@ -55,6 +49,9 @@ system: |
 user_template: |
   **CURRENT ITERATION**: ${iteration_count}
 
+  **EXPERIMENT HISTORY (Memory of Past Attempts)**:
+  ${experiment_history}
+
   **PREVIOUS EXECUTION FEEDBACK (LOGS & METRICS)**:
   ${execution_feedback}
 
@@ -62,8 +59,8 @@ user_template: |
   ${code_context}
 
   **INSTRUCTION**:
-  1. **Analyze**: Read the feedback carefully. Did the previous run crash? Was the Pearson DEG metric stagnant?
-  2. **Hypothesize**: Based on the failure mode, design a specific improvement (e.g., "The drug embedding dimension is too small to modulate 900 gene features, adding a projection layer").
+  1. **Analyze**: Read the history and feedback. Why did the last attempt fail or succeed?
+  2. **Hypothesize**: Select a strategy from the Guide.
   3. **Implement**: 
      - Rewrite `src/model.py` with the new architecture.
      - **Optional**: Rewrite `src/train_TranSiGen_full_data.py` ONLY if you need to change the Loss Function or Hyperparameters.

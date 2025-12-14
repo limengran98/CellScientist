@@ -70,16 +70,20 @@ def _resolve_relative_resources(cfg):
         os.environ["STAGE1_H5_PATH"] = path
 
 # =============================================================================
-# 2. Logging & Analysis Logic
+# 2. Logging & Analysis Logic (Enhanced for Reflection)
 # =============================================================================
 
 def write_review_log(workspace, iteration, suggestion, score, current_best, static_baseline, status):
     """
     Writes a log comparing Candidate vs Best vs Baseline.
+    [UPDATED] Now records Strategy and Reflection.
     """
     log_path = os.path.join(workspace, "optimization_history.md")
     timestamp = datetime.now().strftime("%H:%M:%S")
     
+    # Extract enhanced fields with defaults for backward compatibility
+    reflection = suggestion.get("reflection_on_history", "No reflection provided.")
+    strategy = suggestion.get("selected_strategy", "Unknown Strategy")
     critique = suggestion.get("critique", "No critique provided.")
     edits = suggestion.get("edits", [])
     
@@ -93,7 +97,7 @@ def write_review_log(workspace, iteration, suggestion, score, current_best, stat
 
     log_entry = f"""
 ## Iteration {iteration} {icon} (Time: {timestamp})
-**Status**: {status}
+**Status**: {status} | **Strategy**: {strategy}
 
 | Metric Type | Score |
 | :--- | :--- |
@@ -102,7 +106,10 @@ def write_review_log(workspace, iteration, suggestion, score, current_best, stat
 | Original Baseline | {static_baseline if static_baseline is not None else 'N/A'} |
 | **Delta (vs Baseline)** | **{delta_str}** |
 
-### 💡 Rationale
+### 🧠 Reflection on History
+> {reflection}
+
+### 💡 Rationale (Critique)
 > {critique}
 
 ### 🛠 Code Changes
@@ -267,7 +274,7 @@ def get_baseline_metric_value(metrics_path, metric_name="PCC"):
         return None
 
 # =============================================================================
-# 6. LLM Logic (Enhanced for Context)
+# 6. LLM Logic (Enhanced for Context & Memory)
 # =============================================================================
 
 def _expand_vars(text, context):
@@ -277,6 +284,7 @@ def _expand_vars(text, context):
 def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, iteration, best_metric_val, workspace, history_summary):
     """
     Generates optimization suggestions.
+    [UPDATED] Builds a richer history context including strategies and reflections.
     """
     
     # 1. Content Construction: Split into Mutable (Target) and Immutable (Context)
@@ -309,15 +317,25 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
             if cell.cell_type == "code":
                 immutable_context_content += f"\n# --- CELL INDEX {idx} (READ-ONLY CONTEXT) ---\n{src}\n"
 
-    # 2. History Context
+    # 2. History Context (Enhanced Construction)
     history_text = ""
-    if history_summary:
-        history_text = "\n".join([
-            f"- Iter {h['iter']}: {h['critique']} (Result: {h['status']}, Score: {h['score']:.4f})" 
-            for h in history_summary
-        ])
+    if not history_summary:
+        history_text = "No previous iterations. This is the first attempt."
     else:
-        history_text = "None (Starting from Phase 2 baseline)."
+        # Build a structured history log for the LLM
+        history_text = "--- PREVIOUS EXPERIMENTS HISTORY (Read Carefully to Avoid Repeats) ---\n"
+        for h in history_summary:
+            iter_num = h['iter']
+            strat = h.get('strategy', 'Unknown')
+            # Extract reflection, truncate if too long
+            reflect = h.get('reflection', 'N/A')[:300].replace('\n', ' ')
+            score = h['score']
+            status = h['status']
+            
+            history_text += f"\n[Iteration {iter_num}]\n"
+            history_text += f"  - Strategy: {strat}\n"
+            history_text += f"  - Score: {score:.4f} ({status})\n"
+            history_text += f"  - Reflection: {reflect}...\n"
 
     # 3. Load Prompt
     cwd_path = os.path.join(os.getcwd(), "prompts", "review_optimize.yaml")
@@ -473,7 +491,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
         static_baseline_score = best_score_so_far
         
     best_nb_path = base_nb_path 
-    history_summary = []
+    history_summary = [] # [UPDATED] Will hold richer objects now
 
     baseline_display = f"{static_baseline_score:.4f}" if static_baseline_score is not None else "N/A"
 
@@ -497,6 +515,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             with open(current_metrics_path, 'r') as f: curr_metrics_obj = json.load(f)
         except: curr_metrics_obj = {}
             
+        # [STEP 1] Generate Suggestion (Using Enhanced History)
         suggestion = generate_optimization_suggestion(
             cfg, nb, mutable_indices, curr_metrics_obj, i, best_score_so_far, workspace_dir, history_summary
         )
@@ -505,10 +524,16 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             print("[WARN] Invalid LLM response. Skipping.")
             continue
             
+        # [NEW] Extract Strategy and Reflection
         critique = suggestion.get("critique", "")
-        print(f"[CRITIQUE] {critique}")
+        reflection = suggestion.get("reflection_on_history", "No reflection.")
+        strategy_tag = suggestion.get("selected_strategy", "Unknown")
         
-        # Apply Edits
+        print(f"[STRATEGY] {strategy_tag}")
+        print(f"[REFLECTION] {reflection[:100]}...")
+        print(f"[CRITIQUE] {critique[:100]}...")
+        
+        # [STEP 2] Apply Edits
         nb_next = deepcopy(nb)
         applied_count = 0
         for edit in suggestion["edits"]:
@@ -526,7 +551,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
         
         print(f"[EXEC] Running Candidate {i}...")
         
-        # Use execute_and_recover WITH ENV INJECTION and LOCKS
+        # [STEP 3] Execute
         executed_nb_path, success = execute_and_recover(
             nb_path=candidate_nb_path,
             workdir=workspace_dir,
@@ -562,11 +587,15 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             print(f"  > Verdict:         {status}")
             print(f"-"*40)
             
+            # [NEW] Enhanced logging
             write_review_log(workspace_dir, i, suggestion, candidate_score, best_score_so_far, comparison_baseline, status)
             
+            # [NEW] Append structured data to history
             history_summary.append({
                 "iter": i,
-                "critique": critique[:150] + "...", 
+                "strategy": strategy_tag,
+                "reflection": reflection,
+                "critique": critique, 
                 "status": status,
                 "score": candidate_score
             })
@@ -577,6 +606,13 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                 best_nb_path = executed_nb_path 
                 current_metrics_path = iter_metrics_path
                 
+                # Regenerate report
+                if write_experiment_report:
+                    try:
+                        with open(iter_metrics_path, 'r') as f: m_obj = json.load(f)
+                        write_experiment_report(workspace_dir, m_obj, cfg, primary_metric=target_metric)
+                    except Exception as e: print(f"[WARN] Report gen failed: {e}")
+
                 # Stopping Condition
                 beats_threshold = (best_score_so_far >= threshold)
                 beats_baseline = True
@@ -593,7 +629,15 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                 
         except Exception as e:
             print(f"[ERROR] Logic Error after execution: {e}")
-            history_summary.append({"iter": i, "critique": "Logic Crash", "status": "CRASH", "score": -999})
+            # Log crash to history so Agent knows
+            history_summary.append({
+                "iter": i, 
+                "strategy": strategy_tag,
+                "critique": "Execution Logic Crash", 
+                "status": "CRASH", 
+                "score": -999,
+                "reflection": "Code crashed before metrics could be read."
+            })
 
     # =============================================================================
     # 9. Finalize: Save Best Artifacts
