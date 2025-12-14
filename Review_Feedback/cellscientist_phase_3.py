@@ -577,12 +577,6 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                 best_nb_path = executed_nb_path 
                 current_metrics_path = iter_metrics_path
                 
-                if write_experiment_report:
-                    try:
-                        with open(iter_metrics_path, 'r') as f: m_obj = json.load(f)
-                        write_experiment_report(workspace_dir, m_obj, cfg, primary_metric=target_metric)
-                    except Exception as e: print(f"[WARN] Report gen failed: {e}")
-
                 # Stopping Condition
                 beats_threshold = (best_score_so_far >= threshold)
                 beats_baseline = True
@@ -601,8 +595,35 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             print(f"[ERROR] Logic Error after execution: {e}")
             history_summary.append({"iter": i, "critique": "Logic Crash", "status": "CRASH", "score": -999})
 
-    print(f"\n🏁 Finished. Best: {best_score_so_far}")
-    print(f"📂 Final Notebook: {best_nb_path}")
+    # =============================================================================
+    # 9. Finalize: Save Best Artifacts
+    # =============================================================================
+    print(f"\n🏁 Optimization Finished. Global Best Score: {best_score_so_far:.4f}")
+    
+    # 1. Save Best Notebook
+    if best_nb_path and os.path.exists(best_nb_path):
+        final_nb_path = os.path.join(workspace_dir, "notebook_best.ipynb")
+        shutil.copy(best_nb_path, final_nb_path)
+        print(f"✅ Saved BEST Notebook to: {final_nb_path}")
+    else:
+        print(f"⚠️ Could not locate best notebook source: {best_nb_path}")
+
+    # 2. Save Best Metrics & Report
+    if current_metrics_path and os.path.exists(current_metrics_path):
+        final_met_path = os.path.join(workspace_dir, "metrics_best.json")
+        shutil.copy(current_metrics_path, final_met_path)
+        print(f"✅ Saved BEST Metrics to: {final_met_path}")
+        
+        # Regenerate report specifically for the winner
+        if write_experiment_report:
+            try:
+                with open(final_met_path, 'r') as f: m_obj = json.load(f)
+                write_experiment_report(workspace_dir, m_obj, cfg, primary_metric=target_metric)
+                print(f"✅ Regenerated Experiment Report based on BEST metrics.")
+            except Exception as e: 
+                print(f"[WARN] Final Report gen failed: {e}")
+    else:
+        print(f"⚠️ Could not locate best metrics source: {current_metrics_path}")
 
 def main():
     parser = argparse.ArgumentParser()

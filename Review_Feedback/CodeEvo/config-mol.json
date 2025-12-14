@@ -13,9 +13,9 @@
     "command": "python plym_predict.py --dataset chembl2k",
     "log_file": "training_log.txt",
     
-    "metrics_probing_pattern": "output_prediction/chembl2k/leaderboard_5fold.csv",
+    "metrics_probing_pattern": "output_prediction/chembl2k/leaderboard_scaffold_5fold.csv",
     
-    "timeout_seconds": 3600
+    "timeout_seconds": 36000
   },
   "evaluation": {
     "metric_column": ["ROC-AUC"], 
