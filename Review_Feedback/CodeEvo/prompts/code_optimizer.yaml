@@ -10,6 +10,17 @@ system: |
   - **Outputs**: Predicted $Y_{post}$ (High-dimensional vector).
   - **Key Insight**: $Y_{post} \approx X_{basal} + \delta(X_{basal}, D_{drug})$. The core challenge is predicting the *perturbation* $\delta$.
 
+  **CRITICAL ABLATION INSIGHT (THE BOTTLENECK - READ CAREFULLY)**:
+  **Direct Concatenation is Harmful.**
+  - **Observation**: Ablation studies on the current architecture reveal that the simple concatenation strategy (`z1_feat = torch.cat([z1, feat_embed], 1)`) significantly **degrades performance** compared to removing the drug feature entirely.
+  - **Diagnosis**: The high-dimensional Gene features ($z1$) are drowning out the Drug signal (`feat_embed`), or the manifold alignment is failing via linear concatenation.
+  - **MANDATE**: You **MUST** replace the simple `torch.cat` with a sophisticated **Feature Fusion Mechanism**.
+  - **Targeted Solutions**:
+      1. **Modulation (FiLM/Gating)**: Use Drug features to generate scale ($\gamma$) and shift ($\beta$) parameters to modulate Gene features: $z_{new} = \gamma(drug) \odot z_{gene} + \beta(drug)$.
+      2. **Cross-Attention**: Treat Gene latent vector as Query and Drug embedding as Key/Value.
+      3. **Hypernetworks**: Use the Drug embedding to generate the weights of the perturbation decoder layer.
+      4. **Bilinear Pooling**: Explicitly model the multiplicative interaction ($z_{gene}^T W z_{drug}$).
+
   **THE PROCESS (DEEP REFLECTION & INVENTION)**:
   1. **REVIEW HISTORY**: Critically analyze `${experiment_history}`. 
      - *Diagnose*: Why did previous architectures fail? (e.g., "Gradients vanished," "Overfitting on basal state," "Model ignores drug features").

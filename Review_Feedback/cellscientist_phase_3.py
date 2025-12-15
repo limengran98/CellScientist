@@ -18,7 +18,6 @@ from config_loader import load_full_config
 from llm_utils import chat_json, resolve_llm_config
 
 # [UPDATED] Import decoupled execution and error handling functions
-# Ensure executor_engine.py is updated to accept extra_env and mutable_indices!
 from executor_engine import run_notebook_pure, attempt_fix_notebook, dump_error_log
 
 try:
@@ -357,7 +356,9 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
                 "mutable_cells_content": mutable_content,
                 "immutable_context_content": immutable_context_content,
                 "metrics_json": json.dumps(current_metrics, indent=2),
-                "history_summary": history_text
+                "history_summary": history_text,
+                # [FIX 1] Added experiment_history to match prompt variables
+                "experiment_history": history_text
             }
             if "system" in p_data: sys_prompt = _expand_vars(p_data["system"], ctx)
             if "user_template" in p_data: user_prompt = _expand_vars(p_data["user_template"], ctx)
@@ -491,7 +492,19 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
         static_baseline_score = best_score_so_far
         
     best_nb_path = base_nb_path 
-    history_summary = [] # [UPDATED] Will hold richer objects now
+
+    # [FIX 2 START] History Persistence: Load state if exists
+    history_state_path = os.path.join(workspace_dir, "history_state.json")
+    history_summary = []
+    
+    if os.path.exists(history_state_path):
+        try:
+            with open(history_state_path, 'r') as f:
+                history_summary = json.load(f)
+            print(f"[INIT] Loaded {len(history_summary)} history records from state file.")
+        except Exception as e:
+            print(f"[WARN] Failed to load history state: {e}")
+    # [FIX 2 END]
 
     baseline_display = f"{static_baseline_score:.4f}" if static_baseline_score is not None else "N/A"
 
@@ -600,6 +613,14 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                 "score": candidate_score
             })
 
+            # [FIX 2 START] Save history immediately to prevent data loss on crash/interrupt
+            try:
+                with open(history_state_path, "w") as f:
+                    json.dump(history_summary, f, indent=2)
+            except Exception as e:
+                print(f"[WARN] Failed to save history state: {e}")
+            # [FIX 2 END]
+
             if status == "IMPROVED":
                 print(f"🎉 NEW BEST! Updating baseline for next iteration.")
                 best_score_so_far = candidate_score
@@ -638,6 +659,13 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                 "score": -999,
                 "reflection": "Code crashed before metrics could be read."
             })
+            
+            # [FIX 2 START] Save history on crash too
+            try:
+                with open(history_state_path, "w") as f:
+                    json.dump(history_summary, f, indent=2)
+            except: pass
+            # [FIX 2 END]
 
     # =============================================================================
     # 9. Finalize: Save Best Artifacts

@@ -52,7 +52,7 @@ system_prompt: |
       * **Logic**: You MUST perform 5-fold cross-validation on non-DMSO samples using the strategy defined by the variable **`{split_strategy}`**:
           * If `{split_strategy}` is `"plate"` $\rightarrow$ use `GroupKFold(n_splits=5)` grouping by `Metadata_Plate`.
           * If `{split_strategy}` is `"smiles"` $\rightarrow$ use `GroupKFold(n_splits=5)` grouping by `SMILES`.
-      * **Index Storage**: The generated fold indices (values $0-4$) must be stored as a `split_id` array with a shape matching the Post features.
+      * **Index Storage**: The generated fold indices (values $1-5$) must be stored as a `split_id` array with a shape matching the Post features.
 
       **5. HDF5 Group Storage (Hierarchical Storage with 'combined')**
       * **Structure Requirement**: Create a single `.h5` file. **You MUST create a top-level group named `combined`**. All data must be stored directly under this group.
@@ -61,7 +61,7 @@ system_prompt: |
           1.  `combined/smiles`: $(N,)$, string/object type.
           2.  `combined/dose`: $(N,)$, float type.
           3.  `combined/plate_id`: $(N,)$, string type.
-          4.  `combined/split_id`: $(N,)$, integer type ($0-4$), containing the cross-validation indices generated above.
+          4.  `combined/split_id`: $(N,)$, integer type ($1-5$), containing the cross-validation indices generated above.
           5.  `combined/morphology_pre`: $(N, Features)$, float matrix.
           6.  `combined/morphology_post`: $(N, Features)$, float matrix.
 
