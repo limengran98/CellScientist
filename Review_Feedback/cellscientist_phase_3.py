@@ -75,7 +75,7 @@ def _resolve_relative_resources(cfg):
 def write_review_log(workspace, iteration, suggestion, score, current_best, static_baseline, status):
     """
     Writes a log comparing Candidate vs Best vs Baseline.
-    [UPDATED] Now records Strategy and Reflection.
+    [UPDATED] Now records Strategy, Reflection, Decision Type, and Focus Area.
     """
     log_path = os.path.join(workspace, "optimization_history.md")
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -85,6 +85,10 @@ def write_review_log(workspace, iteration, suggestion, score, current_best, stat
     strategy = suggestion.get("selected_strategy", "Unknown Strategy")
     critique = suggestion.get("critique", "No critique provided.")
     edits = suggestion.get("edits", [])
+    
+    # [NEW] Extract Sub-task Decision Fields
+    decision = suggestion.get("decision_type", "EXPLORE")
+    focus = suggestion.get("focus_area", "All")
     
     icon = "✅" if status == "IMPROVED" else "❌" if status == "FAILED" else "⚠️"
     
@@ -96,7 +100,9 @@ def write_review_log(workspace, iteration, suggestion, score, current_best, stat
 
     log_entry = f"""
 ## Iteration {iteration} {icon} (Time: {timestamp})
-**Status**: {status} | **Strategy**: {strategy}
+**Status**: {status} 
+**Action**: `{decision}` | **Focus**: `{focus}`
+**Strategy**: {strategy}
 
 | Metric Type | Score |
 | :--- | :--- |
@@ -283,7 +289,7 @@ def _expand_vars(text, context):
 def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, iteration, best_metric_val, workspace, history_summary):
     """
     Generates optimization suggestions.
-    [UPDATED] Builds a richer history context including strategies and reflections.
+    [UPDATED] Builds a richer history context including strategies, decisions and reflections.
     """
     
     # 1. Content Construction: Split into Mutable (Target) and Immutable (Context)
@@ -326,6 +332,10 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
         for h in history_summary:
             iter_num = h['iter']
             strat = h.get('strategy', 'Unknown')
+            # [NEW] Include Sub-task Decision Info
+            decision = h.get('decision', 'N/A')
+            focus = h.get('focus', 'N/A')
+            
             # Extract reflection, truncate if too long
             reflect = h.get('reflection', 'N/A')[:300].replace('\n', ' ')
             score = h['score']
@@ -333,6 +343,7 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
             
             history_text += f"\n[Iteration {iter_num}]\n"
             history_text += f"  - Strategy: {strat}\n"
+            history_text += f"  - Action: {decision} (Focus: {focus})\n"
             history_text += f"  - Score: {score:.4f} ({status})\n"
             history_text += f"  - Reflection: {reflect}...\n"
 
@@ -357,7 +368,7 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
                 "immutable_context_content": immutable_context_content,
                 "metrics_json": json.dumps(current_metrics, indent=2),
                 "history_summary": history_text,
-                # [FIX 1] Added experiment_history to match prompt variables
+                # [FIX 1] Added experiment_history to match prompt variables (As requested)
                 "experiment_history": history_text
             }
             if "system" in p_data: sys_prompt = _expand_vars(p_data["system"], ctx)
@@ -537,12 +548,17 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             print("[WARN] Invalid LLM response. Skipping.")
             continue
             
-        # [NEW] Extract Strategy and Reflection
+        # [NEW] Extract Strategy and Reflection and DECISION
         critique = suggestion.get("critique", "")
         reflection = suggestion.get("reflection_on_history", "No reflection.")
         strategy_tag = suggestion.get("selected_strategy", "Unknown")
         
+        # [NEW] Extract Sub-task Decision Fields
+        decision_tag = suggestion.get("decision_type", "EXPLORE")
+        focus_tag = suggestion.get("focus_area", "All")
+        
         print(f"[STRATEGY] {strategy_tag}")
+        print(f"[ACTION]   {decision_tag} (Focus: {focus_tag})")
         print(f"[REFLECTION] {reflection[:100]}...")
         print(f"[CRITIQUE] {critique[:100]}...")
         
@@ -603,10 +619,12 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             # [NEW] Enhanced logging
             write_review_log(workspace_dir, i, suggestion, candidate_score, best_score_so_far, comparison_baseline, status)
             
-            # [NEW] Append structured data to history
+            # [NEW] Append structured data to history including Decision/Focus
             history_summary.append({
                 "iter": i,
                 "strategy": strategy_tag,
+                "decision": decision_tag, # <--- Added
+                "focus": focus_tag,       # <--- Added
                 "reflection": reflection,
                 "critique": critique, 
                 "status": status,
@@ -654,6 +672,8 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             history_summary.append({
                 "iter": i, 
                 "strategy": strategy_tag,
+                "decision": decision_tag,
+                "focus": focus_tag,
                 "critique": "Execution Logic Crash", 
                 "status": "CRASH", 
                 "score": -999,

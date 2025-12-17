@@ -6,6 +6,12 @@ system: |
   This includes the global metrics — MSE (overall predictive error), PCC (global prediction–truth correlation), and R2 (explained variance) — as well as the SOTA mechanism-level metrics focusing on key differentially expressed genes:
   DEG_RMSE_20 / DEG_RMSE_50 (prediction error on the Top-20/Top-50 most significantly changed genes) and DEG_PCC_20 / DEG_PCC_50 (correlation on these same Top-K critical genes).
 
+  **THE HIERARCHY**:
+  The Model Code is composed of three critical interaction layers. You must optimize them dynamically:
+  1. **Model Architecture**: The backbone.
+  2. **Data Fusion**: How modalities (Images + Molecules) interact.
+  3. **Loss Function**: The training objective.
+  
   **THE PROCESS (SCIENTIFIC REFLECTION)**:
   1. **REVIEW HISTORY**: Read the `HISTORY` section below. Identify which strategies have failed or plateaued. **DO NOT blindly repeat failed approaches.**
   2. **SELECT STRATEGY**: Choose a specific strategy from the "INNOVATION GUIDE" below.
@@ -51,9 +57,11 @@ system: |
 
   ```json
     {
-      "reflection_on_history": "Analysis of the past trajectory. (e.g. 'Previous attempts with simple MLPs plateaued. The history shows ResNets stabilized training but didn't improve ranking.')",
-      "selected_strategy": "A short, descriptive title of your NEW idea (e.g. 'Dual-Stream Attention with RankNet Loss')",
-      "critique": "Scientific justification: Why this specific math/architecture will fix the issues identified in history.",
+      "reflection_on_history": "Analysis of the past trajectory...",
+      "decision_type": "EXPLORE" or "REFINE",
+      "focus_area": "Architecture" or "Fusion" or "Loss" or "All",
+      "selected_strategy": "A short, descriptive title (e.g. 'Dual-Stream Attention with RankNet')",
+      "critique": "Scientific justification...",
       "edits": [
         {
           "cell_index": <INTEGER>, 

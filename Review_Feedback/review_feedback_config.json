@@ -19,11 +19,10 @@
     "direction": "maximize", 
     "max_iterations": 10,
     "pass_threshold": 0.7,
-    "force_cells": [0,1,4],
+    "force_cells": [0,1,4], 
     "protected_sections": [
         "SECTION 1", 
         "SECTION 2", 
-        "SECTION 4",
         "Data Loading",
         "Evaluation"
     ],
@@ -32,6 +31,11 @@
         "Innovation",
         "Modeling",
         "Training"
+    ],
+    "optimization_hierarchy": [
+        "1. Model Architecture (Backbone/Encoder)",
+        "2. Data Fusion Mechanism (Interaction/Attention)",
+        "3. Loss Function & Optimization Strategy"
     ]
   },
   "exec": {
