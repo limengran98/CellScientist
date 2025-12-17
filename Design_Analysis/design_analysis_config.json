@@ -11,7 +11,7 @@
         "paths": { 
           "data": "../data/${dataset_name}/CP_data.csv",
           "paper": "../data/${dataset_name}/BBBC036.pdf",
-          "preprocess": "../data/${dataset_name}/BBBC036_data_process.ipynb"
+          "preprocess": ""
         },
         "exec": {
           "timeout_seconds": 1800,
