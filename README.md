@@ -33,3 +33,11 @@ CellScientist/
 * **Review_Feedback/** – reviews and iteratives optimization process
 * **llm_providers.json** – defines available LLM configurations
 * **requirements.txt** – Python dependencies
+
+
+## Quick Start
+
+
+```bash
+python run_cellscientist.py
+```
