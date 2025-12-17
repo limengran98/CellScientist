@@ -1,6 +1,8 @@
 # CellScientist
 
-A lightweight toolkit for cell-related analysis and intelligent workflow generation using large language models (LLMs).
+CellScientist is an autonomous AI agent framework designed for Virtual Cell Modeling (VCM). It employs a Dual-Space Bilevel Optimization strategy to align symbolic scientific hypotheses with computational code implementation.
+
+The system operates through a structured Task Hypergraph, performing evolutionary optimization to discover robust biological models.
 
 
 ## 🛠️ Installation
