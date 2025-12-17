@@ -64,6 +64,17 @@ system: |
       "semantic_gradient_analysis": "Analyze the 'DATA FEEDBACK' section. E.g., 'MSE improved but PCC dropped, implying scaling issues.'",
       "decision_type": "EXPLORE" or "REFINE",
       "focus_area": "Architecture" or "Fusion" or "Loss" or "All",
+      "subtasks_to_update": ["Optional list of sub-task names you will update this iteration (e.g. 'Model Architecture')"],
+      "new_subtasks": [
+        {
+          "name": "Optional new sub-task name",
+          "parent": "Optional parent sub-task name (or omit)",
+          "rationale": "Why this decomposition helps"
+        }
+      ],
+      "dependency_updates": [
+        { "from": "Sub-task A", "to": "Sub-task B", "type": "depends_on|blocks|enables" }
+      ],
       "selected_strategy": "A short, descriptive title (e.g. 'Dual-Stream Attention with RankNet')",
       "critique": "Scientific justification...",
       "edits": [
@@ -85,6 +96,9 @@ user_template: |
 
   **HISTORY**:
   ${history_summary}
+
+  **TASK GRAPH STATE**:
+  ${task_graph_state}
 
   **CURRENT METRICS**:
   ${metrics_json}

@@ -20,6 +20,16 @@ from llm_utils import chat_json, resolve_llm_config
 # [UPDATED] Import decoupled execution and error handling functions
 from executor_engine import run_notebook_pure, attempt_fix_notebook, dump_error_log
 
+from task_graph import (
+    init_task_graph_from_config,
+    load_task_graph,
+    save_task_graph,
+    apply_decomposition_updates,
+    route_active_tasks,
+    update_after_iteration,
+    to_prompt_summary,
+)
+
 try:
     from experiment_report import write_experiment_report
 except ImportError:
@@ -185,6 +195,7 @@ def write_review_log(workspace, iteration, suggestion, score, current_best, stat
     decision = suggestion.get("decision_type", "EXPLORE")
     focus = suggestion.get("focus_area", "All")
     sem_grad = suggestion.get("semantic_gradient_analysis", "N/A")
+    active_tasks = suggestion.get("active_tasks", [])
     
     icon = "✅" if status == "IMPROVED" else "❌" if status == "FAILED" else "⚠️"
     
@@ -198,6 +209,7 @@ def write_review_log(workspace, iteration, suggestion, score, current_best, stat
 ## Iteration {iteration} {icon} (Time: {timestamp})
 **Status**: {status} 
 **Action**: `{decision}` | **Focus**: `{focus}`
+**Active Tasks**: {", ".join([t.get("name", t.get("id","?")) for t in active_tasks]) if active_tasks else "N/A"}
 **Strategy**: {strategy}
 
 | Metric Type | Score |
@@ -385,7 +397,7 @@ def _expand_vars(text, context):
     if not text: return ""
     return re.sub(r"\$\{(\w+)\}", lambda m: str(context.get(m.group(1), m.group(0))), text)
 
-def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, iteration, best_metric_val, workspace, history_summary):
+def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, iteration, best_metric_val, workspace, history_summary, task_graph_state_text=None):
     """
     Generates optimization suggestions.
     [UPDATED] Builds a richer history context including strategies, decisions and reflections.
@@ -481,7 +493,8 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
                 # [FIX 1] Added experiment_history to match prompt variables (As requested)
                 "experiment_history": history_text,
                 # [NEW] Inject the computed semantic gradient
-                "semantic_gradient_analysis": semantic_gradient_text
+                "semantic_gradient_analysis": semantic_gradient_text,
+                "task_graph_state": task_graph_state_text or "{}"
             }
             if "system" in p_data: sys_prompt = _expand_vars(p_data["system"], ctx)
             if "user_template" in p_data: user_prompt = _expand_vars(p_data["user_template"], ctx)
@@ -634,6 +647,24 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             print(f"[WARN] Failed to load history state: {e}")
     # [FIX 2 END]
 
+    
+    # [NEW] Explicit Task-Graph State (Decompose / Route / Update)
+    task_graph_state_path = os.path.join(workspace_dir, "task_graph_state.json")
+    if os.path.exists(task_graph_state_path):
+        try:
+            task_graph_state = load_task_graph(task_graph_state_path)
+            print(f"[INIT] Loaded task graph with {len(task_graph_state.get('tasks', {}))} tasks.")
+        except Exception as e:
+            print(f"[WARN] Failed to load task graph state: {e}. Re-initializing.")
+            task_graph_state = init_task_graph_from_config(cfg["review"].get("optimization_hierarchy", []))
+    else:
+        task_graph_state = init_task_graph_from_config(cfg["review"].get("optimization_hierarchy", []))
+    # Persist immediately so the workspace is self-describing
+    try:
+        save_task_graph(task_graph_state, task_graph_state_path)
+    except Exception as e:
+        print(f"[WARN] Failed to save task graph state: {e}")
+
     baseline_display = f"{static_baseline_score:.4f}" if static_baseline_score is not None else "N/A"
 
     print(f"\n[LOOP] Starting Optimization.")
@@ -656,14 +687,29 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             with open(current_metrics_path, 'r') as f: curr_metrics_obj = json.load(f)
         except: curr_metrics_obj = {}
             
+        # [NEW] Task Graph snapshot for LLM (explicit decomposition state)
+        task_graph_state_text = to_prompt_summary(task_graph_state)
+
         # [STEP 1] Generate Suggestion (Using Enhanced History & Semantic Gradient)
-        suggestion = generate_optimization_suggestion(
-            cfg, nb, mutable_indices, curr_metrics_obj, i, best_score_so_far, workspace_dir, history_summary
-        )
+        suggestion = generate_optimization_suggestion(cfg, nb, mutable_indices, curr_metrics_obj, i, best_score_so_far, workspace_dir, history_summary, task_graph_state_text=task_graph_state_text)
         
         if not suggestion or "edits" not in suggestion:
             print("[WARN] Invalid LLM response. Skipping.")
             continue
+
+        # [NEW] Apply explicit decomposition / dependency updates (optional)
+        try:
+            apply_decomposition_updates(task_graph_state, suggestion)
+        except Exception as e:
+            print(f"[WARN] Failed to apply decomposition updates: {e}")
+
+        # [NEW] Route: pick active task nodes for this iteration (graph, not tree)
+        active_task_ids = route_active_tasks(task_graph_state, suggestion)
+        active_task_names = []
+        for tid in active_task_ids:
+            t = task_graph_state.get("tasks", {}).get(tid, {})
+            active_task_names.append(t.get("name", tid))
+        suggestion["active_tasks"] = [{"id": tid, "name": name} for tid, name in zip(active_task_ids, active_task_names)]
             
         # [NEW] Extract Strategy and Reflection and DECISION
         critique = suggestion.get("critique", "")
@@ -674,6 +720,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
         decision_tag = suggestion.get("decision_type", "EXPLORE")
         focus_tag = suggestion.get("focus_area", "All")
         sem_grad = suggestion.get("semantic_gradient_analysis", "N/A")
+        active_tasks = suggestion.get("active_tasks", [])
         
         # [NEW] Call Visual Tree Feedback (Pending Phase)
         _log_tree_visual(workspace_dir, i, strategy_tag, decision_tag, focus_tag, "PENDING", best_score_so_far)
@@ -742,6 +789,23 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             
             # [NEW] Enhanced logging
             write_review_log(workspace_dir, i, suggestion, candidate_score, best_score_so_far, comparison_baseline, status)
+
+            # [NEW] Update explicit task graph with evidence from this iteration
+            try:
+                update_after_iteration(
+                    task_graph_state,
+                    iteration=i,
+                    active_task_ids=[t.get('id') for t in suggestion.get('active_tasks', [])],
+                    improved=(status == 'IMPROVED'),
+                    score=candidate_score,
+                    target_metric=cfg['review']['target_metric'],
+                    executed_notebook_path=executed_nb_path,
+                    metrics_path=iter_metrics_path,
+                    reflection=suggestion.get('reflection_on_history', None),
+                )
+                save_task_graph(task_graph_state, task_graph_state_path)
+            except Exception as e:
+                print(f"[WARN] Failed to update/save task graph state: {e}")
             
             # [NEW] Append structured data to history including Decision/Focus
             history_summary.append({
@@ -753,7 +817,9 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                 "critique": critique,
                 "semantic_gradient": sem_grad, # Record the gradient that led to this
                 "status": status,
-                "score": candidate_score
+                "score": candidate_score,
+                "tasks": [t.get("id") for t in suggestion.get("active_tasks", [])],
+                "task_names": [t.get("name") for t in suggestion.get("active_tasks", [])]
             })
 
             # [FIX 2 START] Save history immediately to prevent data loss on crash/interrupt
