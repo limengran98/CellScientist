@@ -69,13 +69,108 @@ def _resolve_relative_resources(cfg):
         os.environ["STAGE1_H5_PATH"] = path
 
 # =============================================================================
-# 2. Logging & Analysis Logic (Enhanced for Reflection)
+# 2. Logging & Analysis Logic (Enhanced for Reflection & Visualization)
 # =============================================================================
+
+def _log_tree_visual(workspace, iteration, strategy, decision, focus, status, score):
+    """
+    [NEW] Generates, prints, and saves a hierarchical ASCII tree visualization.
+    Satisfies: "Visual Tree Feedback" & "Save to directory"
+    """
+    score_display = f"{score:.4f}" if score != -999 else "N/A"
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    
+    # Construct the tree structure
+    lines = []
+    if status == "PENDING":
+        lines.append(f"\n╔════════════════════════════════════════════════════════════════╗")
+        lines.append(f"║ 🧬 CellScientist Dual-Space Optimization (Iter {iteration})             ║")
+        lines.append(f"╚════════════════════════════════════════════════════════════════╝")
+        lines.append(f"└── 🌍 [L0: Global Strategy Space]")
+        lines.append(f"    │   Target Strategy: {strategy}")
+        
+        mode_icon = "🔭" if decision == "EXPLORE" else "🔬"
+        lines.append(f"    ├── {mode_icon} [L1: Optimization Mode]: {decision}")
+        
+        if decision == "REFINE":
+            lines.append(f"    │   └── 🎯 [L2: Sub-Task Focus]: {focus}")
+            lines.append(f"    │       └── 🔒 [Constraint Projection]: Locking non-{focus} parameters.")
+            lines.append(f"    │       └── 📉 [Alternating Opt]: Computing Semantic Gradient...")
+        else:
+            lines.append(f"    │   └── 🌐 [L2: Global Instantiation]: Re-initializing Task Hypergraph.")
+        lines.append(f"    │")
+    else:
+        # Result update
+        res_icon = "✅" if status == "IMPROVED" else "❌" if status == "CRASH" else "⚠️"
+        lines.append(f"    └── 🏁 [Result]: {status} (Score: {score_display}) {res_icon}")
+        lines.append(f"        (Time: {timestamp})")
+
+    tree_str = "\n".join(lines)
+    
+    # 1. Print to Terminal
+    print(tree_str)
+    
+    # 2. Save to File in Workspace
+    log_file = os.path.join(workspace, "optimization_tree.txt")
+    with open(log_file, "a", encoding="utf-8") as f:
+        f.write(tree_str + "\n")
+
+def _compute_semantic_gradient(candidate_metrics, baseline_metrics):
+    """
+    [NEW] Calculates 'Semantic Gradient' based on metric divergence.
+    Satisfies: "Enhanced Semantic Gradient Feedback"
+    """
+    if not candidate_metrics or not baseline_metrics:
+        return "Analysis: Initial run or missing metrics. No gradient available."
+
+    def get_val(m, k):
+        # Handle nesting: {'aggregate': {'PCC': 0.8}} or {'PCC': 0.8}
+        if "aggregate" in m: return float(m["aggregate"].get(k, 0) or 0)
+        return float(m.get(k, 0) or 0)
+
+    # Key Metrics
+    cand_pcc = get_val(candidate_metrics, "PCC")
+    cand_mse = get_val(candidate_metrics, "MSE")
+    # Try to find DEG metrics (Mechanism)
+    cand_deg = get_val(candidate_metrics, "DEG_RMSE_50") or get_val(candidate_metrics, "DEG_RMSE_20")
+    
+    base_pcc = get_val(baseline_metrics, "PCC")
+    base_mse = get_val(baseline_metrics, "MSE")
+    base_deg = get_val(baseline_metrics, "DEG_RMSE_50") or get_val(baseline_metrics, "DEG_RMSE_20")
+
+    feedback = []
+
+    # 1. Global Gradient (PCC vs MSE)
+    if cand_pcc > base_pcc and cand_mse > base_mse:
+        feedback.append(
+            "⚠️ **Gradient Alert (Scale Mismatch)**: PCC improved (Ranking is better), but MSE worsened. "
+            "Model captures the trend but has scaling errors. "
+            "-> **Constraint**: Fix output scaling/bias. Do NOT change architecture."
+        )
+    elif cand_mse < base_mse and cand_pcc < base_pcc:
+        feedback.append(
+            "⚠️ **Gradient Alert (Conservative Fit)**: MSE improved, but PCC worsened. "
+            "Model is predicting mean values, losing biological variance. "
+            "-> **Constraint**: Switch to Rank-aware Loss (RankNet/Contrastive)."
+        )
+    
+    # 2. Mechanism Gradient (DEG)
+    if cand_deg > base_deg and base_deg > 0:
+        feedback.append(
+            f"⚠️ **Mechanism Failure**: Error on Top Diff-Expressed Genes increased ({cand_deg:.4f}). "
+            "Model ignores critical biological signals. "
+            "-> **Correction**: Increase weight on high-variance genes."
+        )
+    
+    if not feedback:
+        feedback.append("✅ **Gradient Stable**: Balanced improvement. -> **Strategy**: Continue fine-tuning.")
+
+    return "\n".join(feedback)
 
 def write_review_log(workspace, iteration, suggestion, score, current_best, static_baseline, status):
     """
     Writes a log comparing Candidate vs Best vs Baseline.
-    [UPDATED] Now records Strategy, Reflection, Decision Type, and Focus Area.
+    [UPDATED] Now records Strategy, Reflection, Decision Type, Focus Area, and Semantic Gradient.
     """
     log_path = os.path.join(workspace, "optimization_history.md")
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -89,6 +184,7 @@ def write_review_log(workspace, iteration, suggestion, score, current_best, stat
     # [NEW] Extract Sub-task Decision Fields
     decision = suggestion.get("decision_type", "EXPLORE")
     focus = suggestion.get("focus_area", "All")
+    sem_grad = suggestion.get("semantic_gradient_analysis", "N/A")
     
     icon = "✅" if status == "IMPROVED" else "❌" if status == "FAILED" else "⚠️"
     
@@ -110,6 +206,9 @@ def write_review_log(workspace, iteration, suggestion, score, current_best, stat
 | Current Best (Evolution) | {current_best:.4f} |
 | Original Baseline | {static_baseline if static_baseline is not None else 'N/A'} |
 | **Delta (vs Baseline)** | **{delta_str}** |
+
+### 📉 Semantic Gradient Analysis
+> {sem_grad}
 
 ### 🧠 Reflection on History
 > {reflection}
@@ -347,7 +446,18 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
             history_text += f"  - Score: {score:.4f} ({status})\n"
             history_text += f"  - Reflection: {reflect}...\n"
 
-    # 3. Load Prompt
+    # 3. [NEW] Compute Semantic Gradient to Inject into Context
+    models_data = current_metrics.get("models", {})
+    baseline_key = next((k for k in models_data.keys() if "baseline" in k.lower()), None)
+    best_key = next((k for k in models_data.keys() if "baseline" not in k.lower()), None) # Approximation for now
+    
+    base_metrics = models_data.get(baseline_key, {}) if baseline_key else {}
+    # Use metrics from the best/last run found in the JSON
+    cand_metrics = models_data.get(best_key, {}) if best_key else {}
+    
+    semantic_gradient_text = _compute_semantic_gradient(cand_metrics, base_metrics)
+
+    # 4. Load Prompt
     cwd_path = os.path.join(os.getcwd(), "prompts", "review_optimize.yaml")
     script_path = os.path.join(os.path.dirname(__file__), "prompts", "review_optimize.yaml")
     prompt_path = cwd_path if os.path.exists(cwd_path) else script_path
@@ -369,10 +479,17 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
                 "metrics_json": json.dumps(current_metrics, indent=2),
                 "history_summary": history_text,
                 # [FIX 1] Added experiment_history to match prompt variables (As requested)
-                "experiment_history": history_text
+                "experiment_history": history_text,
+                # [NEW] Inject the computed semantic gradient
+                "semantic_gradient_analysis": semantic_gradient_text
             }
             if "system" in p_data: sys_prompt = _expand_vars(p_data["system"], ctx)
             if "user_template" in p_data: user_prompt = _expand_vars(p_data["user_template"], ctx)
+            
+            # [NEW] Append Semantic Gradient to User Prompt if not already explicitly in YAML
+            if "${semantic_gradient_analysis}" not in p_data.get("user_template", ""):
+                user_prompt += f"\n\n**DATA FEEDBACK (SEMANTIC GRADIENT)**:\n{semantic_gradient_text}"
+
         except Exception as e:
             print(f"[WARN] Failed to load prompt yaml: {e}")
 
@@ -525,9 +642,9 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
     print(f"       🥇 Current Best:      {best_score_so_far:.4f}")
 
     for i in range(1, max_iters + 1):
-        print(f"\n{'='*60}")
-        print(f"🚀 OPTIMIZATION ROUND {i}/{max_iters}")
-        print(f"{'='*60}")
+        # [NEW] Visual Tree: Pending State
+        # Since we don't have strategy/decision yet, we can't print the full node details
+        # But we will update it after generation.
         
         nb = nbformat.read(best_nb_path, as_version=4)
         mutable_indices = identify_mutable_cells(nb, cfg)
@@ -539,7 +656,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             with open(current_metrics_path, 'r') as f: curr_metrics_obj = json.load(f)
         except: curr_metrics_obj = {}
             
-        # [STEP 1] Generate Suggestion (Using Enhanced History)
+        # [STEP 1] Generate Suggestion (Using Enhanced History & Semantic Gradient)
         suggestion = generate_optimization_suggestion(
             cfg, nb, mutable_indices, curr_metrics_obj, i, best_score_so_far, workspace_dir, history_summary
         )
@@ -556,6 +673,10 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
         # [NEW] Extract Sub-task Decision Fields
         decision_tag = suggestion.get("decision_type", "EXPLORE")
         focus_tag = suggestion.get("focus_area", "All")
+        sem_grad = suggestion.get("semantic_gradient_analysis", "N/A")
+        
+        # [NEW] Call Visual Tree Feedback (Pending Phase)
+        _log_tree_visual(workspace_dir, i, strategy_tag, decision_tag, focus_tag, "PENDING", best_score_so_far)
         
         print(f"[STRATEGY] {strategy_tag}")
         print(f"[ACTION]   {decision_tag} (Focus: {focus_tag})")
@@ -616,6 +737,9 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             print(f"  > Verdict:         {status}")
             print(f"-"*40)
             
+            # [NEW] Call Visual Tree Feedback (Result Phase - update file)
+            _log_tree_visual(workspace_dir, i, strategy_tag, decision_tag, focus_tag, status, candidate_score)
+            
             # [NEW] Enhanced logging
             write_review_log(workspace_dir, i, suggestion, candidate_score, best_score_so_far, comparison_baseline, status)
             
@@ -623,10 +747,11 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             history_summary.append({
                 "iter": i,
                 "strategy": strategy_tag,
-                "decision": decision_tag, # <--- Added
-                "focus": focus_tag,       # <--- Added
+                "decision": decision_tag, 
+                "focus": focus_tag,       
                 "reflection": reflection,
-                "critique": critique, 
+                "critique": critique,
+                "semantic_gradient": sem_grad, # Record the gradient that led to this
                 "status": status,
                 "score": candidate_score
             })

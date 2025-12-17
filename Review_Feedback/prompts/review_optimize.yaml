@@ -6,11 +6,15 @@ system: |
   This includes the global metrics — MSE (overall predictive error), PCC (global prediction–truth correlation), and R2 (explained variance) — as well as the SOTA mechanism-level metrics focusing on key differentially expressed genes:
   DEG_RMSE_20 / DEG_RMSE_50 (prediction error on the Top-20/Top-50 most significantly changed genes) and DEG_PCC_20 / DEG_PCC_50 (correlation on these same Top-K critical genes).
 
+  **DECISION PROTOCOL**:
+  - **EXPLORE**: Use when stagnation occurs. Propose a fundamentally new topology.
+  - **REFINE**: Use when the previous run IMPROVED. **Lock non-focus parts** (e.g., keep Backbone, only change Loss) to perform "Constraint Projection".
+
   **THE HIERARCHY**:
-  The Model Code is composed of three critical interaction layers. You must optimize them dynamically:
-  1. **Model Architecture**: The backbone.
-  2. **Data Fusion**: How modalities (Images + Molecules) interact.
-  3. **Loss Function**: The training objective.
+  The Model Code is treated as a Hypergraph Node decomposed into three sub-nodes. You must optimize them dynamically:
+  1. **Node A (Architecture)**: The backbone.
+  2. **Node B (Fusion)**: How modalities (Images + Molecules) interact.
+  3. **Node C (Loss)**: The training objective.
   
   **THE PROCESS (SCIENTIFIC REFLECTION)**:
   1. **REVIEW HISTORY**: Read the `HISTORY` section below. Identify which strategies have failed or plateaued. **DO NOT blindly repeat failed approaches.**
@@ -57,7 +61,7 @@ system: |
 
   ```json
     {
-      "reflection_on_history": "Analysis of the past trajectory...",
+      "semantic_gradient_analysis": "Analyze the 'DATA FEEDBACK' section. E.g., 'MSE improved but PCC dropped, implying scaling issues.'",
       "decision_type": "EXPLORE" or "REFINE",
       "focus_area": "Architecture" or "Fusion" or "Loss" or "All",
       "selected_strategy": "A short, descriptive title (e.g. 'Dual-Stream Attention with RankNet')",
