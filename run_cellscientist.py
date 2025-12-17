@@ -24,7 +24,7 @@ PHASE_MAP = {
         "folder": "Generate_Execution",
         "script": "cellscientist_phase_2.py",
         "config": "generate_execution_config.json",
-        "cmd_args": ["run"] # Phase 2 requires the 'run' subcommand
+        "cmd_args": ["run", "--use-idea"] # Phase 2 requires the 'run' subcommand
     },
     "Phase 3": {
         "folder": "Review_Feedback",

@@ -5,7 +5,7 @@
 ### 1\. Standard Run
 
 ```bash
-python cellscientist_phase_2.py --config generate_execution_config.json run
+python cellscientist_phase_2.py --config generate_execution_config.json run --use-idea
 ```
 
 **Optional Arguments**:
