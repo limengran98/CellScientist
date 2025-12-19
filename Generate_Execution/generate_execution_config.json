@@ -15,7 +15,7 @@
   },
   "experiment": {
     "primary_metric": "PCC",
-    "max_iterations": 10,
+    "max_iterations": 5,
     "success_threshold": 0.5
   },
   "prompt_branch": {

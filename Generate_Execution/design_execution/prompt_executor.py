@@ -264,6 +264,8 @@ class GraphExecutor(NotebookClient):
         self.llm_config = llm_config
         self.autofix_prompt = autofix_prompt
         self.max_fix_rounds = max_fix_rounds
+        self._cell_fix_counts = {}  # (cell_idx, task_id) -> total patches attempted
+        self._cell_last_error_sig = {}  # (cell_idx, task_id) -> last error signature
         self.global_errors = [] # Track errors that couldn't be fixed
 
     def execute_graph(self):
@@ -362,17 +364,38 @@ class GraphExecutor(NotebookClient):
         The Local Fix Loop.
         Returns True if the cell source was modified and should be retried.
         """
-        for attempt in range(self.max_fix_rounds):
+        key = (cell_idx, task_id)
+        base = int(self._cell_fix_counts.get(key, 0) or 0)
+        if base >= self.max_fix_rounds:
+            return False
+
+        for attempt in range(base, self.max_fix_rounds):
             errors = self._get_cell_errors(cell_idx)
             if not errors:
-                return False 
+                return False
 
-            print(f"   [FIX] {task_id} | Round {attempt+1}/{self.max_fix_rounds} | Analyzing...", flush=True)
+            # fingerprint current error to help debugging / avoid runaway retries
+            try:
+                sig_parts = []
+                for e in errors:
+                    en = str(e.get("ename", ""))
+                    ev = str(e.get("evalue", ""))
+                    tb = str(e.get("traceback", ""))[:300]
+                    sig_parts.append(en + ":" + ev + ":" + tb)
+                err_sig = "|".join(sig_parts)
+            except Exception:
+                err_sig = "unknown"
+
+            self._cell_last_error_sig[key] = err_sig
+
+            round_no = attempt + 1
+            print(f"   [FIX] {task_id} | Round {round_no}/{self.max_fix_rounds} | Analyzing...", flush=True)
 
             # 1. Heuristics (Fast path)
             h_changes, _ = _apply_heuristics(self.nb, errors)
             if h_changes > 0:
                 print(f"   [FIX] ⚡ Applied heuristic patch.", flush=True)
+                self._cell_fix_counts[key] = round_no
                 return True
 
             # 2. LLM (Slow path)
@@ -393,6 +416,7 @@ class GraphExecutor(NotebookClient):
                 if self.nb.cells[cell_idx].source != new_source:
                     self.nb.cells[cell_idx].source = new_source
                     print(f"   [FIX] 🧠 LLM patch generated and applied.", flush=True)
+                    self._cell_fix_counts[key] = round_no
                     return True
                 else:
                     print(f"   [FIX] ⚠️ LLM returned identical code.", flush=True)

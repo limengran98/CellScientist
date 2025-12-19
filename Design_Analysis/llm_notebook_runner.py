@@ -59,19 +59,145 @@ def read_pdf_excerpt(pdf_path: Optional[str], max_pages: int = 3, max_chars: int
         return ""
 
 def extract_json_block(text: str) -> Dict[str, Any]:
-    """Extract a JSON object from raw LLM output, supporting fenced blocks."""
-    m = re.search(r"```json\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
-    if m:
-        return json.loads(m.group(1))
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-    m2 = re.search(r"(\{.*\})", text, flags=re.DOTALL)
-    if m2:
-        return json.loads(m2.group(1))
-    raise ValueError("Could not parse JSON notebook spec from LLM response.")
+    """Extract a JSON object from raw LLM output.
 
+    [PATCH] More robust against:
+      - <think> blocks / prefixed reasoning text
+      - fenced markdown
+      - invalid control characters (e.g., raw newlines inside JSON strings)
+      - Python-dict-like outputs (single quotes / True/False)
+    """
+    if not text:
+        raise ValueError("Empty LLM response (no JSON).")
+
+    # 1) strip <think> blocks if present
+    try:
+        text2 = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL).strip()
+    except Exception:
+        text2 = (text or "").strip()
+
+    def _escape_control_chars_in_strings(s: str) -> str:
+        if not s:
+            return s
+        out = []
+        in_str = False
+        esc = False
+        for ch in s:
+            o = ord(ch)
+            if in_str:
+                if esc:
+                    out.append(ch)
+                    esc = False
+                    continue
+                if ch == "\\":  # begin escape
+                    out.append(ch)
+                    esc = True
+                    continue
+                if ch == '"':
+                    out.append(ch)
+                    in_str = False
+                    continue
+                if ch == "\n":
+                    out.append("\\n")
+                    continue
+                if ch == "\r":
+                    out.append("\\r")
+                    continue
+                if ch == "\t":
+                    out.append("\\t")
+                    continue
+                if o < 32:
+                    out.append(f"\\u{o:04x}")
+                    continue
+                out.append(ch)
+                continue
+
+            # not in string
+            if ch == '"':
+                out.append(ch)
+                in_str = True
+                esc = False
+                continue
+
+            if o < 32 and ch not in ("\n", "\r", "\t"):
+                # drop other control chars outside strings
+                continue
+            out.append(ch)
+        return "".join(out)
+
+    def _extract_balanced_object(s: str) -> str:
+        if not s:
+            return ""
+        start = s.find("{")
+        if start < 0:
+            return ""
+        in_str = False
+        esc = False
+        depth = 0
+        for i in range(start, len(s)):
+            ch = s[i]
+            if in_str:
+                if esc:
+                    esc = False
+                    continue
+                if ch == "\\":  # escape
+                    esc = True
+                    continue
+                if ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+                esc = False
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return s[start:i+1]
+        return ""
+
+    candidates = []
+
+    # 2) fenced blocks
+    m = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text2, flags=re.IGNORECASE)
+    if m:
+        candidates.append(m.group(1).strip())
+
+    # 3) balanced object (preferred over greedy regex)
+    obj = _extract_balanced_object(text2)
+    if obj:
+        candidates.append(obj)
+
+    # 4) raw text as last resort
+    candidates.append(text2)
+
+    last_err = None
+    for cand in candidates:
+        for attempt in (cand, _escape_control_chars_in_strings(cand)):
+            try:
+                parsed = json.loads(attempt)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception as e:
+                last_err = e
+
+        # python literal fallback
+        try:
+            import ast
+            py = cand
+            py = re.sub(r"\btrue\b", "True", py, flags=re.IGNORECASE)
+            py = re.sub(r"\bfalse\b", "False", py, flags=re.IGNORECASE)
+            py = re.sub(r"\bnull\b", "None", py, flags=re.IGNORECASE)
+            parsed = ast.literal_eval(py)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception as e:
+            last_err = e
+
+    preview = text2[:800] + ("..." if len(text2) > 800 else "")
+    raise ValueError(f"Could not parse JSON notebook spec from LLM response. Last error: {last_err}. Preview:\n{preview}")
 def nb_from_spec(spec: Dict[str, Any]) -> nbf.NotebookNode:
     """Convert the LLM JSON spec to a Notebook object."""
     nb = nbf.v4.new_notebook()
@@ -212,27 +338,55 @@ class OpenAICompatClient:
     def chat_json(self, messages, force_json: bool = True):
         print(f"👉 Sending LLM request | model={self.cfg.model} | base_url={self.cfg.base_url or 'default OpenAI'}")
 
-        if force_json:
+        # [PATCH] Retry once with a stricter system nudge if parsing/empty-content issues occur.
+        base_messages = list(messages) if isinstance(messages, list) else messages
+        last_err = None
+
+        for attempt in range(2):
+            msgs = base_messages
+            if attempt == 1:
+                try:
+                    msgs = list(base_messages) + [
+                        {"role": "system", "content": "Return ONLY a valid JSON object. No markdown, no prose, no <think>."}
+                    ]
+                except Exception:
+                    msgs = base_messages
+
+            # Prefer provider-side JSON mode if available
+            if force_json:
+                try:
+                    resp = self.client.chat.completions.create(
+                        model=self.cfg.model,
+                        messages=msgs,
+                        temperature=0.2,
+                        response_format={"type": "json_object"},
+                    )
+                    print(f"✅ LLM responded | model={resp.model}")
+                    content = (resp.choices[0].message.content or "").strip()
+                    if content:
+                        try:
+                            return json.loads(content)
+                        except Exception:
+                            # fall back to robust extractor (handles control chars / think text)
+                            return extract_json_block(content)
+                except Exception as e:
+                    last_err = e
+
+            # Fallback: normal completion then robust extract
             try:
                 resp = self.client.chat.completions.create(
                     model=self.cfg.model,
-                    messages=messages,
+                    messages=msgs,
                     temperature=0.2,
-                    response_format={"type": "json_object"},
                 )
                 print(f"✅ LLM responded | model={resp.model}")
-                return json.loads(resp.choices[0].message.content or "{}")
-            except Exception:
-                pass
+                content = resp.choices[0].message.content or "{}"
+                return extract_json_block(content)
+            except Exception as e:
+                last_err = e
+                continue
 
-        resp = self.client.chat.completions.create(
-            model=self.cfg.model,
-            messages=messages,
-            temperature=0.2,
-        )
-        print(f"✅ LLM responded | model={resp.model}")
-        content = resp.choices[0].message.content or "{}"
-        return extract_json_block(content)
+        raise RuntimeError(f"LLM JSON generation failed after retries. Last error: {last_err}")
 
 
 # ---------------- High-level Runner ----------------
