@@ -1,66 +1,128 @@
+
+````markdown
 # Design Analysis Module
+
+Phase 1 uses an LLM to **generate, execute, and (optionally) auto-fix** a Cell Painting analysis notebook.  
+Multiple runs are supported, and the **best run is automatically selected and exported** as a reference package.
+
+---
 
 ## Quick Start
 
 ```bash
 python cellscientist_phase_1.py design_analysis_config.json
+````
+
+---
+
+## What Phase 1 Does
+
+1. Generate + execute an analysis notebook (LLM-written).
+2. **Auto-Fix (optional)**: repair failing cells using a bounded LLM loop.
+3. Run **multiple variants in parallel** (if enabled).
+4. Score each run with lightweight heuristics.
+5. Export the **best run** into a reproducible `reference/` package.
+
+---
+
+## Key Files
+
+| File                         | Purpose                                         |
+| ---------------------------- | ----------------------------------------------- |
+| `cellscientist_phase_1.py`   | Phase 1 entry point                             |
+| `hypergraph_orchestrator.py` | Multi-run scheduling, scoring, reference export |
+| `run_llm_nb.py`              | Notebook execution + Auto-Fix logic             |
+| `config_loader.py`           | Load config + prompts, resolve paths            |
+
+---
+
+## Minimal Config You Care About (`design_analysis_config.json`)
+
+### (1) Dataset
+
+```json
+"dataset_name": "BBBC036"
 ```
 
-## Core Files Overview
+Used in paths via `${dataset_name}`.
 
-| File | Function |
-| :--- | :--- |
-| **cellscientist\_phase\_1.py** | **Entry Point**. Loads configuration, injects API keys into the environment, and enables unbuffered real-time logging. |
-| **hypergraph\_orchestrator.py** | **Scheduler**. Manages parallel execution (ThreadPool), timestamped directory creation, heuristic scoring, and mandatory export of the best result. |
-| **run\_llm\_nb.py** | **Execution Engine**. Handles robust LLM communication, notebook execution, and the **Auto-Fix Loop** (error recovery). |
-| **config\_loader.py** | **Utility**. Safely loads JSON configs and YAML prompts. |
+### (2) Auto-Fix & Execution
 
-## Configuration Guide (`design_analysis_config.json`)
+```json
+"exec": {
+  "max_fix_rounds": 3,
+  "timeout_seconds": 3600
+}
+```
 
-### 1\. Basic Settings
+* Set `max_fix_rounds = 0` to **disable Auto-Fix** (save cost).
 
-  * **`dataset_name`**: Dynamic variable used in paths.
-      * *Example*: If set to `"BBBC036"`, `${dataset_name}` in paths resolves to `BBBC036`.
+### (3) Multi-run (most important knobs)
 
-### 2\. LLM Settings (`llm`)
+```json
+"multi": {
+  "enabled": true,
+  "num_runs": 3,
+  "max_parallel_workers": 2,
+  "prompt_variants": [...],
+  "seeds": [...]
+}
+```
 
-| Parameter | Recommended | Description |
-| :--- | :--- | :--- |
-| `model` | `gpt-5` / `gemini-2.5-pro` | Strong reasoning models are required for code generation. |
-| `max_tokens` | `10000` - `20000` | Context window size. **Do not set too low**, as notebooks generate long outputs. |
-| `temperature` | `0.5` | Controls creativity for generation. Note: **Auto-Fix** forces `0.0` internally for precision. |
-| `api_key` | `sk-...` | If empty, the system defaults to the `OPENAI_API_KEY` environment variable. |
+### (4) LLM
 
-### 3\. Execution & Auto-Fix (`exec`)
+```json
+"llm": {
+  "model": "gpt-5",
+  "max_tokens": 12000,
+  "temperature": 0.5
+}
+```
 
-| Parameter | Recommended | Description |
-| :--- | :--- | :--- |
-| **`max_fix_rounds`** | **3 - 5** | **Critical**. The number of times the LLM is allowed to self-correct code errors. Set to `0` to disable repair. |
-| `timeout_seconds` | `1800` - `3600` | Max runtime per notebook. Increase for large datasets. |
-| `allow_errors` | `false` | If `true`, the notebook continues execution even after a cell fails (not recommended). |
+> API key is read from config **or** `OPENAI_API_KEY`.
 
-### 4\. Parallel Orchestration (`multi`)
+---
 
-| Parameter | Recommended | Description |
-| :--- | :--- | :--- |
-| `enabled` | `true` | Enables multi-run mode. |
-| **`max_parallel_workers`** | **2 - 4** | **Critical**. Number of concurrent threads. Depends on GPU VRAM and API rate limits. (e.g., 4 for A100, 2 for standard GPUs). |
-| `num_runs` | `1` - `5` | Planned runs. Actual runs = `min(num_runs, len(seeds), len(variants))`. |
-| `prompt_variants` | List[Str] | Different analysis instructions (e.g., "Focus on Dose-Response"). |
-| `seeds` | List[Int] | Fixed random seeds for reproducibility. |
+## Reference Export (Automatic)
 
-### 5\. Review & Export (`review.reference`)
+The best run is selected and exported to:
 
-Uses **Heuristic Scoring** (Rule-based detection of stats, plots, biology terms).
+```
+../results/<dataset_name>/design_analysis/reference/
+```
 
-  * `weights`: Adjust importance of Scientific, Novelty, Reproducibility, and Interpretability scores.
-  * **Note**: The system **automatically** calculates scores and exports the best performing notebook to the `reference/` directory.
+Contents:
 
-## Output Structure
+* `BEST_*.ipynb` – best executed notebook
+* `REFERENCE_DATA.h5` – processed data (if generated)
+* `reference.json` – selection metadata
+* `idea.json` – LLM-generated follow-up experiments
+* `summary_report.md` – LLM-generated analysis report
 
-Results are saved to `../results/${dataset_name}/design_analysis/`:
+---
 
-1.  **Run Directories**: Named `design_analysis_YYYYMMDD_HHMMSS_RunX`.
-      * Contains: `CP_llm.ipynb` (Source), `CP_llm_executed.ipynb` (Executed), `preprocessed_data.h5` (Data artifact).
-2.  **`hypergraph_runs/hypergraph.json`**: Metadata and scores for all runs.
-3.  **`reference/`**: Automatically contains the **Best Notebook** (`BEST_design_analysis_...ipynb`) and its corresponding H5 data file.
+## Prompts (`Design_Analysis/prompts/`)
+
+Only the important ones:
+
+* `notebook_generation.yml` – notebook content
+* `autofix.yml` – repair instructions
+* `idea.yml` – experiment ideas
+* `report.yml` – summary report (language, structure)
+
+---
+
+## Output Layout
+
+```
+results/<dataset>/design_analysis/
+  design_analysis_..._RunX/
+    CP_llm.ipynb
+    CP_llm_executed.ipynb
+    preprocessed_data.h5
+  hypergraph_runs/hypergraph.json
+  reference/
+    BEST_*.ipynb
+    REFERENCE_DATA.h5
+    summary_report.md
+```
