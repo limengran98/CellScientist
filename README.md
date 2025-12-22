@@ -34,9 +34,10 @@ CellScientist/
 │   ├── review_feedback_config.json
 │   └── CodeEvo/              # Evolution History & Artifacts
 │
-├── run_cellscientist.py      # 🚀 Unified Pipeline Orchestrator
-├── llm_providers.json        # LLM API Configurations
-├── requirements.txt          # Python Dependencies
+├── pipeline_config.json      # ⭐ Unified pipeline-level configuration (recommended)
+├── run_cellscientist.py      # 🚀 Unified pipeline runner
+├── llm_providers.json
+├── requirements.txt
 └── README.md
 ```
 
@@ -54,6 +55,9 @@ CellScientist/
 ```bash
 python run_cellscientist.py
 ```
+* Reads pipeline_config.json (if present)
+* Automatically merges shared parameters into each phase config
+* Ensures consistent dataset, paths, GPU, and LLM settings across all phases
 
 ### Method II: Manual Phase Execution
 
@@ -71,7 +75,7 @@ python cellscientist_phase_1.py design_analysis_config.json
 
 ```bash
 cd Generate_Execution
-python cellscientist_phase_2.py --config generate_execution_config.json run
+python cellscientist_phase_2.py --config generate_execution_config.json run --use-idea
 
 ```
 
