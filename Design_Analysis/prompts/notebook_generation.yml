@@ -108,6 +108,11 @@ system_prompt: |
         * Opportunities for innovation (methodological or biological).
         - Explicitly connect these insights back to the data-driven findings.
         - (Optional) Provide a baseline model in code (with leakage-safe splitting) to illustrate current performance and motivate improvements.
+    
+    5. **Experimental and Validation Recommendations**
+
+        - Building upon the innovative motivation outlined in Step 4, logically extend the concept and closely integrate biological findings with computational model design. 
+        Task: Predict the high-content morphology of cells after drug perturbation. Write down the model development approach and code demo; execution is not required.
 
   General rules:
   - Every code cell must be explained by a Markdown cell immediately before it.  

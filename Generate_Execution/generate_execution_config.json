@@ -1,9 +1,11 @@
 {
-  "dataset_name": "BBBC047",
+  "dataset_name": "BBBC036",
   "paths": {
     "baseline_source_dir": "../baseline/${dataset_name}",
     "stage1_analysis_dir": "../results/${dataset_name}/design_analysis/reference",
-    "design_execution_root": "../results/${dataset_name}/generate_execution"
+    "design_execution_root": "../results/${dataset_name}/generate_execution",
+    "literature_dir": "../results/${dataset_name}/literature",
+    "literature_knowledge_json": "../results/${dataset_name}/literature/domain_knowledge.json"
   },
   "llm": {
     "model": "gemini-3-pro-all",
@@ -32,6 +34,18 @@
     "enable_llm_autofix": true,
     "enable_hypergraph_viz": true,
     "viz_format": "mermaid",
-    "cuda_device_id": 1
+    "cuda_device_id": 3
+  },
+  "literature": {
+    "enabled": false,
+    "use_existing_only": true,
+    "cache_days": 30,
+    "max_papers": 12,
+    "max_abstract_chars": 1200,
+    "prompt_max_chars": 6000,
+    "min_citations": 6,
+    "provider": "semantic_scholar",
+    "task_keywords": "cell painting perturbation modeling",
+    "query": ""
   }
 }

@@ -568,107 +568,27 @@ def load_or_create_literature_knowledge(cfg: Dict[str, Any], dataset_name: str, 
         _atomic_write_json(knowledge_path, know)
         _log("DONE")
         return know, knowledge_path
+
+
 # =============================================================================
-# Public helpers for Phase1/2/3 integration
+# Compatibility helpers (used by Phase 1/2/3 callers)
 # =============================================================================
 
-def render_domain_knowledge_for_prompt(knowledge: Dict[str, Any], max_chars: int = 6000) -> str:
-    """Render a compact, prompt-friendly knowledge block.
-
-    Designed to be stable and low-bug:
-    - tolerates missing fields
-    - truncates aggressively to avoid token blowups
-    """
-    if not isinstance(knowledge, dict):
-        return ""
-    parts = []
-
-    domain = (knowledge.get("domain") or "domain knowledge").strip()
-    parts.append(f"Domain: {domain}")
-
-    # Best-effort: include high-signal sections only
-    summary = (knowledge.get("summary") or "").strip()
-    if summary:
-        parts.append("\nSummary:\n" + summary)
-
-    key_concepts = knowledge.get("key_concepts")
-    if isinstance(key_concepts, list) and key_concepts:
-        parts.append("\nKey concepts:")
-        for c in key_concepts[:12]:
-            if isinstance(c, str) and c.strip():
-                parts.append(f"- {c.strip()}")
-
-    pitfalls = knowledge.get("common_pitfalls")
-    if isinstance(pitfalls, list) and pitfalls:
-        parts.append("\nCommon pitfalls:")
-        for p in pitfalls[:10]:
-            if isinstance(p, str) and p.strip():
-                parts.append(f"- {p.strip()}")
-
-    rec = knowledge.get("recommended_metrics_and_checks")
-    if isinstance(rec, list) and rec:
-        parts.append("\nRecommended metrics & checks:")
-        for r in rec[:10]:
-            if isinstance(r, str) and r.strip():
-                parts.append(f"- {r.strip()}")
-
-    # citations (keep short)
-    cits = knowledge.get("key_papers_citations")
-    if isinstance(cits, list) and cits:
-        parts.append("\nKey paper citations (short):")
-        for c in cits[:8]:
-            if isinstance(c, str) and c.strip():
-                parts.append(f"- {c.strip()}")
-
-    text = "\n".join(parts).strip()
-    if max_chars and len(text) > int(max_chars):
-        text = text[: max(0, int(max_chars) - 3)] + "..."
-    return text
-
-
-def get_literature_context(cfg: Dict[str, Any], dataset_name: Optional[str] = None, refresh: bool = False) -> Dict[str, Any]:
-    """Unified entrypoint used by Phase1/2/3.
-
-    Returns a dict:
-      {
-        "enabled": bool,
-        "knowledge": dict|None,
-        "knowledge_path": str,
-        "prompt_text": str
-      }
-    """
-    dataset_name = (dataset_name or cfg.get("dataset_name") or "").strip() or "default_dataset"
-    lit_cfg = cfg.get("literature") or {}
-    enabled = bool(lit_cfg.get("enabled", False))
-    # Always compute the on-disk path (even if disabled) so downstream can locate it
-    out_dir = _lit_dir(dataset_name, cfg)
-    out_path = out_dir / "domain_knowledge.json"
-
-    if not enabled:
-        return {"enabled": False, "knowledge": None, "knowledge_path": str(out_path), "prompt_text": ""}
-
-    use_existing_only = bool(lit_cfg.get("use_existing_only", False))
-    if use_existing_only and out_path.exists():
-        try:
-            knowledge = json.loads(out_path.read_text(encoding="utf-8"))
-        except Exception:
-            knowledge = None
-        return {
-            "enabled": True,
-            "knowledge": knowledge,
-            "knowledge_path": str(out_path),
-            "prompt_text": render_domain_knowledge_for_prompt(knowledge or {}, max_chars=int(lit_cfg.get("prompt_max_chars", 6000) or 6000)),
-        }
-
-    # Otherwise: ensure a knowledge JSON exists (with caching/locking inside)
+def get_literature_context(config: Dict[str, Any], dataset_name: str = "", force_refresh: bool = False) -> Dict[str, Any]:
+    """Compatibility wrapper returning the knowledge JSON object (fail-open)."""
     try:
-        knowledge, path = load_or_create_literature_knowledge(cfg, dataset_name=dataset_name, refresh=refresh)
-        return {
-            "enabled": True,
-            "knowledge": knowledge,
-            "knowledge_path": str(path),
-            "prompt_text": render_domain_knowledge_for_prompt(knowledge or {}, max_chars=int(lit_cfg.get("prompt_max_chars", 6000) or 6000)),
-        }
-    except Exception as e:
-        # Fail-open (do not break the pipeline)
-        return {"enabled": True, "knowledge": None, "knowledge_path": str(out_path), "prompt_text": f"(literature unavailable: {type(e).__name__}: {e})"}
+        ds = dataset_name or str(config.get("dataset_name") or "").strip()
+        kp, _kp_path = load_or_create_literature_knowledge(config, ds, force_refresh=force_refresh)
+        return kp or {}
+    except Exception:
+        return {}
+
+def load_domain_knowledge_text(config: Dict[str, Any], dataset_name: str = "") -> str:
+    """Load knowledge JSON and return a compact text (for LLM prompts)."""
+    try:
+        ds = dataset_name or str(config.get("dataset_name") or "").strip()
+        kp, _kp_path = load_or_create_literature_knowledge(config, ds, force_refresh=False)
+        max_chars = int(os.environ.get("DOMAIN_KNOWLEDGE_MAX_CHARS", "9000"))
+        return json.dumps(kp or {}, ensure_ascii=False, indent=2)[:max_chars]
+    except Exception:
+        return ""

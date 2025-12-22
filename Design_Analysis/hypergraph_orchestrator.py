@@ -42,13 +42,27 @@ def _hash_file(p: Path) -> str:
     except Exception: return ""
 
 def _is_valid_hdf5(p: Path) -> bool:
-    if not p.exists(): return False
-    try:
-        import h5py
-        with h5py.File(p, 'r') as f:
-            return list(f.keys()) is not None
-    except Exception:
+    """Best-effort HDF5 validation.
+
+    Some environments may not have h5py installed; in that case we fall back
+    to checking the HDF5 file signature so that generated artifacts can still
+    be exported to the reference directory.
+    """
+    if not p.exists():
         return False
+    try:
+        import h5py  # type: ignore
+        with h5py.File(p, 'r') as f:
+            _ = list(f.keys())
+        return True
+    except Exception:
+        # Fallback: HDF5 signature is: \x89 H D F \r \n \x1a \n
+        try:
+            with open(p, 'rb') as fh:
+                sig = fh.read(8)
+            return sig == b"\x89HDF\r\n\x1a\n"
+        except Exception:
+            return False
 
 # --------------------
 # Per-run logic (Worker Function)
@@ -66,13 +80,13 @@ def _process_single_run(idx, variant, seed, base_cfg, num_runs) -> Dict[str, Any
         multi = nb_cfg.get("multi", {})
         paths = nb_cfg.get("paths", {})
         
-        out_dir = Path(multi.get("out_dir") or Path(paths.get("out")).parent / "hypergraph_runs")
+        out_dir = Path(multi.get("out_dir") or Path(paths.get("out")).parent / "hypergraph_runs").resolve()
         
         # [MODIFIED] Semantic Naming Strategy
         t_str = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_name = f"design_analysis_{t_str}_Run{idx+1}"
         
-        run_dir = out_dir / run_name
+        run_dir = (out_dir / run_name).resolve()
         _ensure_dir(run_dir)
 
         # Inject Variant
@@ -82,9 +96,9 @@ def _process_single_run(idx, variant, seed, base_cfg, num_runs) -> Dict[str, Any
         
         # Setup Paths
         nb_cfg.setdefault("paths", {})
-        nb_cfg["paths"]["out"] = str(run_dir / "CP_llm.ipynb")
-        nb_cfg["paths"]["out_exec"] = str(run_dir / "CP_llm_executed.ipynb")
-        h5_p = run_dir / "preprocessed_data.h5"
+        nb_cfg["paths"]["out"] = str((run_dir / "CP_llm.ipynb").resolve())
+        nb_cfg["paths"]["out_exec"] = str((run_dir / "CP_llm_executed.ipynb").resolve())
+        h5_p = (run_dir / "preprocessed_data.h5").resolve()
         nb_cfg["paths"]["h5_out"] = str(h5_p)
         
         if seed is not None:
@@ -186,9 +200,11 @@ def orchestrate(cfg_path: str, prompts_dir_path: Optional[str] = None):
         } for e in edges]
     }
     
-    out_dir = Path(multi_cfg.get("out_dir") or "hypergraph_runs")
-    _ensure_dir(out_dir)
-    hp_path = out_dir / "hypergraph.json"
+    multi_out_dir = Path(multi_cfg.get("out_dir") or "hypergraph_runs").resolve()
+    _ensure_dir(multi_out_dir)
+    hypergraph_dir = (multi_out_dir / "hypergraph_runs").resolve()
+    _ensure_dir(hypergraph_dir)
+    hp_path = hypergraph_dir / "hypergraph.json"
     hp_path.write_text(json.dumps(hypergraph, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"✅ Hypergraph saved: {hp_path}", flush=True)
 
@@ -310,6 +326,217 @@ def generate_experiment_ideas(notebook_path: str, output_dir: Path, llm_cfg: Dic
     except Exception as e:
         print(f"❌ [IDEAS] Failed: {e}", flush=True)
 
+
+def _truncate_middle(text: str, max_chars: int) -> str:
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    head = max_chars // 3
+    tail = max_chars - head - len("\n...[SNIP]...\n")
+    return text[:head] + "\n...[SNIP]...\n" + text[-tail:]
+
+
+def _summarize_h5_for_report(h5_path: Path, max_items: int = 80) -> str:
+    if not h5_path.exists():
+        return "(no H5 artifact found)"
+    lines = []
+    try:
+        import h5py  # type: ignore
+        with h5py.File(h5_path, "r") as f:
+            def _walk(name, obj):
+                if isinstance(obj, h5py.Dataset):
+                    shape = getattr(obj, "shape", None)
+                    dtype = str(getattr(obj, "dtype", ""))
+                    lines.append(f"- {name}  shape={shape}  dtype={dtype}")
+                else:
+                    lines.append(f"- {name}/")
+            f.visititems(_walk)
+        if len(lines) > max_items:
+            lines = lines[:max_items] + [f"... ({len(lines)-max_items} more items)"]
+        return "\n".join(lines)
+    except Exception as e:
+        # Keep it non-fatal; report can still be generated.
+        try:
+            size = h5_path.stat().st_size
+        except Exception:
+            size = -1
+        return f"(failed to inspect H5: {e}; size_bytes={size})"
+
+
+def _summarize_notebook_for_report(ipynb_path: Path, max_chars: int = 16000) -> str:
+    if not ipynb_path.exists():
+        return "(notebook missing)"
+    cells = _extract_nb_cells(str(ipynb_path))
+    parts: List[str] = []
+
+    for c in cells:
+        ctype = c.get("cell_type")
+        src = c.get("source", "")
+        if isinstance(src, list):
+            src = "".join(src)
+
+        if ctype == "markdown":
+            if src.strip():
+                parts.append("[MARKDOWN]\n" + src.strip())
+        elif ctype == "code":
+            # Keep code only if short (for context), prioritize outputs and markdown.
+            if isinstance(src, str) and src.strip() and len(src) <= 1200:
+                parts.append("[CODE]\n" + src.strip())
+
+            for out in c.get("outputs", []) or []:
+                otype = out.get("output_type")
+                if otype == "stream":
+                    txt = out.get("text", "")
+                    if isinstance(txt, list):
+                        txt = "".join(txt)
+                    if isinstance(txt, str) and txt.strip() and len(txt) <= 2000:
+                        parts.append("[STDOUT]\n" + txt.strip())
+                else:
+                    data_obj = out.get("data", {}) or {}
+                    txt = data_obj.get("text/plain") or data_obj.get("text")
+                    if isinstance(txt, list):
+                        txt = "".join(txt)
+                    if isinstance(txt, str) and txt.strip() and len(txt) <= 2000:
+                        parts.append("[OUTPUT]\n" + txt.strip())
+
+    return _truncate_middle("\n\n".join(parts), max_chars=max_chars)
+
+
+def generate_summary_report(reference_dir: Path, *, cfg: Dict[str, Any], llm_cfg: Dict[str, Any], prompts_dir_path: Optional[str] = None):
+    """Read artifacts in reference_dir and call LLM to generate a Markdown report."""
+    reference_dir = Path(reference_dir).resolve()
+    reference_dir.mkdir(parents=True, exist_ok=True)
+
+    dataset_name = (cfg.get("dataset_name") or "dataset").strip()
+
+    # Locate artifacts
+    best_ipynb = None
+    for p in sorted(reference_dir.glob("BEST_*.ipynb")):
+        best_ipynb = p
+        break
+
+    idea_json = None
+    idea_path = reference_dir / "idea.json"
+    if idea_path.exists():
+        try:
+            idea_json = json.loads(idea_path.read_text(encoding="utf-8"))
+        except Exception:
+            idea_json = None
+
+    ref_meta = None
+    ref_meta_path = reference_dir / "reference.json"
+    if ref_meta_path.exists():
+        try:
+            ref_meta = json.loads(ref_meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            ref_meta = None
+
+    h5_path = reference_dir / "REFERENCE_DATA.h5"
+    h5_summary = _summarize_h5_for_report(h5_path)
+    nb_summary = _summarize_notebook_for_report(best_ipynb) if best_ipynb else "(no BEST_*.ipynb found)"
+
+    # Defaults (English)
+    default_sections = [
+        "Objective",
+        "Data Overview",
+        "Data Characteristics & Quality",
+        "Detailed Analysis (with evidence/metrics/figures highlights)",
+        "Key Findings & Interpretability",
+        "Reproducible Experiments & Validation Plan",
+        "Next Experiment Ideas (>= 8 items)",
+        "Risks, Biases & Caveats",
+        "Reproduction Checklist (files/commands/seeds)"
+    ]
+    report_language = "en"
+    system_prompt = ""
+
+    # Load report.yml if present
+    report_yml_path = None
+    report_cfg = {}
+    if prompts_dir_path:
+        report_yml_path = Path(prompts_dir_path) / "report.yml"
+        if report_yml_path.exists():
+            try:
+                with open(report_yml_path, "r", encoding="utf-8") as f:
+                    import yaml
+                    report_cfg = yaml.safe_load(f) or {}
+                    system_prompt = report_cfg.get("system_prompt", "") or ""
+                    # Optional overrides from YAML
+                    report_language = (report_cfg.get("language") or report_language)
+                    sections_from_yml = report_cfg.get("sections")
+                    if isinstance(sections_from_yml, list) and sections_from_yml:
+                        default_sections = [str(x) for x in sections_from_yml]
+                print(f"🧾 [REPORT] Loaded prompt config: {report_yml_path}", flush=True)
+            except Exception as e:
+                print(f"⚠️ [REPORT] Failed to load {report_yml_path}: {e}", flush=True)
+        else:
+            print(f"⚠️ [REPORT] Prompt file not found: {report_yml_path}", flush=True)
+
+    if not system_prompt:
+        system_prompt = (
+            "You are a senior Cell Painting / omics data scientist and a scientific writer. "
+            "Based on the provided reference artifacts, write a reproducible, actionable summary report in Markdown."
+        )
+
+    resolved = resolve_llm_config(llm_cfg)
+
+    # Keep the config excerpt small
+    cfg_excerpt = {
+        "dataset_name": cfg.get("dataset_name"),
+        "workflow_phases": cfg.get("workflow_phases"),
+        "split_strategy": (((cfg.get("phases") or {}).get("task_analysis") or {}).get("llm_notebook") or {}).get("split_strategy"),
+        "data_path": (((((cfg.get("phases") or {}).get("task_analysis") or {}).get("llm_notebook") or {}).get("paths") or {}).get("data")),
+    }
+
+    user_payload = {
+        "dataset_name": dataset_name,
+        "reference_dir": str(reference_dir),
+        "reference_meta": ref_meta,
+        "h5_summary": h5_summary,
+        "notebook_summary": nb_summary,
+        "idea_json": idea_json,
+        "config_excerpt": cfg_excerpt,
+        "instructions": {
+            "language": report_language,
+            "format": "markdown",
+            "sections": default_sections
+        }
+    }
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": (
+            "Use the JSON below as your ONLY source of information. "
+            "Return a JSON object that MUST contain the key `report_md` (a Markdown string). "
+            "Output JSON ONLY (no extra text).\n\n"
+            f"INPUT_JSON:\n{json.dumps(user_payload, ensure_ascii=False)}"
+        )}
+    ]
+
+    print("🧾 [REPORT] Generating summary report...", flush=True)
+    try:
+        resp = chat_json(
+            messages,
+            api_key=resolved["api_key"],
+            base_url=resolved["base_url"],
+            model=resolved["model"],
+            temperature=float(resolved.get("temperature", 0.3)),
+            max_tokens=int(resolved.get("max_tokens", 8192)),
+        )
+        if not isinstance(resp, dict):
+            raise RuntimeError("LLM did not return a JSON object")
+        report_md = resp.get("report_md") or ""
+        if not isinstance(report_md, str) or not report_md.strip():
+            raise RuntimeError("report_md missing/empty")
+
+        (reference_dir / "summary_report.md").write_text(report_md, encoding="utf-8")
+        (reference_dir / "summary_report.json").write_text(json.dumps(resp, ensure_ascii=False, indent=2), encoding="utf-8")
+        print("✅ [REPORT] Saved: summary_report.md", flush=True)
+    except Exception as e:
+        print(f"❌ [REPORT] Failed: {e}", flush=True)
+
+
 def _ref_cfg(cfg_path: str, prompts_dir_path: Optional[str] = None):
     try:
         cfg = _load_cfg(cfg_path, prompts_dir_path)
@@ -352,8 +579,8 @@ def select_and_export_reference(hypergraph_path: str, cfg_path: str, prompts_dir
         "scientific": 1.0, "novelty": 1.0, "reproducibility": 1.0, "interpretability": 1.0
     })
     
-    base_out = Path(multi.get("out_dir") or "hypergraph_runs")
-    export_dir = Path(ref_cfg.get("export_dir") or base_out / "reference")
+    base_out = Path(multi.get("out_dir") or "hypergraph_runs").resolve()
+    export_dir = Path(ref_cfg.get("export_dir") or (base_out / "reference")).resolve()
     export_dir.mkdir(parents=True, exist_ok=True)
 
     best = None
@@ -407,6 +634,15 @@ def select_and_export_reference(hypergraph_path: str, cfg_path: str, prompts_dir
             output_dir=export_dir,
             llm_cfg=nb_cfg_full.get("llm", {}),
             prompts_dir_path=prompts_dir_path
+        )
+
+    # Generate Markdown summary report
+    if ref_cfg.get("generate_report", True):
+        generate_summary_report(
+            reference_dir=export_dir,
+            cfg=full_cfg,
+            llm_cfg=nb_cfg_full.get("llm", {}),
+            prompts_dir_path=prompts_dir_path,
         )
 
 if __name__ == "__main__":

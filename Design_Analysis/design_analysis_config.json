@@ -1,5 +1,5 @@
 {
-  "dataset_name": "BBBC047",
+  "dataset_name": "BBBC036",
   "workflow_phases": [
     "task_analysis"
   ],
@@ -81,5 +81,21 @@
         }
       }
     }
+  },
+  "literature": {
+    "enabled": false,
+    "use_existing_only": false,
+    "cache_days": 30,
+    "max_papers": 12,
+    "max_abstract_chars": 1200,
+    "prompt_max_chars": 6000,
+    "min_citations": 6,
+    "provider": "semantic_scholar",
+    "task_keywords": "cell painting perturbation modeling",
+    "query": ""
+  },
+  "paths": {
+    "literature_dir": "../results/${dataset_name}/literature",
+    "literature_knowledge_json": "../results/${dataset_name}/literature/domain_knowledge.json"
   }
 }

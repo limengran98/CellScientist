@@ -1,10 +1,12 @@
 {
-  "dataset_name": "BBBC047",
+  "dataset_name": "BBBC036",
   "paths": {
     "generate_execution_root": "../results/${dataset_name}/generate_execution",
     "review_feedback_root": "../results/${dataset_name}/review_feedback",
     "stage1_analysis_dir": "../results/${dataset_name}/design_analysis/reference",
-    "explicit_source_path": null
+    "explicit_source_path": null,
+    "literature_dir": "../results/${dataset_name}/literature",
+    "literature_knowledge_json": "../results/${dataset_name}/literature/domain_knowledge.json"
   },
   "llm": {
     "model": "gemini-3-pro-preview-thinking",
@@ -16,30 +18,46 @@
   },
   "review": {
     "target_metric": "PCC",
-    "direction": "maximize", 
+    "direction": "maximize",
     "max_iterations": 10,
     "pass_threshold": 0.7,
-    "force_cells": [0,1,4], 
+    "force_cells": [
+      0,
+      1,
+      4
+    ],
     "protected_sections": [
-        "SECTION 1", 
-        "SECTION 2", 
-        "Data Loading",
-        "Evaluation"
+      "SECTION 1",
+      "SECTION 2",
+      "Data Loading",
+      "Evaluation"
     ],
     "target_sections": [
-        "SECTION 3",
-        "Innovation",
-        "Modeling",
-        "Training"
+      "SECTION 3",
+      "Innovation",
+      "Modeling",
+      "Training"
     ],
     "optimization_hierarchy": [
-        "1. Model Architecture (Backbone/Encoder)",
-        "2. Data Fusion Mechanism (Interaction/Attention)",
-        "3. Loss Function & Optimization Strategy"
+      "1. Model Architecture (Backbone/Encoder)",
+      "2. Data Fusion Mechanism (Interaction/Attention)",
+      "3. Loss Function & Optimization Strategy"
     ]
   },
   "exec": {
     "timeout_seconds": 18000,
     "max_fix_rounds": 3
+  },
+  "literature": {
+    "enabled": false,
+    "use_existing_only": true,
+    "cache_days": 30,
+    "max_papers": 12,
+    "max_abstract_chars": 1200,
+    "prompt_max_chars": 6000,
+    "min_citations": 6,
+    "provider": "semantic_scholar",
+    "task_keywords": "cell painting perturbation modeling",
+    "query": ""
   }
 }
