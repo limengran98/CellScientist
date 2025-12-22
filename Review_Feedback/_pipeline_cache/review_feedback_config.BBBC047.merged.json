@@ -47,7 +47,7 @@
   "exec": {
     "timeout_seconds": 18000,
     "max_fix_rounds": 3,
-    "cuda_device_id": 2
+    "cuda_device_id": 0
   },
   "literature": {
     "enabled": false,

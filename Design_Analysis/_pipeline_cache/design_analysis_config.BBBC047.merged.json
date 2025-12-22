@@ -22,7 +22,7 @@
           "save_intermediate": true,
           "allow_errors": false,
           "max_fix_rounds": 3,
-          "cuda_device_id": 2
+          "cuda_device_id": 0
         },
         "llm": {
           "provider": "yizhan",

@@ -210,14 +210,22 @@ def _apply_pipeline_overrides(phase_name: str, phase_cfg: Dict[str, Any], pipe_c
     common = pipe_cfg.get("common") if isinstance(pipe_cfg.get("common"), dict) else {}
     # 2) CUDA / GPU selection (common)
     cuda_id = common.get("cuda_device_id", None)
+    
+    # [FIX 2] CUDA Invalid Device Ordinal
+    # If using CUDA_VISIBLE_DEVICES (e.g., =2), the process sees it as device 0.
+    # So we must override the config internal ID to 0 to prevent index errors.
+    config_cuda_id = cuda_id
+    if cuda_id is not None:
+         config_cuda_id = 0
+
     if cuda_id is not None:
         if phase_name == "Phase 1":
-            _set_nested(cfg, ["phases", "task_analysis", "llm_notebook", "exec", "cuda_device_id"], cuda_id)
+            _set_nested(cfg, ["phases", "task_analysis", "llm_notebook", "exec", "cuda_device_id"], config_cuda_id)
         elif phase_name == "Phase 2":
-            _set_nested(cfg, ["exec", "cuda_device_id"], cuda_id)
+            _set_nested(cfg, ["exec", "cuda_device_id"], config_cuda_id)
         elif phase_name == "Phase 3":
             # Phase 3 mostly respects env CUDA_VISIBLE_DEVICES; keep here for future compatibility
-            _set_nested(cfg, ["exec", "cuda_device_id"], cuda_id)
+            _set_nested(cfg, ["exec", "cuda_device_id"], config_cuda_id)
 
     # 3) LLM defaults (common)
     llm_common = pipe_cfg.get("llm") if isinstance(pipe_cfg.get("llm"), dict) else None
@@ -250,6 +258,13 @@ def _materialize_merged_configs(pipe_cfg: Dict[str, Any]) -> Dict[str, str]:
     Returns: {phase_name: merged_config_path}
     """
     merged_paths: Dict[str, str] = {}
+    
+    # [FIX 1] Config Collision
+    # Ensure filename includes dataset name to avoid overwrite race conditions
+    dataset_tag = "default"
+    if pipe_cfg.get("dataset_name"):
+        dataset_tag = "".join(c for c in str(pipe_cfg["dataset_name"]) if c.isalnum() or c in ('-','_'))
+
     for phase_name, info in PHASE_MAP.items():
         base_cfg_path = get_config_path(info)
         base_cfg = load_json(base_cfg_path)
@@ -263,9 +278,10 @@ def _materialize_merged_configs(pipe_cfg: Dict[str, Any]) -> Dict[str, str]:
 
         base_name = os.path.basename(info["config"])
         if base_name.endswith(".json"):
-            out_name = base_name[:-5] + ".merged.json"
+            # Insert dataset tag into filename: config.BBBC036.merged.json
+            out_name = base_name[:-5] + f".{dataset_tag}.merged.json"
         else:
-            out_name = base_name + ".merged.json"
+            out_name = base_name + f".{dataset_tag}.merged.json"
 
         out_path = os.path.abspath(os.path.join(cache_dir, out_name))
         with open(out_path, "w", encoding="utf-8") as f:
@@ -282,9 +298,11 @@ def _pipeline_extra_env(pipe_cfg: Dict[str, Any]) -> Dict[str, str]:
     env_out: Dict[str, str] = {}
 
     common = pipe_cfg.get("common") if isinstance(pipe_cfg.get("common"), dict) else {}
+    # Prioritize visible_devices if explicitly set
     if common.get("cuda_visible_devices") is not None:
         env_out["CUDA_VISIBLE_DEVICES"] = str(common["cuda_visible_devices"])
     elif common.get("cuda_device_id") is not None:
+        # Fallback: if only device ID is set, use it as the visible device mask
         env_out["CUDA_VISIBLE_DEVICES"] = str(common["cuda_device_id"])
 
     env_cfg = pipe_cfg.get("env") if isinstance(pipe_cfg.get("env"), dict) else {}

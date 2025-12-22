@@ -1,5 +1,5 @@
 {
-  "dataset_name": "BBBC047",
+  "dataset_name": "BBBC036",
   "paths": {
     "generate_execution_root": "../results/${dataset_name}/generate_execution",
     "review_feedback_root": "../results/${dataset_name}/review_feedback",
@@ -47,7 +47,7 @@
   "exec": {
     "timeout_seconds": 18000,
     "max_fix_rounds": 3,
-    "cuda_device_id": 2
+    "cuda_device_id": 0
   },
   "literature": {
     "enabled": false,

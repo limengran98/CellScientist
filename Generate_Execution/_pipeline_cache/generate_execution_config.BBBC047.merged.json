@@ -34,7 +34,7 @@
     "enable_llm_autofix": true,
     "enable_hypergraph_viz": true,
     "viz_format": "mermaid",
-    "cuda_device_id": 2
+    "cuda_device_id": 0
   },
   "literature": {
     "enabled": false,
