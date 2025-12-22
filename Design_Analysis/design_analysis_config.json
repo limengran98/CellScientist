@@ -1,5 +1,5 @@
 {
-  "dataset_name": "BBBC036",
+  "dataset_name": "BBBC047",
   "workflow_phases": [
     "task_analysis"
   ],
@@ -10,7 +10,7 @@
         "split_strategy": "smiles",
         "paths": { 
           "data": "../data/${dataset_name}/CP_data.csv",
-          "paper": "../data/${dataset_name}/BBBC036.pdf",
+          "paper": "",
           "preprocess": ""
         },
         "exec": {
@@ -22,7 +22,7 @@
           "save_intermediate": true,
           "allow_errors": false,
           "max_fix_rounds": 3,
-          "cuda_device_id": 3
+          "cuda_device_id": 1
         },
         "llm": {
           "provider": "yizhan",
@@ -38,13 +38,13 @@
         "multi": {
           "num_runs": 4,
           "enabled": true,
-          "max_parallel_workers": 4,
+          "max_parallel_workers": 1,
           "name_template": "NB{idx:02d}-seed{seed}",
           "seeds": [
-            11,
-            22,
-            33,
-            44
+            1,
+            2,
+            3,
+            4
           ],
           "prompt_variants": [
             "focus=robust-scaling; note: emphasize dose effects",

@@ -76,5 +76,44 @@ system_prompt: |
       - Absolute HDF5 output path
       - File location: [PRINT THE H5 OUTPUT PATH HERE]
 
+    2. **Data Patterns**
+        - Build directly on the processed matrix from Step 1.
+        - Perform bio-oriented EDA with **advanced visualizations** (prefer these, with graceful fallbacks):
+        * **Heatmap + clustering dendrogram** of top-variable features across samples/conditions.
+            - Preferred: seaborn.clustermap; Fallback: matplotlib + scipy (linkage + dendrogram).
+        * **Distribution & correlation views**: KDE/violin or histogram for representative features; correlation matrix and top correlated pairs.
+        * **Dimensionality reduction**: PCA (required); optionally UMAP/t-SNE if available. Color by condition/dose/plate; overlay point density if feasible.
+        * **Batch & dose effects**: ANOVA or linear/mixed-effects models (statsmodels) with concise result tables.
+        - Provide biological interpretations of observed trends (e.g., heterogeneity, dose-dependent morphological shifts, plate/batch structure).
+        - Expected figures (names in captions): Fig-Heatmap-Dendro, Fig-PCA, Fig-CorrMatrix, Fig-DoseEffect.
+
+    3. **Hidden Information**
+        - Leverage signals from Step 2 and integrate with the paper context to hypothesize hidden biology.
+        - Use at least two of the following **advanced analyses** (choose what the data supports; keep offline):
+        * **Marker identification** across conditions/groups with effect sizes and multiple-testing notes; visualize a **Volcano Plot** (log2FC vs -log10 p) for top features.
+        * **Functional/Pathway enrichment (reasoned offline)**: if gene IDs/sets are available, perform simple over-representation using provided sets; otherwise provide **mechanistic reasoning** and a ranked feature-set summary. Visualize an **Enrichment Bubble Plot** (bubble size = set size, color = significance or effect).
+        * **Network/module structure**: build a **feature correlation network** (NetworkX optional; fallback: adjacency threshold table + degree histogram) or at minimum a top-module correlation heatmap.
+        * **Phenotype association**: regression/logistic models linking PCs or feature modules to dose/condition; report coefficients, CIs, and calibration notes.
+        * **Model interpretability** (if a baseline is fit): show **feature importance**; if SHAP is not available, fall back to standardized coefficients or permutation importance.
+        - Support hypotheses with appropriate tests (t/Wilcoxon/regression) and report effect sizes + 95% CIs where feasible.
+        - Expected figures (names in captions): Fig-Volcano, Fig-Enrichment, Fig-NetworkOrModule, Fig-Association.
+
+    4. **Innovation Motivation**
+        - Start with a concise Markdown summary of the key findings from Step 2 (Data Patterns) and Step 3 (Hidden Information).
+        * Describe in natural language what the analyses revealed: e.g., distributional skew, hidden clusters, feature correlations, inferred biological mechanisms.
+        * This summary acts as a bridge to motivate the next discussion.
+        - Then, in Markdown, discuss:
+        * Limitations of current methods (mapped to observed failure modes: instability due to outliers, plate leakage, poor dose-response fitting, etc.).
+        * Unresolved questions revealed by the dataset (hidden subgroups, confounders, nonlinear responses).
+        * Opportunities for innovation (methodological or biological).
+        - Explicitly connect these insights back to the data-driven findings.
+        - (Optional) Provide a baseline model in code (with leakage-safe splitting) to illustrate current performance and motivate improvements.
+
+  General rules:
+  - Every code cell must be explained by a Markdown cell immediately before it.  
+  - Markdown must include clear subheadings (## Data Patterns, ## Hidden Information, etc.).  
+  - Keep all code concise and runnable, avoid heavy external dependencies.  
+  - The Notebook should demonstrate a flow from **data exploration → hidden insights → research motivation → proposed methods**, grounded in the paper’s context.
+
 user_prompt: |
   You are now acting as a researcher working at the intersection of computational biology and artificial intelligence. I will provide you with a paper abstract/body text and my curated experimental dataset.

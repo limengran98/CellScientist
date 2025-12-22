@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 # run_cellscientist.py
 #
-# Adds:
-# - Avg@Budget (AUC of best-so-far)
-# - Robust SR (engineering stability, counts recovered/valid runs)
-# Keeps:
-# - Success Rate (original definition per phase, usually "goal success" for Phase 2)
+# Pipeline runner + robust metrics scoreboard:
+# - Success Rate (clean): successful runs WITHOUT any bug/recovery signals
+# - Robust SR: successful runs INCLUDING auto-fix/retries/fallbacks
+# - Bug Rate: fraction of attempts that had any bug/recovery signals (even if eventually succeeded)
+# - Avg@Budget: average primary metric over successful attempts only (crashes / no-metric are excluded)
+# - Best@Budget: best primary metric over successful attempts only
+#
+# NOTE: Phase 1 metric is heuristic_score (not comparable to PCC). Total Avg/Best are computed on the
+# pipeline final metric (usually Phase 3 target_metric) using Phase 2/3 scores only if they match.
 
 import os
 import sys
@@ -13,7 +18,13 @@ import json
 import time
 import datetime
 import subprocess
+import re
+import glob
 from typing import Dict, Any, List, Optional, Tuple
+
+# =============================================================================
+# ⚙️ Phase Map
+# =============================================================================
 
 PHASE_MAP = {
     "Phase 1": {
@@ -42,13 +53,21 @@ PHASE_LOG_NAME = {
     "Phase 3": "phase3.log",
 }
 
+# =============================================================================
+# Rich (optional)
+# =============================================================================
+
 try:
     from rich.console import Console
     from rich.table import Table
     from rich.panel import Panel
     console = Console()
-except ImportError:
+except Exception:
     console = None
+
+# =============================================================================
+# IO: Tee Logger
+# =============================================================================
 
 class TeeStream:
     """Write-through stream to multiple underlying streams."""
@@ -92,10 +111,15 @@ class TeeStream:
                     continue
         raise OSError("No underlying fileno")
 
+# =============================================================================
+# Helpers
+# =============================================================================
+
 def _project_root() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 def _ensure_project_cwd():
+    """Allow running from anywhere; keep backwards compatible behavior."""
     root = _project_root()
     if os.path.exists(os.path.join(os.getcwd(), "Design_Analysis")):
         return
@@ -197,9 +221,12 @@ def _atomic_write_json(path: str, obj: Dict[str, Any]):
 def _results_root_for_dataset(dataset_name: str) -> str:
     return os.path.abspath(os.path.join(_project_root(), "results", dataset_name))
 
-def _setup_logging(logs_dir: str, run_ts: str) -> Tuple[str, Any]:
+def _setup_logging(results_root: str) -> Tuple[str, str, Any]:
+    # Timestamped logs dir (per pipeline run)
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    logs_dir = os.path.join(results_root, f"logs_{ts}")
     os.makedirs(logs_dir, exist_ok=True)
-    log_path = os.path.join(logs_dir, f"pipeline_{run_ts}.log")
+    log_path = os.path.join(logs_dir, f"pipeline_{ts}.log")
 
     try:
         sys.stdout.reconfigure(line_buffering=True)
@@ -208,6 +235,7 @@ def _setup_logging(logs_dir: str, run_ts: str) -> Tuple[str, Any]:
         pass
 
     log_fp = open(log_path, "a", encoding="utf-8")
+
     sys.stdout = TeeStream(sys.__stdout__, log_fp)  # type: ignore
     sys.stderr = TeeStream(sys.__stderr__, log_fp)  # type: ignore
 
@@ -216,7 +244,7 @@ def _setup_logging(logs_dir: str, run_ts: str) -> Tuple[str, Any]:
     else:
         print(f"📝 Logging console output to: {log_path}")
 
-    return log_path, log_fp
+    return logs_dir, log_path, log_fp
 
 def _append_phase_header(phase_fp, dataset: str, phase_name: str, cmd: List[str], cwd: str):
     if not phase_fp:
@@ -258,7 +286,7 @@ def _run_cmd_streamed(cmd: List[str], cwd: str, phase_fp=None):
         raise subprocess.CalledProcessError(rc, cmd)
 
 # =============================================================================
-# Metrics helpers
+# Metrics core
 # =============================================================================
 
 def _planned_phase1_budget(phase1_cfg: Dict[str, Any]) -> int:
@@ -278,6 +306,7 @@ def _extract_primary_score(metrics: Dict[str, Any], metric_key: str) -> Optional
         return None
     winner = metrics.get("winner")
     models = metrics.get("models") if isinstance(metrics.get("models"), dict) else None
+
     if not winner:
         if models:
             mk = [k for k in models.keys() if k != "config"]
@@ -287,6 +316,7 @@ def _extract_primary_score(metrics: Dict[str, Any], metric_key: str) -> Optional
             winner = mk[0] if mk else None
     if not winner:
         return None
+
     m_data = metrics.get(winner)
     if not isinstance(m_data, dict) and models:
         m_data = models.get(winner)
@@ -317,266 +347,301 @@ def _extract_primary_score(metrics: Dict[str, Any], metric_key: str) -> Optional
             return sum(vals) / float(len(vals))
     return None
 
-def _find_latest_dir(root: str, prefix: str, t_start: float, t_end: float) -> Optional[str]:
-    if not root or not os.path.exists(root):
+def _mean_safe(vals: List[float]) -> Optional[float]:
+    if not vals:
         return None
+    return sum(vals) / float(len(vals))
+
+def _read_text(path: str) -> str:
+    try:
+        if not path or not os.path.exists(path):
+            return ""
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+def _find_scores_in_json(obj: Any) -> List[float]:
+    out: List[float] = []
+    if isinstance(obj, (int, float)):
+        out.append(float(obj))
+    elif isinstance(obj, list):
+        for x in obj:
+            out.extend(_find_scores_in_json(x))
+    elif isinstance(obj, dict):
+        # common patterns
+        if isinstance(obj.get("scores"), list):
+            out.extend(_find_scores_in_json(obj["scores"]))
+        else:
+            for v in obj.values():
+                out.extend(_find_scores_in_json(v))
+    return out
+
+# =============================================================================
+# Phase log parsers (for clean/robust/bug)
+# =============================================================================
+
+def _parse_phase1_log(log_text: str) -> Dict[str, Any]:
+    """
+    Phase 1 runs are parallel; we infer run ids and bug runs via nearest RunX path following a cell failure.
+    """
+    run_ids = set(int(m.group(1)) for m in re.finditer(r"Executing design_analysis_\d{8}_\d{6}_Run(\d+)", log_text))
+    finished_ids = set(int(m.group(1)) for m in re.finditer(r"Finished design_analysis_\d{8}_\d{6}_Run(\d+)", log_text))
+    attempted = len(run_ids) if run_ids else len(finished_ids)
+    succeeded = len(finished_ids)
+
+    lines = log_text.splitlines()
+    fail_positions = [i for i, ln in enumerate(lines) if "Failed (Cell" in ln or "Auto-Fix" in ln and "Failed" in ln]
+    bug_runs: set = set()
+    for pos in fail_positions:
+        for j in range(pos, min(pos + 50, len(lines))):
+            m = re.search(r"Run(\d+)/", lines[j])
+            if m:
+                bug_runs.add(int(m.group(1)))
+                break
+
+    bug = len(bug_runs)
+    clean_success = max(0, succeeded - len([r for r in bug_runs if r in finished_ids])) if attempted else 0
+
+    return {
+        "attempted": attempted,
+        "succeeded": succeeded,
+        "bug": bug,
+        "clean_success": clean_success,
+    }
+
+def _parse_phase2_log(log_text: str, metric: str) -> Dict[str, Any]:
+    """
+    Iteration-level parsing.
+    Success = iteration produced a numeric score for {metric}.
+    Bug = iteration had any error/recovery signals (graph error, LLM parse failure, auto-fix, traceback).
+    """
+    bug_markers = [
+        "Notebook Generation Failed",
+        "LLM_GEN_FAILURE",
+        "CRITICAL PARSE FAILURE",
+        "[GRAPH] ❌",
+        "Error in Node",
+        "Initiating Adaptive Fix",
+        "[FIX]",
+        "Traceback",
+        "Exception:",
+    ]
+
+    iters: Dict[int, Dict[str, Any]] = {}
+    cur_iter: Optional[int] = None
+    for ln in log_text.splitlines():
+        m = re.search(r"ITERATION\s+(\d+)/(\d+)", ln)
+        if m:
+            cur_iter = int(m.group(1))
+            iters.setdefault(cur_iter, {"bug": False, "score": None})
+            continue
+
+        if cur_iter is None:
+            continue
+
+        if any(x in ln for x in bug_markers):
+            iters.setdefault(cur_iter, {"bug": False, "score": None})
+            iters[cur_iter]["bug"] = True
+
+        # metric line
+        mm = re.search(rf"\[CHECK\].*?\b{re.escape(metric)}\s*:\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)", ln)
+        if mm:
+            try:
+                iters.setdefault(cur_iter, {"bug": False, "score": None})
+                iters[cur_iter]["score"] = float(mm.group(1))
+            except Exception:
+                pass
+
+    attempted = len(iters)
+    scores = [v["score"] for v in iters.values() if isinstance(v.get("score"), (int, float))]
+    succeeded = len(scores)
+    bug = sum(1 for v in iters.values() if v.get("bug") is True)
+    clean_success = sum(1 for v in iters.values() if isinstance(v.get("score"), (int, float)) and not v.get("bug"))
+
+    return {
+        "attempted": attempted,
+        "succeeded": succeeded,
+        "bug": bug,
+        "clean_success": clean_success,
+        "scores": scores,
+    }
+
+def _parse_phase3_log(log_text: str, metric: str) -> Dict[str, Any]:
+    """
+    Iteration-level parsing.
+    Success = iteration produced Candidate Score.
+    Bug = invalid LLM response / report fallback / execution recovery signals.
+    """
+    bug_markers = [
+        "Invalid LLM response. Skipping",
+        "LLM Generation Failed",
+        "Report generation failed",
+        "Static Fallback Report",
+        "Request failed after",  # retry exhausted
+        "Errors Found",
+        "Final Execution Failed",
+        "Logic Error",
+        "Traceback",
+        "Exception:",
+    ]
+
+    iters: Dict[int, Dict[str, Any]] = {}
+    cur_iter: Optional[int] = None
+
+    for ln in log_text.splitlines():
+        m = re.search(r"optimization \(Iter\s+(\d+)\)", ln, re.I)
+        if m:
+            cur_iter = int(m.group(1))
+            iters.setdefault(cur_iter, {"bug": False, "score": None})
+            continue
+
+        # result summary carries explicit iter id; prefer it
+        m2 = re.search(r"\[RESULT\]\s*Iteration\s+(\d+)\s+Summary", ln)
+        if m2:
+            cur_iter = int(m2.group(1))
+            iters.setdefault(cur_iter, {"bug": False, "score": None})
+            continue
+
+        if cur_iter is None:
+            continue
+
+        if any(x in ln for x in bug_markers):
+            iters.setdefault(cur_iter, {"bug": False, "score": None})
+            iters[cur_iter]["bug"] = True
+
+        # candidate score line (may appear without metric label)
+        ms = re.search(r"Candidate Score:\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)", ln)
+        if ms:
+            try:
+                iters.setdefault(cur_iter, {"bug": False, "score": None})
+                iters[cur_iter]["score"] = float(ms.group(1))
+            except Exception:
+                pass
+
+    attempted = len(iters)
+    scores = [v["score"] for v in iters.values() if isinstance(v.get("score"), (int, float)) and v.get("score") != -999]
+    succeeded = len(scores)
+    bug = sum(1 for v in iters.values() if v.get("bug") is True)
+    clean_success = sum(1 for v in iters.values() if isinstance(v.get("score"), (int, float)) and v.get("score") != -999 and not v.get("bug"))
+
+    return {
+        "attempted": attempted,
+        "succeeded": succeeded,
+        "bug": bug,
+        "clean_success": clean_success,
+        "scores": scores,
+    }
+
+# =============================================================================
+# Phase stats from artifacts (+ log quality signals)
+# =============================================================================
+
+def _phase1_scores_from_artifacts(design_dir: str) -> Tuple[Optional[float], Optional[float]]:
+    # Try to load a per-run score list if present
+    cand_files: List[str] = []
+    for name in ["heuristic_scores.json", "scores.json", "heuristics.json", "run_scores.json"]:
+        p = os.path.join(design_dir, name)
+        if os.path.exists(p):
+            cand_files.append(p)
+
+    # fallback: any json containing "score" in filename
+    cand_files.extend(sorted(glob.glob(os.path.join(design_dir, "*score*.json"))))
+
+    scores: List[float] = []
+    for p in cand_files:
+        obj = _safe_read_json(p)
+        if obj is None:
+            continue
+        vals = _find_scores_in_json(obj)
+        # Heuristic score is usually >1; filter obvious non-scores if mixed
+        vals = [v for v in vals if isinstance(v, (int, float)) and not (v != v)]  # drop NaN
+        if vals:
+            scores = vals
+            break
+
+    avg = _mean_safe(scores) if scores else None
+    best = max(scores) if scores else None
+
+    # If not found, use reference.json best score
+    if best is None:
+        ref = _safe_read_json(os.path.join(design_dir, "reference", "reference.json")) or {}
+        if isinstance(ref.get("score"), (int, float)):
+            best = float(ref["score"])
+            if avg is None:
+                avg = best
+    return avg, best
+
+def _phase2_scores_from_artifacts(ge_dir: str, metric: str, t_start: float, t_end: float) -> List[float]:
+    """
+    Prefer prompt_run_* metrics.json within the phase time window.
+    """
+    scores: List[float] = []
+    prompt_root = os.path.join(ge_dir, "prompt")
+    if not os.path.exists(prompt_root):
+        return scores
+
+    run_dirs = []
+    for d in glob.glob(os.path.join(prompt_root, "prompt_run_*")):
+        try:
+            mt = os.path.getmtime(d)
+        except Exception:
+            continue
+        if t_start - 30 <= mt <= t_end + 30:  # buffer
+            run_dirs.append(d)
+    run_dirs.sort(key=lambda p: os.path.getmtime(p))
+
+    for d in run_dirs:
+        met_path = os.path.join(d, "metrics.json")
+        met = _safe_read_json(met_path) or {}
+        v = _extract_primary_score(met, metric)
+        if isinstance(v, (int, float)):
+            scores.append(float(v))
+    return scores
+
+def _phase3_scores_from_artifacts(rf_dir: str, metric: str, t_start: float, t_end: float) -> List[float]:
+    scores: List[float] = []
+    # find latest review_run_ within time window
     best_path = None
     best_mtime = -1.0
-    for name in os.listdir(root):
-        p = os.path.join(root, name)
-        if not os.path.isdir(p) or not name.startswith(prefix):
+    for name in os.listdir(rf_dir) if os.path.exists(rf_dir) else []:
+        p = os.path.join(rf_dir, name)
+        if not os.path.isdir(p) or not name.startswith("review_run_"):
             continue
         try:
             mt = os.path.getmtime(p)
         except Exception:
             continue
-        if t_start - 5 <= mt <= t_end + 5 and mt > best_mtime:
+        if t_start - 30 <= mt <= t_end + 30 and mt > best_mtime:
             best_mtime = mt
             best_path = p
-    return best_path
+    if not best_path:
+        return scores
 
-def _compute_auc_best_so_far(scores: List[Optional[float]], budget: int) -> Optional[float]:
-    """
-    Avg@Budget (AUC of best-so-far):
-      mean(best_so_far_t) for t=1..budget
-    """
-    if budget <= 0:
-        return None
-    best = None
-    series: List[float] = []
-    for s in scores:
-        if isinstance(s, (int, float)):
-            best = float(s) if best is None else max(best, float(s))
-        if best is not None:
-            series.append(best)
+    hist = _safe_read_json(os.path.join(best_path, "history_state.json"))
+    if isinstance(hist, list):
+        for rec in hist:
+            if not isinstance(rec, dict):
+                continue
+            sc = rec.get("score")
+            if isinstance(sc, (int, float)) and sc != -999:
+                scores.append(float(sc))
+        return scores
 
-    if best is None:
-        return None
-
-    if len(series) < budget:
-        series.extend([best] * (budget - len(series)))
-    if len(series) > budget:
-        series = series[:budget]
-
-    return sum(series) / float(len(series)) if series else None
-
-def _extract_phase1_scores_from_hypergraph(hg: Dict[str, Any]) -> List[Optional[float]]:
-    edges = hg.get("hyperedges") if isinstance(hg.get("hyperedges"), list) else []
-    scores: List[Optional[float]] = []
-    keys = ("heuristic_score", "score", "weight", "value", "reward")
-    for e in edges:
-        if not isinstance(e, dict):
-            scores.append(None)
-            continue
-        v = None
-        for k in keys:
-            if k in e:
-                try:
-                    v = float(e.get(k))
-                    break
-                except Exception:
-                    v = None
-        scores.append(v)
+    # fallback: metrics_best.json
+    mb = _safe_read_json(os.path.join(best_path, "metrics_best.json")) or {}
+    v = _extract_primary_score(mb, metric)
+    if isinstance(v, (int, float)):
+        scores.append(float(v))
     return scores
 
-def _phase1_stats(dataset: str, phase1_cfg: Dict[str, Any]) -> Dict[str, Any]:
-    base = _results_root_for_dataset(dataset)
-    design_dir = os.path.join(base, "design_analysis")
-    budget = _planned_phase1_budget(phase1_cfg)
-
-    hg = _safe_read_json(os.path.join(design_dir, "hypergraph.json")) or {}
-    edges = hg.get("hyperedges") if isinstance(hg.get("hyperedges"), list) else []
-    succeeded = len(edges)
-
-    ref_meta = _safe_read_json(os.path.join(design_dir, "reference", "reference.json")) or {}
-    best_score = ref_meta.get("score")
-
-    auc = None
-    try:
-        p1_scores = _extract_phase1_scores_from_hypergraph(hg)
-        if any(isinstance(s, (int, float)) for s in p1_scores):
-            auc = _compute_auc_best_so_far(p1_scores, budget if budget > 0 else max(1, len(p1_scores)))
-        elif isinstance(best_score, (int, float)) and budget > 0:
-            auc = float(best_score)
-    except Exception:
-        auc = None
-
-    success_rate = (succeeded / float(budget)) if budget > 0 else (1.0 if succeeded > 0 else 0.0)
-
-    # Robust SR: for Phase 1 we approximate as the same (a "successful" run == produced edge/artifact)
-    robust_succeeded = succeeded
-    robust_rate = success_rate
-
-    return {
-        "budget": budget,
-        "attempted": budget,
-        "succeeded": succeeded,
-        "success_rate": success_rate,
-        "robust_succeeded": robust_succeeded,
-        "robust_success_rate": robust_rate,
-        "avg_at_budget": auc,
-        "best_at_budget": best_score,
-        "best_metric": "heuristic_score",
-    }
-
-def _phase2_stats(dataset: str, phase2_cfg: Dict[str, Any], t_start: float, t_end: float) -> Dict[str, Any]:
-    base = _results_root_for_dataset(dataset)
-    ge_dir = os.path.join(base, "generate_execution")
-    budget = int(get_nested(phase2_cfg, ["experiment", "max_iterations"], 0) or 0)
-    pm = str(get_nested(phase2_cfg, ["experiment", "primary_metric"], "PCC"))
-
-    summary_file = None
-    try:
-        cand = [
-            os.path.join(ge_dir, f)
-            for f in os.listdir(ge_dir)
-            if f.startswith("phase2_loop_summary_") and f.endswith(".json")
-        ]
-        cand.sort(key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0, reverse=True)
-        for p in cand:
-            mt = os.path.getmtime(p)
-            if t_start - 5 <= mt <= t_end + 5:
-                summary_file = p
-                break
-    except Exception:
-        summary_file = None
-
-    attempted = 0
-
-    # "Success Rate" keeps original meaning: goal/criteria met (if available), else fallback to valid
-    goal_succeeded = 0
-
-    # "Robust SR" counts engineering-stable iterations: produced metrics (valid), including those after auto-fix/retry
-    robust_succeeded = 0
-
-    best_score = None
-    auc = None
-
-    if summary_file:
-        summ = _safe_read_json(summary_file) or {}
-
-        attempted = int(summ.get("iterations_executed", 0) or 0)
-
-        # Robust: valid iterations
-        robust_succeeded = int(summ.get("valid_iterations", 0) or 0)
-
-        # Goal: criteria met (if the summary tracks it), else fallback to robust
-        if summ.get("criteria_met_iterations", None) is not None:
-            goal_succeeded = int(summ.get("criteria_met_iterations", 0) or 0)
-        else:
-            goal_succeeded = robust_succeeded
-
-        best_score = summ.get("best_score")
-
-        iters = summ.get("iterations", [])
-        scores: List[Optional[float]] = []
-        if isinstance(iters, list):
-            for it in iters:
-                if isinstance(it, dict):
-                    sc = it.get("score", None)
-                    try:
-                        scf = float(sc)
-                        scores.append(None if scf <= -900 else scf)
-                    except Exception:
-                        scores.append(None)
-        if scores:
-            auc = _compute_auc_best_so_far(scores, budget if budget > 0 else max(1, len(scores)))
-        elif isinstance(best_score, (int, float)) and budget > 0:
-            auc = float(best_score)
-
-    else:
-        # Fallback: infer from most recent prompt_run
-        prompt_root = os.path.join(ge_dir, "prompt")
-        run_dir = _find_latest_dir(prompt_root, "prompt_run_", t_start, t_end)
-        if run_dir:
-            score = _extract_primary_score(_safe_read_json(os.path.join(run_dir, "metrics.json")) or {}, pm)
-            attempted = 1
-            if score is not None:
-                robust_succeeded = 1
-                goal_succeeded = 1
-                best_score = score
-                auc = float(score)
-
-    success_rate = (goal_succeeded / float(attempted)) if attempted > 0 else 0.0
-    robust_rate = (robust_succeeded / float(attempted)) if attempted > 0 else 0.0
-
-    return {
-        "budget": budget,
-        "attempted": attempted,
-        "succeeded": goal_succeeded,
-        "success_rate": success_rate,
-        "robust_succeeded": robust_succeeded,
-        "robust_success_rate": robust_rate,
-        "avg_at_budget": auc,
-        "best_at_budget": best_score,
-        "best_metric": pm,
-    }
-
-def _extract_phase3_candidate_score(metrics_path: str, metric: str) -> Optional[float]:
-    data = _safe_read_json(metrics_path)
-    if not isinstance(data, dict):
-        return None
-    models = data.get("models") if isinstance(data.get("models"), dict) else None
-    if not models:
-        return None
-    non_baseline = [k for k in models.keys() if "baseline" not in k.lower() and "reference" not in k.lower()]
-    target_key = non_baseline[-1] if non_baseline else (data.get("winner") or list(models.keys())[0])
-    m_data = models.get(target_key, {})
-    return _extract_primary_score({"models": {target_key: m_data}, "winner": target_key}, metric)
-
-def _phase3_stats(dataset: str, phase3_cfg: Dict[str, Any], t_start: float, t_end: float) -> Dict[str, Any]:
-    base = _results_root_for_dataset(dataset)
-    rf_dir = os.path.join(base, "review_feedback")
-    budget = int(get_nested(phase3_cfg, ["review", "max_iterations"], 0) or 0)
-    metric = str(get_nested(phase3_cfg, ["review", "target_metric"], "PCC"))
-
-    run_dir = _find_latest_dir(rf_dir, "review_run_", t_start, t_end)
-    attempted = 0
-    succeeded = 0
-    best_score = None
-    auc = None
-
-    if run_dir:
-        hist = _safe_read_json(os.path.join(run_dir, "history_state.json"))
-        scores: List[Optional[float]] = []
-        if isinstance(hist, list):
-            attempted = len(hist)
-            succeeded = sum(1 for x in hist if isinstance(x, dict) and str(x.get("status", "")).upper() != "CRASH")
-            for x in hist:
-                if not isinstance(x, dict):
-                    scores.append(None)
-                    continue
-                sc = x.get("score", None)
-                try:
-                    scf = float(sc)
-                    scores.append(None if scf <= -900 else scf)
-                except Exception:
-                    scores.append(None)
-
-        best_score = _extract_phase3_candidate_score(os.path.join(run_dir, "metrics_best.json"), metric)
-
-        if scores:
-            auc = _compute_auc_best_so_far(scores, budget if budget > 0 else max(1, len(scores)))
-        elif isinstance(best_score, (int, float)) and budget > 0:
-            auc = float(best_score)
-
-    success_rate = (succeeded / float(attempted)) if attempted > 0 else 0.0
-
-    # Robust SR for Phase 3 == non-crash ratio (counts runs that produced a history record and didn't crash)
-    robust_succeeded = succeeded
-    robust_rate = success_rate
-
-    return {
-        "budget": budget,
-        "attempted": attempted,
-        "succeeded": succeeded,
-        "success_rate": success_rate,
-        "robust_succeeded": robust_succeeded,
-        "robust_success_rate": robust_rate,
-        "avg_at_budget": auc,
-        "best_at_budget": best_score,
-        "best_metric": metric,
-    }
+def _rates(attempted: int, clean_success: int, succeeded: int, bug: int) -> Tuple[float, float, float]:
+    if attempted <= 0:
+        return 0.0, 0.0, 0.0
+    success_rate = clean_success / float(attempted)
+    robust_sr = succeeded / float(attempted)
+    bug_rate = bug / float(attempted)
+    return success_rate, robust_sr, bug_rate
 
 def _print_final_scoreboard(summary: Dict[str, Any]):
     stages = summary.get("stages", {})
@@ -586,35 +651,34 @@ def _print_final_scoreboard(summary: Dict[str, Any]):
         table.add_column("Stage")
         table.add_column("Success Rate ↑", justify="right")
         table.add_column("Robust SR ↑", justify="right")
+        table.add_column("Bug Rate ↓", justify="right")
         table.add_column("Avg@Budget ↑", justify="right")
         table.add_column("Best@Budget ↑", justify="right")
         table.add_column("Metric")
         table.add_column("Budget", justify="right")
+        table.add_column("Attempted", justify="right")
         table.add_column("Time ↓ (s)", justify="right")
 
         for stage_name in ["Phase 1", "Phase 2", "Phase 3", "Total"]:
             row = stages.get(stage_name, {})
-
             sr = row.get("success_rate")
+            robust = row.get("robust_sr")
+            bugr = row.get("bug_rate")
             sr_s = f"{sr:.3f}" if isinstance(sr, (int, float)) else "-"
-
-            rsr = row.get("robust_success_rate")
-            rsr_s = f"{rsr:.3f}" if isinstance(rsr, (int, float)) else "-"
-
+            robust_s = f"{robust:.3f}" if isinstance(robust, (int, float)) else "-"
+            bug_s = f"{bugr:.3f}" if isinstance(bugr, (int, float)) else "-"
             avg = row.get("avg_at_budget")
             avg_s = f"{avg:.4f}" if isinstance(avg, (int, float)) else "-"
-
             best = row.get("best_at_budget")
             best_s = f"{best:.4f}" if isinstance(best, (int, float)) else "-"
-
             metric = str(row.get("best_metric", "-"))
             budget = row.get("budget")
             budget_s = str(budget) if budget is not None else "-"
-
+            attempted = row.get("attempted")
+            attempted_s = str(attempted) if attempted is not None else "-"
             tsec = row.get("time_sec")
             tsec_s = f"{tsec:.1f}" if isinstance(tsec, (int, float)) else "-"
-
-            table.add_row(stage_name, sr_s, rsr_s, avg_s, best_s, metric, budget_s, tsec_s)
+            table.add_row(stage_name, sr_s, robust_s, bug_s, avg_s, best_s, metric, budget_s, attempted_s, tsec_s)
 
         console.print(table)
     else:
@@ -622,10 +686,14 @@ def _print_final_scoreboard(summary: Dict[str, Any]):
         for stage_name in ["Phase 1", "Phase 2", "Phase 3", "Total"]:
             row = stages.get(stage_name, {})
             print(
-                f"{stage_name}: SR={row.get('success_rate')}, RobustSR={row.get('robust_success_rate')}, "
-                f"Avg@Budget={row.get('avg_at_budget')}, Best@Budget={row.get('best_at_budget')}, "
-                f"Metric={row.get('best_metric')}, Budget={row.get('budget')}, Time={row.get('time_sec')}"
+                f"{stage_name}: SR={row.get('success_rate')}, Robust={row.get('robust_sr')}, "
+                f"BugRate={row.get('bug_rate')}, Avg={row.get('avg_at_budget')}, Best={row.get('best_at_budget')}, "
+                f"Metric={row.get('best_metric')}, Budget={row.get('budget')}, Attempted={row.get('attempted')}, Time={row.get('time_sec')}"
             )
+
+# =============================================================================
+# Main
+# =============================================================================
 
 def main():
     _ensure_project_cwd()
@@ -634,19 +702,16 @@ def main():
     results_root = _results_root_for_dataset(ds_name)
     os.makedirs(results_root, exist_ok=True)
 
-    run_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    logs_dir = os.path.join(results_root, f"logs_{run_ts}")
-    os.makedirs(logs_dir, exist_ok=True)
-
-    log_path, log_fp = _setup_logging(logs_dir, run_ts)
+    logs_dir, pipeline_log_path, log_fp = _setup_logging(results_root)
 
     pipeline_start = time.time()
     print_execution_plan(ds_name)
 
-    print(f"🚀 Pipeline starting for [{ds_name}] in 3 seconds...")
-    time.sleep(3)
+    print(f"🚀 Pipeline starting for [{ds_name}] in 2 seconds...")
+    time.sleep(2)
 
     stage_timings: Dict[str, Dict[str, float]] = {}
+    phase_logs: Dict[str, str] = {}
 
     try:
         for name, info in PHASE_MAP.items():
@@ -659,7 +724,10 @@ def main():
             if extra_args:
                 cmd.extend(extra_args)
 
+            # Per-phase log (under timestamped logs_dir)
             phase_log_file = os.path.join(logs_dir, PHASE_LOG_NAME.get(name, f"{name}.log".replace(" ", "_").lower()))
+            phase_logs[name] = phase_log_file
+
             phase_fp = None
             try:
                 phase_fp = open(phase_log_file, "a", encoding="utf-8")
@@ -712,42 +780,152 @@ def main():
         stage2_cfg = PHASE_MAP["Phase 2"].get("_loaded_cfg", {})
         stage3_cfg = PHASE_MAP["Phase 3"].get("_loaded_cfg", {})
 
-        p1 = _phase1_stats(ds_name, stage1_cfg)
-        p2 = _phase2_stats(ds_name, stage2_cfg, stage_timings.get("Phase 2", {}).get("start", 0.0), stage_timings.get("Phase 2", {}).get("end", time.time()))
-        p3 = _phase3_stats(ds_name, stage3_cfg, stage_timings.get("Phase 3", {}).get("start", 0.0), stage_timings.get("Phase 3", {}).get("end", time.time()))
+        base = _results_root_for_dataset(ds_name)
+        design_dir = os.path.join(base, "design_analysis")
+        ge_dir = os.path.join(base, "generate_execution")
+        rf_dir = os.path.join(base, "review_feedback")
 
-        p1["time_sec"] = stage_timings.get("Phase 1", {}).get("end", 0.0) - stage_timings.get("Phase 1", {}).get("start", 0.0)
-        p2["time_sec"] = stage_timings.get("Phase 2", {}).get("end", 0.0) - stage_timings.get("Phase 2", {}).get("start", 0.0)
-        p3["time_sec"] = stage_timings.get("Phase 3", {}).get("end", 0.0) - stage_timings.get("Phase 3", {}).get("start", 0.0)
+        # ---------------------
+        # Phase 1
+        # ---------------------
+        p1_budget = _planned_phase1_budget(stage1_cfg)
+        p1_metric = "heuristic_score"
+        p1_log_text = _read_text(phase_logs.get("Phase 1", ""))
+        p1_q = _parse_phase1_log(p1_log_text) if p1_log_text else {"attempted": 0, "succeeded": 0, "bug": 0, "clean_success": 0}
+        p1_avg, p1_best = _phase1_scores_from_artifacts(design_dir)
 
-        total_attempted = (p1.get("attempted", 0) or 0) + (p2.get("attempted", 0) or 0) + (p3.get("attempted", 0) or 0)
-        total_succeeded = (p1.get("succeeded", 0) or 0) + (p2.get("succeeded", 0) or 0) + (p3.get("succeeded", 0) or 0)
-        total_success_rate = (total_succeeded / float(total_attempted)) if total_attempted > 0 else 0.0
+        p1_sr, p1_robust, p1_bug_rate = _rates(p1_q["attempted"], p1_q["clean_success"], p1_q["succeeded"], p1_q["bug"])
 
-        total_robust_succeeded = (p1.get("robust_succeeded", 0) or 0) + (p2.get("robust_succeeded", 0) or 0) + (p3.get("robust_succeeded", 0) or 0)
-        total_robust_rate = (total_robust_succeeded / float(total_attempted)) if total_attempted > 0 else 0.0
+        p1 = {
+            "budget": p1_budget,
+            "attempted": p1_q["attempted"],
+            "succeeded": p1_q["succeeded"],
+            "clean_succeeded": p1_q["clean_success"],
+            "bug_attempts": p1_q["bug"],
+            "success_rate": p1_sr,
+            "robust_sr": p1_robust,
+            "bug_rate": p1_bug_rate,
+            "avg_at_budget": p1_avg,
+            "best_at_budget": p1_best,
+            "best_metric": p1_metric,
+        }
 
-        auc_vals = [v for v in [p1.get("avg_at_budget"), p2.get("avg_at_budget"), p3.get("avg_at_budget")] if isinstance(v, (int, float))]
-        total_auc = (sum(auc_vals) / float(len(auc_vals))) if auc_vals else None
+        # ---------------------
+        # Phase 2
+        # ---------------------
+        p2_budget = int(get_nested(stage2_cfg, ["experiment", "max_iterations"], 0) or 0)
+        p2_metric = str(get_nested(stage2_cfg, ["experiment", "primary_metric"], "PCC"))
+        p2_t0 = stage_timings.get("Phase 2", {}).get("start", 0.0)
+        p2_t1 = stage_timings.get("Phase 2", {}).get("end", time.time())
+
+        p2_log_text = _read_text(phase_logs.get("Phase 2", ""))
+        p2_q = _parse_phase2_log(p2_log_text, p2_metric) if p2_log_text else {"attempted": 0, "succeeded": 0, "bug": 0, "clean_success": 0, "scores": []}
+
+        # artifact scores as fallback if log missing
+        if not p2_q.get("scores"):
+            p2_q["scores"] = _phase2_scores_from_artifacts(ge_dir, p2_metric, p2_t0, p2_t1)
+            p2_q["succeeded"] = len(p2_q["scores"])
+            p2_q["attempted"] = p2_q["succeeded"]
+
+        p2_avg = _mean_safe([float(x) for x in p2_q.get("scores", []) if isinstance(x, (int, float))])
+        p2_best = max(p2_q["scores"]) if p2_q.get("scores") else None
+
+        p2_sr, p2_robust, p2_bug_rate = _rates(p2_q["attempted"], p2_q["clean_success"], p2_q["succeeded"], p2_q["bug"])
+
+        p2 = {
+            "budget": p2_budget,
+            "attempted": p2_q["attempted"],
+            "succeeded": p2_q["succeeded"],
+            "clean_succeeded": p2_q["clean_success"],
+            "bug_attempts": p2_q["bug"],
+            "success_rate": p2_sr,
+            "robust_sr": p2_robust,
+            "bug_rate": p2_bug_rate,
+            "avg_at_budget": p2_avg,
+            "best_at_budget": p2_best,
+            "best_metric": p2_metric,
+        }
+
+        # ---------------------
+        # Phase 3
+        # ---------------------
+        p3_budget = int(get_nested(stage3_cfg, ["review", "max_iterations"], 0) or 0)
+        p3_metric = str(get_nested(stage3_cfg, ["review", "target_metric"], "PCC"))
+        p3_t0 = stage_timings.get("Phase 3", {}).get("start", 0.0)
+        p3_t1 = stage_timings.get("Phase 3", {}).get("end", time.time())
+
+        p3_log_text = _read_text(phase_logs.get("Phase 3", ""))
+        p3_q = _parse_phase3_log(p3_log_text, p3_metric) if p3_log_text else {"attempted": 0, "succeeded": 0, "bug": 0, "clean_success": 0, "scores": []}
+
+        if not p3_q.get("scores"):
+            p3_q["scores"] = _phase3_scores_from_artifacts(rf_dir, p3_metric, p3_t0, p3_t1)
+            p3_q["succeeded"] = len(p3_q["scores"])
+            p3_q["attempted"] = max(p3_q["succeeded"], 0)
+
+        p3_avg = _mean_safe([float(x) for x in p3_q.get("scores", []) if isinstance(x, (int, float))])
+        p3_best = max(p3_q["scores"]) if p3_q.get("scores") else None
+
+        p3_sr, p3_robust, p3_bug_rate = _rates(p3_q["attempted"], p3_q["clean_success"], p3_q["succeeded"], p3_q["bug"])
+
+        p3 = {
+            "budget": p3_budget,
+            "attempted": p3_q["attempted"],
+            "succeeded": p3_q["succeeded"],
+            "clean_succeeded": p3_q["clean_success"],
+            "bug_attempts": p3_q["bug"],
+            "success_rate": p3_sr,
+            "robust_sr": p3_robust,
+            "bug_rate": p3_bug_rate,
+            "avg_at_budget": p3_avg,
+            "best_at_budget": p3_best,
+            "best_metric": p3_metric,
+        }
+
+        # ---------------------
+        # Total
+        # ---------------------
+        total_attempted = (p1["attempted"] or 0) + (p2["attempted"] or 0) + (p3["attempted"] or 0)
+        total_succeeded = (p1["succeeded"] or 0) + (p2["succeeded"] or 0) + (p3["succeeded"] or 0)
+        total_clean = (p1["clean_succeeded"] or 0) + (p2["clean_succeeded"] or 0) + (p3["clean_succeeded"] or 0)
+        total_bug = (p1["bug_attempts"] or 0) + (p2["bug_attempts"] or 0) + (p3["bug_attempts"] or 0)
+
+        total_sr, total_robust, total_bug_rate = _rates(total_attempted, total_clean, total_succeeded, total_bug)
+
+        # Total Avg/Best on FINAL metric only (Phase 3 target metric). If Phase 2 metric matches, include both.
+        total_scores: List[float] = []
+        if p2_metric == p3_metric and p2.get("avg_at_budget") is not None:
+            total_scores.extend([float(x) for x in (p2_q.get("scores") or []) if isinstance(x, (int, float))])
+        total_scores.extend([float(x) for x in (p3_q.get("scores") or []) if isinstance(x, (int, float))])
+
+        total_avg = _mean_safe(total_scores)
+        total_best = max(total_scores) if total_scores else None
 
         total_row = {
-            "budget": (p1.get("budget", 0) or 0) + (p2.get("budget", 0) or 0) + (p3.get("budget", 0) or 0),
+            "budget": (p1_budget or 0) + (p2_budget or 0) + (p3_budget or 0),
             "attempted": total_attempted,
             "succeeded": total_succeeded,
-            "success_rate": total_success_rate,
-            "robust_succeeded": total_robust_succeeded,
-            "robust_success_rate": total_robust_rate,
-            "avg_at_budget": total_auc,
-            "best_at_budget": p3.get("best_at_budget") if p3.get("best_at_budget") is not None else p2.get("best_at_budget"),
-            "best_metric": p3.get("best_metric") if p3.get("best_at_budget") is not None else p2.get("best_metric"),
+            "clean_succeeded": total_clean,
+            "bug_attempts": total_bug,
+            "success_rate": total_sr,
+            "robust_sr": total_robust,
+            "bug_rate": total_bug_rate,
+            "avg_at_budget": total_avg,
+            "best_at_budget": total_best,
+            "best_metric": p3_metric,
             "time_sec": float(pipeline_end - pipeline_start),
         }
+
+        # Attach times to per-phase rows
+        p1["time_sec"] = stage_timings.get("Phase 1", {}).get("end", 0.0) - stage_timings.get("Phase 1", {}).get("start", 0.0)
+        p2["time_sec"] = p2_t1 - p2_t0
+        p3["time_sec"] = p3_t1 - p3_t0
 
         summary = {
             "dataset": ds_name,
             "generated_at": datetime.datetime.now().isoformat(),
-            "log_path": log_path,
             "logs_dir": logs_dir,
+            "pipeline_log_path": pipeline_log_path,
+            "phase_logs": phase_logs,
             "stages": {
                 "Phase 1": p1,
                 "Phase 2": p2,
@@ -758,16 +936,15 @@ def main():
 
         summary_path = os.path.join(results_root, "pipeline_summary.json")
         _atomic_write_json(summary_path, summary)
+
         _print_final_scoreboard(summary)
 
         if console:
             console.print(Panel("[bold green]🏆 CellScientist Workflow Completed Successfully![/]", border_style="green"))
             console.print(f"📌 Saved summary to: [underline]{summary_path}[/]")
-            console.print(f"🗂 Logs dir: [underline]{logs_dir}[/]")
         else:
             print("\n🏆 CellScientist Workflow Completed Successfully!")
             print(f"📌 Saved summary to: {summary_path}")
-            print(f"🗂 Logs dir: {logs_dir}")
 
     finally:
         try:
