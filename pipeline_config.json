@@ -1,0 +1,14 @@
+{
+  "dataset_name": "BBBC036",
+  "common": {
+    "cuda_device_id": 0,
+    "cuda_visible_devices": 0
+  },
+  "llm": {
+    "model": null,
+    "temperature": null,
+    "max_tokens": null
+  },
+  "env": {},
+  "phase_overrides": {}
+}

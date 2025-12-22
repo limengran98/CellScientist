@@ -1,0 +1,51 @@
+{
+  "dataset_name": "BBBC036",
+  "paths": {
+    "baseline_source_dir": "../baseline/${dataset_name}",
+    "stage1_analysis_dir": "../results/${dataset_name}/design_analysis/reference",
+    "design_execution_root": "../results/${dataset_name}/generate_execution",
+    "literature_dir": "../results/${dataset_name}/literature",
+    "literature_knowledge_json": "../results/${dataset_name}/literature/domain_knowledge.json"
+  },
+  "llm": {
+    "model": "gemini-3-pro-all",
+    "base_url": "https://vip.yi-zhan.top/v1",
+    "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835",
+    "max_tokens": 40000,
+    "temperature": 0.5,
+    "timeout": 600
+  },
+  "experiment": {
+    "primary_metric": "PCC",
+    "max_iterations": 5,
+    "success_threshold": 0.5
+  },
+  "prompt_branch": {
+    "output_type": "notebook",
+    "prompt_file": "prompts/pipeline_prompt.yaml",
+    "idea_file": "idea.json",
+    "save_root": "../results/${dataset_name}/generate_execution",
+    "temperature": 0.7,
+    "max_tokens": 40000
+  },
+  "exec": {
+    "timeout_seconds": 36000,
+    "max_fix_rounds": 3,
+    "enable_llm_autofix": true,
+    "enable_hypergraph_viz": true,
+    "viz_format": "mermaid",
+    "cuda_device_id": 0
+  },
+  "literature": {
+    "enabled": false,
+    "use_existing_only": true,
+    "cache_days": 30,
+    "max_papers": 12,
+    "max_abstract_chars": 1200,
+    "prompt_max_chars": 6000,
+    "min_citations": 6,
+    "provider": "semantic_scholar",
+    "task_keywords": "cell painting perturbation modeling",
+    "query": ""
+  }
+}

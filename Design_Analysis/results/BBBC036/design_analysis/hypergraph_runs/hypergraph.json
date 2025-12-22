@@ -1,0 +1,141 @@
+{
+  "name": "CellScientist-HyperGraph",
+  "created_utc": "2025-12-22T04:25:24.803124Z",
+  "nodes": [
+    {
+      "node_id": "step-1",
+      "name": "Data Loading & Initial Exploration"
+    },
+    {
+      "node_id": "step-2",
+      "name": "Data Patterns"
+    },
+    {
+      "node_id": "step-3",
+      "name": "Hidden Information"
+    },
+    {
+      "node_id": "step-4",
+      "name": "Innovation Motivation"
+    },
+    {
+      "node_id": "step-5",
+      "name": "Experiment & Validation Suggestions"
+    }
+  ],
+  "hyperedges": [
+    {
+      "edge_id": "design_analysis_20251222_041709_Run1",
+      "connects": [
+        "step-1",
+        "step-2",
+        "step-3",
+        "step-4",
+        "step-5"
+      ],
+      "attrs": {
+        "edge_id": "design_analysis_20251222_041709_Run1",
+        "executed_ipynb": "/data/users/limengran/CellScientist/Design_Analysis/results/BBBC036/design_analysis/design_analysis_20251222_041709_Run1/CP_llm_executed_adaptive_fixed.ipynb",
+        "unexecuted_ipynb": "/data/users/limengran/CellScientist/Design_Analysis/results/BBBC036/design_analysis/design_analysis_20251222_041709_Run1/CP_llm.ipynb",
+        "generated_h5": "/data/users/limengran/CellScientist/Design_Analysis/results/BBBC036/design_analysis/design_analysis_20251222_041709_Run1/preprocessed_data.h5",
+        "executed_sha": "13a4e50bb317034a",
+        "unexecuted_sha": "9d66a698df3c783b",
+        "generated_h5_sha": "f3c87d9e8f4a9d8e",
+        "prompt_variant": "focus=robust-scaling; note: emphasize dose effects",
+        "seed": 1,
+        "timestamp_utc": "2025-12-22T04:18:33.401457Z",
+        "expert_heuristic_scores": {
+          "scientific": 1.0,
+          "novelty": 0.54,
+          "reproducibility": 0.6,
+          "interpretability": 1.0
+        }
+      }
+    },
+    {
+      "edge_id": "design_analysis_20251222_041833_Run2",
+      "connects": [
+        "step-1",
+        "step-2",
+        "step-3",
+        "step-4",
+        "step-5"
+      ],
+      "attrs": {
+        "edge_id": "design_analysis_20251222_041833_Run2",
+        "executed_ipynb": "/data/users/limengran/CellScientist/Design_Analysis/results/BBBC036/design_analysis/design_analysis_20251222_041833_Run2/CP_llm_executed_adaptive_fixed.ipynb",
+        "unexecuted_ipynb": "/data/users/limengran/CellScientist/Design_Analysis/results/BBBC036/design_analysis/design_analysis_20251222_041833_Run2/CP_llm.ipynb",
+        "generated_h5": "/data/users/limengran/CellScientist/Design_Analysis/results/BBBC036/design_analysis/design_analysis_20251222_041833_Run2/preprocessed_data.h5",
+        "executed_sha": "260ba4a3f3c159f4",
+        "unexecuted_sha": "0b2e8e9262a77129",
+        "generated_h5_sha": "47f54ade956a6397",
+        "prompt_variant": "focus=pca/clustering; note: plate-holdout discussion",
+        "seed": 2,
+        "timestamp_utc": "2025-12-22T04:20:28.663452Z",
+        "expert_heuristic_scores": {
+          "scientific": 1.0,
+          "novelty": 0.51,
+          "reproducibility": 1.0,
+          "interpretability": 1.0
+        }
+      }
+    },
+    {
+      "edge_id": "design_analysis_20251222_042028_Run3",
+      "connects": [
+        "step-1",
+        "step-2",
+        "step-3",
+        "step-4",
+        "step-5"
+      ],
+      "attrs": {
+        "edge_id": "design_analysis_20251222_042028_Run3",
+        "executed_ipynb": "/data/users/limengran/CellScientist/Design_Analysis/results/BBBC036/design_analysis/design_analysis_20251222_042028_Run3/CP_llm_executed_adaptive_fixed.ipynb",
+        "unexecuted_ipynb": "/data/users/limengran/CellScientist/Design_Analysis/results/BBBC036/design_analysis/design_analysis_20251222_042028_Run3/CP_llm.ipynb",
+        "generated_h5": "/data/users/limengran/CellScientist/Design_Analysis/results/BBBC036/design_analysis/design_analysis_20251222_042028_Run3/preprocessed_data.h5",
+        "executed_sha": "b3bf0132065e558f",
+        "unexecuted_sha": "0c3a8c54f790aa5c",
+        "generated_h5_sha": "bb944e84d6afc6b1",
+        "prompt_variant": "focus=feature-network; note: correlation modules",
+        "seed": 3,
+        "timestamp_utc": "2025-12-22T04:23:05.332684Z",
+        "expert_heuristic_scores": {
+          "scientific": 1.0,
+          "novelty": 0.94,
+          "reproducibility": 1.0,
+          "interpretability": 1.0
+        }
+      }
+    },
+    {
+      "edge_id": "design_analysis_20251222_042305_Run4",
+      "connects": [
+        "step-1",
+        "step-2",
+        "step-3",
+        "step-4",
+        "step-5"
+      ],
+      "attrs": {
+        "edge_id": "design_analysis_20251222_042305_Run4",
+        "executed_ipynb": "/data/users/limengran/CellScientist/Design_Analysis/results/BBBC036/design_analysis/design_analysis_20251222_042305_Run4/CP_llm_executed_adaptive_fixed.ipynb",
+        "unexecuted_ipynb": "/data/users/limengran/CellScientist/Design_Analysis/results/BBBC036/design_analysis/design_analysis_20251222_042305_Run4/CP_llm.ipynb",
+        "generated_h5": "/data/users/limengran/CellScientist/Design_Analysis/results/BBBC036/design_analysis/design_analysis_20251222_042305_Run4/preprocessed_data.h5",
+        "executed_sha": "6b0a44108d4178d6",
+        "unexecuted_sha": "efb8027709f08b47",
+        "generated_h5_sha": "f971eb4c40f47b62",
+        "prompt_variant": "focus=enrichment; note: volcano + markers",
+        "seed": 4,
+        "timestamp_utc": "2025-12-22T04:25:24.802705Z",
+        "expert_heuristic_scores": {
+          "scientific": 1.0,
+          "novelty": 1.0,
+          "reproducibility": 0.6,
+          "interpretability": 1.0
+        }
+      }
+    }
+  ],
+  "heuristics_calculated_utc": "2025-12-22T04:25:24.814333Z"
+}
