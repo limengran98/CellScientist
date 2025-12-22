@@ -113,9 +113,13 @@ def _process_single_run(idx, variant, seed, base_cfg, num_runs) -> Dict[str, Any
         
         # 1. Run Pipeline
         executed_path = run_pipeline_basic(str(tmp_cfg_path), phase_name="task_analysis")
-        
-        # 2. Auto-Fix
-        final_exec = auto_fix_notebook(executed_path, cfg)
+        # 2. Auto-Fix (guarded to avoid double-fix)
+        exec_cfg = (nb_cfg.get("exec") or {})
+        enable_adaptive_fix = bool(exec_cfg.get("enable_adaptive_fix", True))
+        final_exec = executed_path
+        # If upstream already produced an adaptive-fixed notebook, skip to avoid redundant API calls.
+        if enable_adaptive_fix and ("adaptive_fixed" not in Path(executed_path).stem):
+            final_exec = auto_fix_notebook(executed_path, cfg)
         
         exec_p = Path(final_exec)
         unexec_p = Path(nb_cfg["paths"]["out"])

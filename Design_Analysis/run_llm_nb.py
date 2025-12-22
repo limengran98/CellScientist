@@ -176,17 +176,17 @@ class AdaptiveGraphExecutor(NotebookClient):
                     
                 except CellExecutionError:
                     print(f"   ❌ Failed (Cell {cell_idx}). Initiating Auto-Fix...", flush=True)
-                    
-                    # Attempt Fix
-                    fixed = self._attempt_fix_node(cell, cell_idx)
-                    
-                    if fixed:
-                        print(f"   🔄 Fix applied. Retrying Node {cell_idx} immediately...", flush=True)
-                        # Do NOT increment cell_idx. Loop will retry this cell in the SAME kernel state.
+
+                    # Attempt Fix + validate by re-executing within the same kernel.
+                    fixed_and_executed = self._attempt_fix_node(cell, cell_idx)
+
+                    if fixed_and_executed:
+                        print(f"   ✅ Fixed and executed (Cell {cell_idx}). Moving on...", flush=True)
+                        cell_idx += 1
                         continue
                     else:
                         print(f"   🛑 Failed to fix Cell {cell_idx} after retries. Aborting.", flush=True)
-                        break
+                        raise RuntimeError(f"Adaptive auto-fix failed at cell {cell_idx}")
 
         finally:
             print("🔌 [Adaptive] Shutting down Kernel.", flush=True)
@@ -195,38 +195,51 @@ class AdaptiveGraphExecutor(NotebookClient):
         return self.nb
 
     def _attempt_fix_node(self, cell, cell_idx):
+        """Fix a single failing node (cell) using the LLM.
+
+        IMPORTANT: We validate fixes *inside* this function by immediately re-executing
+        the cell in the same kernel. This prevents infinite loops where each failure
+        triggers a fresh "Attempt 1/3" cycle.
         """
-        Fix a single failing node (cell) using the LLM.
-        """
-        # Extract Error info from cell outputs
-        errors = []
-        for out in cell.get("outputs", []):
-            if out.get("output_type") == "error":
-                tb = "\n".join(out.get("traceback") or [])
-                errors.append({
-                    "cell_index": cell_idx,
-                    "ename": out.get("ename"),
-                    "evalue": str(out.get("evalue"))[:1000],
-                    "traceback_tail": "\n".join(tb.split("\n")[-20:]),
-                    "code": cell.get("source", "")
-                })
-        
+
+        def _collect_errors() -> list:
+            errs = []
+            for out in cell.get("outputs", []) or []:
+                if out.get("output_type") == "error":
+                    tb = "\n".join(out.get("traceback") or [])
+                    errs.append({
+                        "cell_index": cell_idx,
+                        "ename": out.get("ename"),
+                        "evalue": str(out.get("evalue"))[:1000],
+                        "traceback_tail": "\n".join(tb.split("\n")[-20:]),
+                        "code": cell.get("source", "")
+                    })
+            return errs
+
+        # We will refresh errors each attempt because the failure mode may change.
+        errors = _collect_errors()
         if not errors:
             print("   (No specific traceback found in outputs)", flush=True)
             return False
 
-        # Try loop for this specific node
         for attempt in range(self.max_retries_per_node):
-            print(f"   🔧 Fix Attempt {attempt+1}/{self.max_retries_per_node}...", flush=True)
-            
-            # Build Prompt
+            # Show a compact error summary to help debugging without scrolling.
+            last = errors[-1] if errors else {}
+            ename = last.get("ename")
+            evalue = last.get("evalue")
+            if ename or evalue:
+                print(f"   🔧 Fix Attempt {attempt+1}/{self.max_retries_per_node}...  ({ename}: {evalue})", flush=True)
+            else:
+                print(f"   🔧 Fix Attempt {attempt+1}/{self.max_retries_per_node}...", flush=True)
+
+            # Build prompt
             paths = self.nb_cfg.get("paths", {})
             messages = build_fix_messages(
                 language="python",
                 data_path=paths.get("data", ""),
-                csv_preview={}, # Context unavailable inside class easily
+                csv_preview={},
                 paper_excerpt="",
-                errors=errors, # Only errors for THIS cell
+                errors=errors,
                 headings=[],
                 autofix_prompt_str=self.autofix_prompt
             )
@@ -237,34 +250,55 @@ class AdaptiveGraphExecutor(NotebookClient):
                 api_key=self.llm_config["api_key"],
                 base_url=self.llm_config["base_url"],
                 model=self.llm_config["model"],
-                temperature=0.0, 
-                max_tokens=self.llm_config["max_tokens"]
+                temperature=0.0,
+                max_tokens=self.llm_config["max_tokens"],
             )
-            
-            edits = resp.get("edits") or []
+
+            edits = (resp or {}).get("edits") or []
             if not edits:
                 print("   LLM returned no edits.", flush=True)
                 continue
 
-            # Apply Edit
-            try:
-                edit = edits[0] # We expect one edit for this cell
-                new_source = edit.get("source", "")
-                
-                # Simple check to avoid loops
-                if new_source.strip() == cell.source.strip():
-                    print("   LLM suggested identical code (Skipping).", flush=True)
-                    continue
-                
-                # Apply update
-                cell.source = new_source
-                self.total_fixes_applied += 1
-                return True # Signal to retry execution
+            # Apply edit
+            edit = edits[0]
+            new_source = (edit.get("source") or "")
+            if not isinstance(new_source, str) or not new_source.strip():
+                print("   LLM produced empty/invalid source.", flush=True)
+                continue
 
+            if new_source.strip() == (cell.source or "").strip():
+                print("   LLM suggested identical code (Skipping).", flush=True)
+                continue
+
+            cell.source = new_source
+            self.total_fixes_applied += 1
+
+            # Clear outputs before re-executing, otherwise stale tracebacks may persist.
+            try:
+                cell["outputs"] = []
+                cell["execution_count"] = None
+            except Exception:
+                pass
+
+            # Validate by executing immediately; if it still fails, loop continues.
+            try:
+                self.execute_cell(cell, cell_idx)
+                print("   ✅ Fix validated by successful execution.", flush=True)
+                return True
+            except CellExecutionError:
+                print("   ❌ Still failing after applying fix.", flush=True)
+                errors = _collect_errors()
+                if not errors:
+                    # If for some reason outputs don't contain tracebacks, keep going but avoid crashing.
+                    errors = [{"cell_index": cell_idx, "ename": "CellExecutionError", "evalue": "(no traceback)", "traceback_tail": "", "code": cell.get("source", "")}]
+                continue
             except Exception as e:
-                print(f"   Error applying fix: {e}", flush=True)
-        
+                print(f"   ❌ Unexpected error while validating fix: {e}", flush=True)
+                errors = _collect_errors() or errors
+                continue
+
         return False
+
 
 
 def build_fix_messages(language, data_path, csv_preview, paper_excerpt, errors, headings, autofix_prompt_str):
@@ -334,9 +368,17 @@ def auto_fix_notebook(executed_path: str, run_cfg: dict) -> str:
         kernel_name="python3",
         allow_errors=False # We handle errors manually
     )
-
     # Run Stateful Loop
-    final_nb = executor.run_adaptive()
+    try:
+        final_nb = executor.run_adaptive()
+    except Exception as e:
+        failed_path = nb_path.with_name(nb_path.stem + "_adaptive_failed.ipynb")
+        try:
+            nbf.write(nb, str(failed_path))
+            print(f"💾 [AUTO-FIX] Saved failed state to {failed_path}", flush=True)
+        except Exception as w:
+            print(f"⚠️ [AUTO-FIX] Failed to save failed notebook: {w}", flush=True)
+        raise
 
     # Save Result
     fixed_path = nb_path.with_name(nb_path.stem + "_adaptive_fixed.ipynb")
