@@ -9,6 +9,12 @@ try:
 except ImportError:
     yaml = None
 
+def _get_repo_root() -> Path:
+    """Determine the repository root directory (CellScientist/)."""
+    # Assuming config_loader.py is in CellScientist/Design_Analysis/config_loader.py
+    # Parent = Design_Analysis, Parent.Parent = CellScientist
+    return Path(__file__).resolve().parent.parent
+
 def _resolve_placeholders(cfg: dict) -> dict:
     ds = cfg.get("dataset_name", "default_dataset")
     def _subst(v):
@@ -19,50 +25,48 @@ def _resolve_placeholders(cfg: dict) -> dict:
     return _subst(cfg)
 
 def _looks_like_path(s: str) -> bool:
-    """Heuristic to detect config values that are likely filesystem paths."""
-    if not isinstance(s, str):
-        return False
+    if not isinstance(s, str): return False
     t = s.strip()
-    if not t:
-        return False
-    # URLs / URIs are not filesystem paths
-    if re.match(r"^[a-zA-Z][a-zA-Z0-9+\-.]*://", t):
-        return False
-    if t.startswith("mailto:"):
-        return False
-    # Windows drive or POSIX absolute are paths
-    if re.match(r"^[a-zA-Z]:\\", t) or t.startswith("/"):
-        return True
-    # Common relative path patterns
-    if "/" in t or "\\" in t or t.startswith("./") or t.startswith("../"):
-        return True
+    if not t: return False
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+\-.]*://", t): return False # URL
+    if t.startswith("mailto:"): return False
+    if re.match(r"^[a-zA-Z]:\\", t) or t.startswith("/"): return True # Abs
+    if "/" in t or "\\" in t or t.startswith("./") or t.startswith("../"): return True
     return False
 
-def _resolve_relative_paths(cfg: dict, base_dir: Path) -> dict:
-    """Resolve relative path strings in known path-like fields to absolute paths.
-
-    This prevents bugs where running from different working directories causes
-    outputs (e.g. reference export) to be written to unexpected locations.
+def _resolve_relative_paths(cfg: dict, config_dir: Path) -> dict:
     """
+    Robustly resolve paths.
+    - If path starts with '../', resolve relative to REPO_ROOT (CellScientist/).
+    - Otherwise, resolve relative to config_dir (Design_Analysis/).
+    """
+    repo_root = _get_repo_root()
+    
     PATH_KEYS = {
-        # common
         "out_dir", "export_dir",
-        # notebook paths
         "data", "paper", "preprocess", "out", "out_exec", "h5_out",
-        # literature
         "literature_dir", "literature_knowledge_json",
     }
 
     def _resolve_str(v: str) -> str:
         t = (v or "").strip()
-        if not t:
-            return v
-        if not _looks_like_path(t):
-            return v
+        if not t: return v
+        if not _looks_like_path(t): return v
+        
+        # Already absolute?
         p = Path(t)
         if p.is_absolute():
             return str(p)
-        return str((base_dir / p).resolve())
+            
+        # Handle "../" specifically to anchor to repo root
+        if t.startswith("../") or t.startswith("..\\"):
+            # Strip the leading "../" and join with repo root
+            # This avoids ambiguity of where ".." assumes we are
+            clean_path = t[3:] # remove ../
+            return str((repo_root / clean_path).resolve())
+        
+        # Default: relative to config file location
+        return str((config_dir / p).resolve())
 
     def _walk(obj, parent_key: Optional[str] = None):
         if isinstance(obj, dict):
@@ -113,7 +117,5 @@ def load_app_config(config_path: str, prompts_dir_path: str) -> Dict[str, Any]:
              nb_cfg.setdefault('prompt', p_gen['user_prompt'])
 
     cfg = _resolve_placeholders(cfg)
-
-    # Resolve relative paths against config directory for robustness.
-    cfg = _resolve_relative_paths(cfg, base_dir=p_config.parent)
+    cfg = _resolve_relative_paths(cfg, config_dir=p_config.parent)
     return cfg
