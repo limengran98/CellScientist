@@ -2,7 +2,7 @@
 # hypergraph_orchestrator.py
 # Optimized for stability, concurrency, and semantic naming.
 
-import json, hashlib, os, shutil, time
+import json, hashlib, os, shutil
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 from datetime import datetime
@@ -13,16 +13,16 @@ from cellscientist_phase_1 import run_pipeline_basic
 
 # Import centralized tools
 from run_llm_nb import (
-    resolve_llm_config, 
-    auto_fix_notebook, 
-    chat_json
+    resolve_llm_config,
+    auto_fix_notebook,
+    chat_json,
 )
 
 # --------------------
 # Utilities
 # --------------------
 def _get_prompts_dir(cfg_path: str) -> str:
-    return str(Path(cfg_path).parent / 'prompts')
+    return str(Path(cfg_path).parent / "prompts")
 
 def _load_cfg(cfg_path: str, prompts_dir_path: Optional[str] = None) -> Dict[str, Any]:
     if prompts_dir_path is None:
@@ -33,13 +33,16 @@ def _ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
 
 def _hash_file(p: Path) -> str:
-    if not p.exists(): return ""
+    if not p.exists():
+        return ""
     h = hashlib.sha256()
     try:
         with open(p, "rb") as f:
-            for chunk in iter(lambda: f.read(65536), b""): h.update(chunk)
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
         return h.hexdigest()[:16]
-    except Exception: return ""
+    except Exception:
+        return ""
 
 def _is_valid_hdf5(p: Path) -> bool:
     """Best-effort HDF5 validation.
@@ -52,79 +55,102 @@ def _is_valid_hdf5(p: Path) -> bool:
         return False
     try:
         import h5py  # type: ignore
-        with h5py.File(p, 'r') as f:
+        with h5py.File(p, "r") as f:
             _ = list(f.keys())
         return True
     except Exception:
         # Fallback: HDF5 signature is: \x89 H D F \r \n \x1a \n
         try:
-            with open(p, 'rb') as fh:
+            with open(p, "rb") as fh:
                 sig = fh.read(8)
             return sig == b"\x89HDF\r\n\x1a\n"
         except Exception:
             return False
 
+def _resolve_from_cfg(path_str: Optional[str], cfg_root: Path) -> Optional[Path]:
+    """Resolve a filesystem path deterministically relative to the config directory.
+
+    IMPORTANT:
+    - We intentionally do NOT resolve relative to current working directory (cwd),
+      because run_cellscientist.py may run phases with different cwd values.
+    - This prevents accidental paths like /results/... when cwd == /.
+    """
+    if path_str is None:
+        return None
+    s = str(path_str).strip()
+    if not s:
+        return None
+    p = Path(s)
+    if p.is_absolute():
+        return p.resolve()
+    return (cfg_root / p).resolve()
+
 # --------------------
 # Per-run logic (Worker Function)
 # --------------------
-def _process_single_run(idx, variant, seed, base_cfg, num_runs) -> Dict[str, Any]:
-    """
-    Worker function for ThreadPoolExecutor. 
-    Naming: design_analysis_YYYYMMDD_HHMMSS_Run{idx}
-    """
+def _process_single_run(idx, variant, seed, base_cfg, num_runs, cfg_root: Path) -> Optional[Dict[str, Any]]:
+    """Worker function for ThreadPoolExecutor."""
     try:
         import copy
         cfg = copy.deepcopy(base_cfg)
-        
+
         nb_cfg = cfg["phases"]["task_analysis"]["llm_notebook"]
         multi = nb_cfg.get("multi", {})
         paths = nb_cfg.get("paths", {})
-        
-        out_dir = Path(multi.get("out_dir") or Path(paths.get("out")).parent / "hypergraph_runs").resolve()
-        
-        # [MODIFIED] Semantic Naming Strategy
+
+        # Resolve output directory relative to config directory (NOT cwd)
+        out_dir_str = multi.get("out_dir")
+        if not out_dir_str:
+            out_candidate = paths.get("out")
+            if out_candidate:
+                out_dir_str = str(Path(out_candidate).parent / "hypergraph_runs")
+            else:
+                out_dir_str = "hypergraph_runs"
+        out_dir = _resolve_from_cfg(out_dir_str, cfg_root) or (cfg_root / "hypergraph_runs")
+        _ensure_dir(out_dir)
+
+        # Semantic naming strategy
         t_str = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_name = f"design_analysis_{t_str}_Run{idx+1}"
-        
+
         run_dir = (out_dir / run_name).resolve()
         _ensure_dir(run_dir)
 
-        # Inject Variant
-        base_prompt = (cfg.get('prompts', {}).get('notebook_generation', {}).get('user_prompt'))
+        # Inject variant
+        base_prompt = (cfg.get("prompts", {}).get("notebook_generation", {}).get("user_prompt"))
         nb_cfg["prompt"] = base_prompt
         nb_cfg["focus_instruction"] = variant or "Standard analysis."
-        
-        # Setup Paths
+
+        # Setup paths (absolute)
         nb_cfg.setdefault("paths", {})
         nb_cfg["paths"]["out"] = str((run_dir / "CP_llm.ipynb").resolve())
         nb_cfg["paths"]["out_exec"] = str((run_dir / "CP_llm_executed.ipynb").resolve())
         h5_p = (run_dir / "preprocessed_data.h5").resolve()
         nb_cfg["paths"]["h5_out"] = str(h5_p)
-        
+
         if seed is not None:
             nb_cfg.setdefault("llm", {})["seed"] = seed
 
-        # Write Temp Config
+        # Write temp config
         tmp_cfg_path = run_dir / "config.run.json"
         tmp_cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        # [MODIFIED] Added flush=True to ensure visibility
         print(f"🚀 [{idx+1}/{num_runs}] Executing {run_name}...", flush=True)
-        
-        # 1. Run Pipeline
+
+        # 1) Run pipeline
         executed_path = run_pipeline_basic(str(tmp_cfg_path), phase_name="task_analysis")
-        # 2. Auto-Fix (guarded to avoid double-fix)
+
+        # 2) Auto-Fix (guarded to avoid double-fix)
         exec_cfg = (nb_cfg.get("exec") or {})
         enable_adaptive_fix = bool(exec_cfg.get("enable_adaptive_fix", True))
         final_exec = executed_path
-        # If upstream already produced an adaptive-fixed notebook, skip to avoid redundant API calls.
         if enable_adaptive_fix and ("adaptive_fixed" not in Path(executed_path).stem):
             final_exec = auto_fix_notebook(executed_path, cfg)
-        
+
         exec_p = Path(final_exec)
         unexec_p = Path(nb_cfg["paths"]["out"])
-        
-        # 3. Validate H5
+
+        # 3) Validate H5
         h5_valid = _is_valid_hdf5(h5_p)
         if not h5_valid and h5_p.exists():
             print(f"⚠️ [{run_name}] H5 file generated but corrupt/invalid.", flush=True)
@@ -152,6 +178,9 @@ def _process_single_run(idx, variant, seed, base_cfg, num_runs) -> Dict[str, Any
 # Orchestrator
 # --------------------
 def orchestrate(cfg_path: str, prompts_dir_path: Optional[str] = None):
+    cfg_path = str(cfg_path)
+    cfg_root = Path(cfg_path).resolve().parent
+
     cfg = _load_cfg(cfg_path, prompts_dir_path)
     nb_cfg = (((cfg.get("phases") or {}).get("task_analysis") or {}).get("llm_notebook") or {})
     multi_cfg = nb_cfg.get("multi") or {}
@@ -160,29 +189,25 @@ def orchestrate(cfg_path: str, prompts_dir_path: Optional[str] = None):
         print("Multi-run disabled in config.", flush=True)
         return
 
-    # Adaptive Logic
     prompt_variants = multi_cfg.get("prompt_variants") or []
     seeds = multi_cfg.get("seeds") or []
     num_runs_cfg = int(multi_cfg.get("num_runs", 1))
-    
+
     if not seeds or not prompt_variants:
         num_runs = 0
     else:
         num_runs = min(num_runs_cfg, len(seeds), len(prompt_variants))
 
     print(f"ℹ️  Starting Orchestration: {num_runs} runs planned.", flush=True)
-    
+
     max_workers = int(multi_cfg.get("max_parallel_workers", 2))
     edges = []
-    
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
         for i in range(num_runs):
-            variant = prompt_variants[i]
-            seed = seeds[i]
-            # [MODIFIED] Removed time.sleep() as requested - No artificial limiting
-            futures.append(executor.submit(_process_single_run, i, variant, seed, cfg, num_runs))
-            
+            futures.append(executor.submit(_process_single_run, i, prompt_variants[i], seeds[i], cfg, num_runs, cfg_root))
+
         for f in as_completed(futures):
             res = f.result()
             if res:
@@ -192,7 +217,6 @@ def orchestrate(cfg_path: str, prompts_dir_path: Optional[str] = None):
         print("⚠️ No successful runs generated.", flush=True)
         return
 
-    # Emit Hypergraph
     hypergraph = {
         "name": multi_cfg.get("hypergraph_name", "CellScientist"),
         "created_utc": datetime.utcnow().isoformat() + "Z",
@@ -203,8 +227,9 @@ def orchestrate(cfg_path: str, prompts_dir_path: Optional[str] = None):
             "attrs": e
         } for e in edges]
     }
-    
-    multi_out_dir = Path(multi_cfg.get("out_dir") or "hypergraph_runs").resolve()
+
+    # Save hypergraph under out_dir/hypergraph_runs (resolved relative to cfg directory)
+    multi_out_dir = _resolve_from_cfg(multi_cfg.get("out_dir") or "hypergraph_runs", cfg_root) or (cfg_root / "hypergraph_runs")
     _ensure_dir(multi_out_dir)
     hypergraph_dir = (multi_out_dir / "hypergraph_runs").resolve()
     _ensure_dir(hypergraph_dir)
@@ -212,12 +237,11 @@ def orchestrate(cfg_path: str, prompts_dir_path: Optional[str] = None):
     hp_path.write_text(json.dumps(hypergraph, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"✅ Hypergraph saved: {hp_path}", flush=True)
 
-    # Mandatory Reference Export (Heuristics + Selection)
     print(f"🧪 [HEURISTICS] Calculating scores for {len(edges)} runs...", flush=True)
     calculate_run_heuristics(str(hp_path), cfg_path=cfg_path, prompts_dir_path=prompts_dir_path)
-    
-    print(f"🏆 [REFERENCE] Selecting and exporting best result (Mandatory)...", flush=True)
-    select_and_export_reference(str(hp_path), cfg_path, prompts_dir_path=prompts_dir_path)
+
+    print("🏆 [REFERENCE] Selecting and exporting best result (Mandatory)...", flush=True)
+    select_and_export_reference(str(hp_path), cfg_path, prompts_dir_path=prompts_dir_path, cfg_root=cfg_root)
 
 # ============================
 # Heuristics & Helpers
@@ -226,8 +250,10 @@ import nbformat as _nbf
 from nbformat.reader import reads as _nb_reads
 
 def _safe_read_text(p):
-    try: return Path(p).read_text(encoding="utf-8", errors="ignore")
-    except Exception: return ""
+    try:
+        return Path(p).read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return ""
 
 def _extract_nb_cells(ipynb_path: str):
     try:
@@ -235,37 +261,41 @@ def _extract_nb_cells(ipynb_path: str):
         return nb.get("cells", [])
     except Exception:
         s = _safe_read_text(ipynb_path)
-        try: return _nb_reads(s, as_version=4).get("cells", [])
-        except Exception: return []
+        try:
+            return _nb_reads(s, as_version=4).get("cells", [])
+        except Exception:
+            return []
 
 def _heuristic_scores_from_cells(cells):
     if not cells:
         return dict(scientific=0.0, novelty=0.0, reproducibility=0.0, interpretability=0.0)
-    md_cnt = sum(1 for c in cells if c.get("cell_type")=="markdown")
-    code_cnt = sum(1 for c in cells if c.get("cell_type")=="code")
-    text = " ".join([c.get("source","") for c in cells if isinstance(c.get("source",""), str)]).lower()
+    md_cnt = sum(1 for c in cells if c.get("cell_type") == "markdown")
+    code_cnt = sum(1 for c in cells if c.get("cell_type") == "code")
+    text = " ".join([c.get("source", "") for c in cells if isinstance(c.get("source", ""), str)]).lower()
 
-    has_stat = any(k in text for k in ["p-value","anova","t-test","wilcoxon","chi-square","adjusted p","fdr","effect size"])
-    has_fig  = any(k in text for k in ["plt.","plot","figure","heatmap","violin","boxplot","volcano"])
-    has_seed = any(k in text for k in ["random_state","seed=","np.random.seed","torch.manual_seed"])
-    has_method = any(k in text for k in ["methods","methodology","pipeline","workflow","protocol"])
-    has_disc  = any(k in text for k in ["discussion","limitations","confound","bias","future work"])
-    has_bio   = any(k in text for k in ["gene","rna","protein","pathway","enrichment","marker"])
+    has_stat = any(k in text for k in ["p-value", "anova", "t-test", "wilcoxon", "chi-square", "adjusted p", "fdr", "effect size"])
+    has_fig  = any(k in text for k in ["plt.", "plot", "figure", "heatmap", "violin", "boxplot", "volcano"])
+    has_seed = any(k in text for k in ["random_state", "seed=", "np.random.seed", "torch.manual_seed"])
+    has_method = any(k in text for k in ["methods", "methodology", "pipeline", "workflow", "protocol"])
+    has_disc  = any(k in text for k in ["discussion", "limitations", "confound", "bias", "future work"])
+    has_bio   = any(k in text for k in ["gene", "rna", "protein", "pathway", "enrichment", "marker"])
 
-    def clamp(v): return max(0.0, min(1.0, v))
+    def clamp(v):
+        return max(0.0, min(1.0, v))
 
-    scientific = clamp(0.25*(1.0 if has_stat else 0.0) + 0.25*(1.0 if has_fig else 0.0) + 0.25*(1.0 if has_bio else 0.0) + 0.25*min(md_cnt/6.0,1.0))
-    novelty = clamp(0.4*(1.0 if ("contrastive" in text or "representation" in text or "causal" in text) else 0.0) + 0.3*min(code_cnt/10.0,1.0) + 0.3*min(md_cnt/10.0,1.0))
+    scientific = clamp(0.25*(1.0 if has_stat else 0.0) + 0.25*(1.0 if has_fig else 0.0) + 0.25*(1.0 if has_bio else 0.0) + 0.25*min(md_cnt/6.0, 1.0))
+    novelty = clamp(0.4*(1.0 if ("contrastive" in text or "representation" in text or "causal" in text) else 0.0) + 0.3*min(code_cnt/10.0, 1.0) + 0.3*min(md_cnt/10.0, 1.0))
     reproducibility = clamp(0.6*(1.0 if has_seed else 0.0) + 0.4*(1.0 if ("requirements.txt" in text or "environment" in text or "versions" in text) else 0.0))
-    interpretability = clamp(0.5*min(md_cnt/8.0,1.0) + 0.25*(1.0 if has_method else 0.0) + 0.25*(1.0 if has_disc else 0.0))
+    interpretability = clamp(0.5*min(md_cnt/8.0, 1.0) + 0.25*(1.0 if has_method else 0.0) + 0.25*(1.0 if has_disc else 0.0))
 
     return dict(scientific=scientific, novelty=novelty, reproducibility=reproducibility, interpretability=interpretability)
 
 def calculate_run_heuristics(hypergraph_path: str, cfg_path: Optional[str] = None, prompts_dir_path: Optional[str] = None):
     hp = Path(hypergraph_path)
-    if not hp.exists(): return
+    if not hp.exists():
+        return
     data = json.loads(hp.read_text(encoding="utf-8"))
-    
+
     for e in data.get("hyperedges", []):
         attrs = e.get("attrs", {})
         ip = attrs.get("executed_ipynb")
@@ -275,23 +305,24 @@ def calculate_run_heuristics(hypergraph_path: str, cfg_path: Optional[str] = Non
 
     data["heuristics_calculated_utc"] = datetime.utcnow().isoformat() + "Z"
     hp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"🧠 [HEURISTICS] Scores saved.", flush=True)
+    print("🧠 [HEURISTICS] Scores saved.", flush=True)
 
 def generate_experiment_ideas(notebook_path: str, output_dir: Path, llm_cfg: Dict[str, Any], prompts_dir_path: Optional[str] = None):
     resolved = resolve_llm_config(llm_cfg)
-    
+
     nb_cells = _extract_nb_cells(notebook_path)
     context_text = []
     for c in nb_cells:
-        if c.get("cell_type") == "markdown": 
-            context_text.append(c.get("source",""))
+        if c.get("cell_type") == "markdown":
+            context_text.append(c.get("source", ""))
         elif c.get("cell_type") == "code":
             for out in c.get("outputs", []) or []:
                 data_obj = out.get("data", {})
                 text_content = data_obj.get("text/plain") or data_obj.get("text")
                 if text_content:
                     val = "".join(text_content)
-                    if len(val) < 2000: context_text.append(f"Output: {val}")
+                    if len(val) < 2000:
+                        context_text.append(f"Output: {val}")
 
     full_text = "\n\n".join(context_text)
     if len(full_text) > 12000:
@@ -300,21 +331,22 @@ def generate_experiment_ideas(notebook_path: str, output_dir: Path, llm_cfg: Dic
     system_prompt = ""
     if prompts_dir_path:
         try:
-             with open(Path(prompts_dir_path)/"idea.yml", 'r') as f:
-                 import yaml
-                 y = yaml.safe_load(f)
-                 system_prompt = y.get("system_prompt", "")
-        except: pass
+            with open(Path(prompts_dir_path) / "idea.yml", "r", encoding="utf-8") as f:
+                import yaml
+                y = yaml.safe_load(f)
+                system_prompt = (y or {}).get("system_prompt", "")
+        except Exception:
+            pass
 
     if not system_prompt:
         system_prompt = "You are an expert. Generate innovative experimental ideas based on the analysis."
 
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Context:\n{full_text}\n\nGenerate JSON with ideas."}
+        {"role": "user", "content": f"Context:\n{full_text}\n\nGenerate JSON with ideas."},
     ]
 
-    print(f"💡 [IDEAS] Generating ideas...", flush=True)
+    print("💡 [IDEAS] Generating ideas...", flush=True)
     try:
         resp = chat_json(
             messages,
@@ -322,14 +354,13 @@ def generate_experiment_ideas(notebook_path: str, output_dir: Path, llm_cfg: Dic
             base_url=resolved["base_url"],
             model=resolved["model"],
             temperature=0.8,
-            max_tokens=resolved["max_tokens"]
+            max_tokens=resolved["max_tokens"],
         )
         if resp:
             (output_dir / "idea.json").write_text(json.dumps(resp, ensure_ascii=False, indent=2), encoding="utf-8")
-            print(f"✨ [IDEAS] Saved.", flush=True)
+            print("✨ [IDEAS] Saved.", flush=True)
     except Exception as e:
         print(f"❌ [IDEAS] Failed: {e}", flush=True)
-
 
 def _truncate_middle(text: str, max_chars: int) -> str:
     if not text:
@@ -339,7 +370,6 @@ def _truncate_middle(text: str, max_chars: int) -> str:
     head = max_chars // 3
     tail = max_chars - head - len("\n...[SNIP]...\n")
     return text[:head] + "\n...[SNIP]...\n" + text[-tail:]
-
 
 def _summarize_h5_for_report(h5_path: Path, max_items: int = 80) -> str:
     if not h5_path.exists():
@@ -360,13 +390,11 @@ def _summarize_h5_for_report(h5_path: Path, max_items: int = 80) -> str:
             lines = lines[:max_items] + [f"... ({len(lines)-max_items} more items)"]
         return "\n".join(lines)
     except Exception as e:
-        # Keep it non-fatal; report can still be generated.
         try:
             size = h5_path.stat().st_size
         except Exception:
             size = -1
         return f"(failed to inspect H5: {e}; size_bytes={size})"
-
 
 def _summarize_notebook_for_report(ipynb_path: Path, max_chars: int = 16000) -> str:
     if not ipynb_path.exists():
@@ -384,7 +412,6 @@ def _summarize_notebook_for_report(ipynb_path: Path, max_chars: int = 16000) -> 
             if src.strip():
                 parts.append("[MARKDOWN]\n" + src.strip())
         elif ctype == "code":
-            # Keep code only if short (for context), prioritize outputs and markdown.
             if isinstance(src, str) and src.strip() and len(src) <= 1200:
                 parts.append("[CODE]\n" + src.strip())
 
@@ -406,15 +433,11 @@ def _summarize_notebook_for_report(ipynb_path: Path, max_chars: int = 16000) -> 
 
     return _truncate_middle("\n\n".join(parts), max_chars=max_chars)
 
-
 def generate_summary_report(reference_dir: Path, *, cfg: Dict[str, Any], llm_cfg: Dict[str, Any], prompts_dir_path: Optional[str] = None):
     """Read artifacts in reference_dir and call LLM to generate a Markdown report."""
     reference_dir = Path(reference_dir).resolve()
     reference_dir.mkdir(parents=True, exist_ok=True)
 
-    dataset_name = (cfg.get("dataset_name") or "dataset").strip()
-
-    # Locate artifacts
     best_ipynb = None
     for p in sorted(reference_dir.glob("BEST_*.ipynb")):
         best_ipynb = p
@@ -440,7 +463,6 @@ def generate_summary_report(reference_dir: Path, *, cfg: Dict[str, Any], llm_cfg
     h5_summary = _summarize_h5_for_report(h5_path)
     nb_summary = _summarize_notebook_for_report(best_ipynb) if best_ipynb else "(no BEST_*.ipynb found)"
 
-    # Defaults (English)
     default_sections = [
         "Objective",
         "Data Overview",
@@ -450,14 +472,11 @@ def generate_summary_report(reference_dir: Path, *, cfg: Dict[str, Any], llm_cfg
         "Reproducible Experiments & Validation Plan",
         "Next Experiment Ideas (>= 8 items)",
         "Risks, Biases & Caveats",
-        "Reproduction Checklist (files/commands/seeds)"
+        "Reproduction Checklist (files/commands/seeds)",
     ]
     report_language = "en"
     system_prompt = ""
 
-    # Load report.yml if present
-    report_yml_path = None
-    report_cfg = {}
     if prompts_dir_path:
         report_yml_path = Path(prompts_dir_path) / "report.yml"
         if report_yml_path.exists():
@@ -465,8 +484,7 @@ def generate_summary_report(reference_dir: Path, *, cfg: Dict[str, Any], llm_cfg
                 with open(report_yml_path, "r", encoding="utf-8") as f:
                     import yaml
                     report_cfg = yaml.safe_load(f) or {}
-                    system_prompt = report_cfg.get("system_prompt", "") or ""
-                    # Optional overrides from YAML
+                    system_prompt = (report_cfg.get("system_prompt", "") or "")
                     report_language = (report_cfg.get("language") or report_language)
                     sections_from_yml = report_cfg.get("sections")
                     if isinstance(sections_from_yml, list) and sections_from_yml:
@@ -474,8 +492,6 @@ def generate_summary_report(reference_dir: Path, *, cfg: Dict[str, Any], llm_cfg
                 print(f"🧾 [REPORT] Loaded prompt config: {report_yml_path}", flush=True)
             except Exception as e:
                 print(f"⚠️ [REPORT] Failed to load {report_yml_path}: {e}", flush=True)
-        else:
-            print(f"⚠️ [REPORT] Prompt file not found: {report_yml_path}", flush=True)
 
     if not system_prompt:
         system_prompt = (
@@ -485,7 +501,6 @@ def generate_summary_report(reference_dir: Path, *, cfg: Dict[str, Any], llm_cfg
 
     resolved = resolve_llm_config(llm_cfg)
 
-    # Keep the config excerpt small
     cfg_excerpt = {
         "dataset_name": cfg.get("dataset_name"),
         "workflow_phases": cfg.get("workflow_phases"),
@@ -494,18 +509,14 @@ def generate_summary_report(reference_dir: Path, *, cfg: Dict[str, Any], llm_cfg
     }
 
     user_payload = {
-        "dataset_name": dataset_name,
+        "dataset_name": (cfg.get("dataset_name") or "dataset").strip(),
         "reference_dir": str(reference_dir),
         "reference_meta": ref_meta,
         "h5_summary": h5_summary,
         "notebook_summary": nb_summary,
         "idea_json": idea_json,
         "config_excerpt": cfg_excerpt,
-        "instructions": {
-            "language": report_language,
-            "format": "markdown",
-            "sections": default_sections
-        }
+        "instructions": {"language": report_language, "format": "markdown", "sections": default_sections},
     }
 
     messages = [
@@ -515,7 +526,7 @@ def generate_summary_report(reference_dir: Path, *, cfg: Dict[str, Any], llm_cfg
             "Return a JSON object that MUST contain the key `report_md` (a Markdown string). "
             "Output JSON ONLY (no extra text).\n\n"
             f"INPUT_JSON:\n{json.dumps(user_payload, ensure_ascii=False)}"
-        )}
+        )},
     ]
 
     print("🧾 [REPORT] Generating summary report...", flush=True)
@@ -539,7 +550,6 @@ def generate_summary_report(reference_dir: Path, *, cfg: Dict[str, Any], llm_cfg
         print("✅ [REPORT] Saved: summary_report.md", flush=True)
     except Exception as e:
         print(f"❌ [REPORT] Failed: {e}", flush=True)
-
 
 def _ref_cfg(cfg_path: str, prompts_dir_path: Optional[str] = None):
     try:
@@ -565,27 +575,37 @@ def _score_edge_for_reference(attrs: dict, weights: dict) -> float:
         float(s.get("reproducibility", 0.0)) * w_rep +
         float(s.get("interpretability", 0.0)) * w_int
     )
-    if attrs.get("executed_sha"): score += 0.05
-    if attrs.get("generated_h5_sha"): score += 0.05
+    if attrs.get("executed_sha"):
+        score += 0.05
+    if attrs.get("generated_h5_sha"):
+        score += 0.05
     return score
 
-def select_and_export_reference(hypergraph_path: str, cfg_path: str, prompts_dir_path: Optional[str] = None):
+def select_and_export_reference(hypergraph_path: str, cfg_path: str, prompts_dir_path: Optional[str] = None, cfg_root: Optional[Path] = None):
     hp = Path(hypergraph_path)
-    if not hp.exists(): return
+    if not hp.exists():
+        return
+
+    if cfg_root is None:
+        cfg_root = Path(cfg_path).resolve().parent
 
     data = json.loads(hp.read_text(encoding="utf-8"))
     edges = data.get("hyperedges", [])
-    if not edges: return
+    if not edges:
+        return
 
-    multi, review, ref_cfg = _ref_cfg(cfg_path, prompts_dir_path)
-    
+    multi, _review, ref_cfg = _ref_cfg(cfg_path, prompts_dir_path)
+
     weights = (ref_cfg.get("weights") or {
         "scientific": 1.0, "novelty": 1.0, "reproducibility": 1.0, "interpretability": 1.0
     })
-    
-    base_out = Path(multi.get("out_dir") or "hypergraph_runs").resolve()
-    export_dir = Path(ref_cfg.get("export_dir") or (base_out / "reference")).resolve()
+
+    base_out = _resolve_from_cfg(multi.get("out_dir") or "hypergraph_runs", cfg_root) or (cfg_root / "hypergraph_runs")
+    export_dir = _resolve_from_cfg(ref_cfg.get("export_dir") or str(base_out / "reference"), cfg_root) or (base_out / "reference")
     export_dir.mkdir(parents=True, exist_ok=True)
+
+    # Make path issues obvious in logs
+    print(f"📦 [REFERENCE] export_dir resolved to: {export_dir}", flush=True)
 
     best = None
     best_score = -1e18
@@ -601,46 +621,36 @@ def select_and_export_reference(hypergraph_path: str, cfg_path: str, prompts_dir
 
     attrs = best.get("attrs", {})
     src_ipynb = attrs.get("executed_ipynb")
-    
+
     if not src_ipynb or not Path(src_ipynb).exists():
         print(f"⚠️ [REFERENCE] Best run ({best.get('edge_id')}) missing executed notebook.", flush=True)
         return
 
-    # Export Notebook
-    ref_name = f"BEST_{best.get('edge_id')}" 
+    ref_name = f"BEST_{best.get('edge_id')}"
     dst_ipynb = export_dir / f"{ref_name}.ipynb"
     shutil.copyfile(src_ipynb, dst_ipynb)
     print(f"📌 [REFERENCE] Exported Best Notebook → {dst_ipynb}", flush=True)
 
-    # Export H5
     src_h5 = attrs.get("generated_h5")
-    dst_h5 = None
     if src_h5 and Path(src_h5).exists():
         dst_h5 = export_dir / "REFERENCE_DATA.h5"
         shutil.copyfile(src_h5, dst_h5)
         print(f"📌 [REFERENCE] Exported Best Data → {dst_h5}", flush=True)
 
-    # Save Meta
-    ref_meta = {
-        "edge_id": best.get("edge_id"),
-        "score": best_score,
-        "exported_utc": datetime.utcnow().isoformat() + "Z"
-    }
+    ref_meta = {"edge_id": best.get("edge_id"), "score": best_score, "exported_utc": datetime.utcnow().isoformat() + "Z"}
     (export_dir / "reference.json").write_text(json.dumps(ref_meta, indent=2), encoding="utf-8")
 
-    # Generate Ideas
     full_cfg = _load_cfg(cfg_path, prompts_dir_path)
     nb_cfg_full = (((full_cfg.get("phases") or {}).get("task_analysis") or {}).get("llm_notebook") or {})
-    
+
     if ref_cfg.get("generate_ideas", True):
         generate_experiment_ideas(
             notebook_path=str(dst_ipynb),
             output_dir=export_dir,
             llm_cfg=nb_cfg_full.get("llm", {}),
-            prompts_dir_path=prompts_dir_path
+            prompts_dir_path=prompts_dir_path,
         )
 
-    # Generate Markdown summary report
     if ref_cfg.get("generate_report", True):
         generate_summary_report(
             reference_dir=export_dir,
