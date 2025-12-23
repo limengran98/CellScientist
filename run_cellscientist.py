@@ -205,22 +205,30 @@ def _apply_pipeline_overrides(phase_name: str, phase_cfg: Dict[str, Any], pipe_c
         cfg["dataset_name"] = pipe_cfg["dataset_name"].strip()
 
     common = pipe_cfg.get("common") if isinstance(pipe_cfg.get("common"), dict) else {}
-    # 2) CUDA / GPU selection (common)
-    cuda_id = common.get("cuda_device_id", None)
     
-    # [FIX 2] CUDA Invalid Device Ordinal
-    # If using CUDA_VISIBLE_DEVICES (e.g., =2), the process sees it as device 0.
-    config_cuda_id = cuda_id
-    if cuda_id is not None:
-         config_cuda_id = 0
+    # 2) CUDA / GPU selection (The Robust Fix)
+    # Logic: If we rely on CUDA_VISIBLE_DEVICES at the process level, we MUST wipe the 
+    # internal 'cuda_device_id' from the config passed to child processes.
+    # Otherwise, child processes will see "id: 0" and incorrectly reset CUDA_VISIBLE_DEVICES to "0" (Physical 0).
+    
+    cuda_visible = common.get("cuda_visible_devices")
+    cuda_id = common.get("cuda_device_id")
+    
+    # Check if we are enforcing a specific GPU
+    has_gpu_setting = (cuda_visible is not None) or (cuda_id is not None)
 
-    if cuda_id is not None:
+    if has_gpu_setting:
+        # Force downstream config to None. This prevents downstream scripts from 
+        # generating `export CUDA_VISIBLE_DEVICES=0` which overrides our setting.
+        # The child process will simply inherit the parent's CUDA_VISIBLE_DEVICES.
+        config_val = None 
+        
         if phase_name == "Phase 1":
-            _set_nested(cfg, ["phases", "task_analysis", "llm_notebook", "exec", "cuda_device_id"], config_cuda_id)
+            _set_nested(cfg, ["phases", "task_analysis", "llm_notebook", "exec", "cuda_device_id"], config_val)
         elif phase_name == "Phase 2":
-            _set_nested(cfg, ["exec", "cuda_device_id"], config_cuda_id)
+            _set_nested(cfg, ["exec", "cuda_device_id"], config_val)
         elif phase_name == "Phase 3":
-            _set_nested(cfg, ["exec", "cuda_device_id"], config_cuda_id)
+            _set_nested(cfg, ["exec", "cuda_device_id"], config_val)
 
     # 3) LLM defaults (common)
     llm_common = pipe_cfg.get("llm") if isinstance(pipe_cfg.get("llm"), dict) else None
