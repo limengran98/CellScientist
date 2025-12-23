@@ -5,12 +5,12 @@
 # Pipeline runner + robust metrics scoreboard:
 # - Success Rate (clean): successful runs WITHOUT any bug/recovery signals
 # - Robust SR: successful runs INCLUDING auto-fix/retries/fallbacks
-# - Bug Rate: fraction of attempts that had any bug/recovery signals (even if eventually succeeded)
-# - Avg@Budget: average primary metric over successful attempts only (crashes / no-metric are excluded)
-# - Best@Budget: best primary metric over successful attempts only
+# - Bug Rate: fraction of attempts that had any bug/recovery signals
+# - Avg@Budget: average primary metric over successful attempts
+# - Best@Budget: best primary metric (respecting maximize/minimize direction)
 #
-# NOTE: Phase 1 metric is heuristic_score (not comparable to PCC). Total Avg/Best are computed on the
-# pipeline final metric (usually Phase 3 target_metric) using Phase 2/3 scores only if they match.
+# NOTE: Phase 1 metric is heuristic_score. Total Avg/Best are computed on the
+# pipeline final metric using Phase 2/3 scores only if they match.
 
 import os
 import sys
@@ -20,6 +20,7 @@ import datetime
 import subprocess
 import re
 import glob
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 # =============================================================================
@@ -116,26 +117,29 @@ class TeeStream:
 # =============================================================================
 
 def _project_root() -> str:
+    """Returns the directory containing this script."""
     return os.path.dirname(os.path.abspath(__file__))
 
 def _ensure_project_cwd():
-    """Allow running from anywhere; keep backwards compatible behavior."""
+    """
+    Robustly sets CWD to the repository root (where this script is located).
+    Fixes issues with 'CellScientist-main' vs 'CellScientist' naming.
+    """
     root = _project_root()
-    if os.path.exists(os.path.join(os.getcwd(), "Design_Analysis")):
-        return
-    if os.path.exists(os.path.join(root, "Design_Analysis")):
-        os.chdir(root)
-        return
-    print("❌ Error: Run this script from the 'CellScientist' root directory (or keep the repo intact).")
-    sys.exit(1)
+    # Check if we are likely in the root (should contain phase folders)
+    # We check for one known folder to be sure.
+    marker = os.path.join(root, "Design_Analysis")
+    
+    if not os.path.exists(marker):
+        print(f"[WARN] Current script location '{root}' does not look like the project root (missing 'Design_Analysis').")
+        print("       Assuming we are running inside a subfolder or modified structure.")
+    
+    # Always force chdir to the script's directory to ensure relative paths in configs work
+    os.chdir(root)
+    # Optional: print(f"[INIT] Working directory set to: {root}")
 
 def get_config_path(phase_info: Dict[str, Any]) -> str:
-    """Return the config path for a phase.
-
-    Backwards compatible:
-    - If `phase_info["config"]` is an absolute path (or an existing path), use it directly.
-    - Otherwise, treat it as a filename relative to the phase folder.
-    """
+    """Return the config path for a phase."""
     cfg = phase_info["config"]
     if not cfg:
         return os.path.join(phase_info["folder"], cfg)
@@ -151,7 +155,6 @@ def load_json(path: str) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
-
 # =============================================================================
 # Pipeline-level config (optional)
 # =============================================================================
@@ -166,7 +169,6 @@ def _deep_merge(dst: Any, src: Any) -> Any:
             else:
                 out[k] = v
         return out
-    # for lists / scalars: src wins if not None
     return src if src is not None else dst
 
 def _set_nested(d: Dict[str, Any], keys: List[str], value: Any):
@@ -178,12 +180,7 @@ def _set_nested(d: Dict[str, Any], keys: List[str], value: Any):
     cur[keys[-1]] = value
 
 def _load_pipeline_config() -> Optional[Dict[str, Any]]:
-    """Load pipeline_config.json if present.
-
-    Priority:
-    1) env CELL_SCI_PIPELINE_CONFIG
-    2) repo_root/pipeline_config.json
-    """
+    """Load pipeline_config.json if present."""
     env_path = os.environ.get("CELL_SCI_PIPELINE_CONFIG")
     if env_path and os.path.exists(env_path):
         try:
@@ -213,7 +210,6 @@ def _apply_pipeline_overrides(phase_name: str, phase_cfg: Dict[str, Any], pipe_c
     
     # [FIX 2] CUDA Invalid Device Ordinal
     # If using CUDA_VISIBLE_DEVICES (e.g., =2), the process sees it as device 0.
-    # So we must override the config internal ID to 0 to prevent index errors.
     config_cuda_id = cuda_id
     if cuda_id is not None:
          config_cuda_id = 0
@@ -224,7 +220,6 @@ def _apply_pipeline_overrides(phase_name: str, phase_cfg: Dict[str, Any], pipe_c
         elif phase_name == "Phase 2":
             _set_nested(cfg, ["exec", "cuda_device_id"], config_cuda_id)
         elif phase_name == "Phase 3":
-            # Phase 3 mostly respects env CUDA_VISIBLE_DEVICES; keep here for future compatibility
             _set_nested(cfg, ["exec", "cuda_device_id"], config_cuda_id)
 
     # 3) LLM defaults (common)
@@ -253,14 +248,9 @@ def _apply_pipeline_overrides(phase_name: str, phase_cfg: Dict[str, Any], pipe_c
     return cfg
 
 def _materialize_merged_configs(pipe_cfg: Dict[str, Any]) -> Dict[str, str]:
-    """Write merged per-phase configs under each phase folder and update PHASE_MAP in-place.
-
-    Returns: {phase_name: merged_config_path}
-    """
+    """Write merged per-phase configs under each phase folder."""
     merged_paths: Dict[str, str] = {}
     
-    # [FIX 1] Config Collision
-    # Ensure filename includes dataset name to avoid overwrite race conditions
     dataset_tag = "default"
     if pipe_cfg.get("dataset_name"):
         dataset_tag = "".join(c for c in str(pipe_cfg["dataset_name"]) if c.isalnum() or c in ('-','_'))
@@ -271,14 +261,12 @@ def _materialize_merged_configs(pipe_cfg: Dict[str, Any]) -> Dict[str, str]:
 
         merged_cfg = _apply_pipeline_overrides(phase_name, base_cfg, pipe_cfg)
 
-        # write under phase folder to preserve relative-path semantics
         phase_folder = info["folder"]
         cache_dir = os.path.join(phase_folder, "_pipeline_cache")
         os.makedirs(cache_dir, exist_ok=True)
 
         base_name = os.path.basename(info["config"])
         if base_name.endswith(".json"):
-            # Insert dataset tag into filename: config.BBBC036.merged.json
             out_name = base_name[:-5] + f".{dataset_tag}.merged.json"
         else:
             out_name = base_name + f".{dataset_tag}.merged.json"
@@ -298,11 +286,9 @@ def _pipeline_extra_env(pipe_cfg: Dict[str, Any]) -> Dict[str, str]:
     env_out: Dict[str, str] = {}
 
     common = pipe_cfg.get("common") if isinstance(pipe_cfg.get("common"), dict) else {}
-    # Prioritize visible_devices if explicitly set
     if common.get("cuda_visible_devices") is not None:
         env_out["CUDA_VISIBLE_DEVICES"] = str(common["cuda_visible_devices"])
     elif common.get("cuda_device_id") is not None:
-        # Fallback: if only device ID is set, use it as the visible device mask
         env_out["CUDA_VISIBLE_DEVICES"] = str(common["cuda_device_id"])
 
     env_cfg = pipe_cfg.get("env") if isinstance(pipe_cfg.get("env"), dict) else {}
@@ -312,7 +298,6 @@ def _pipeline_extra_env(pipe_cfg: Dict[str, Any]) -> Dict[str, str]:
         env_out[str(k)] = str(v)
 
     return env_out
-
 
 def get_nested(data: Dict[str, Any], keys: List[str], default="N/A"):
     val: Any = data
@@ -372,14 +357,15 @@ def print_execution_plan(dataset_name: str):
     c3 = p3["_loaded_cfg"]
     p3_model = get_nested(c3, ["llm", "model"])
     p3_metric = get_nested(c3, ["review", "target_metric"])
-    table.add_row("3. Review", p3["folder"], str(p3_model), f"Target: {p3_metric}")
+    p3_dir = get_nested(c3, ["review", "direction"])
+    table.add_row("3. Review", p3["folder"], str(p3_model), f"Target: {p3_metric} ({p3_dir})")
 
     console.print(table)
     console.print("")
 
 def _safe_read_json(path: str) -> Optional[Dict[str, Any]]:
     try:
-        if not os.path.exists(path):
+        if not path or not os.path.exists(path):
             return None
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -397,7 +383,6 @@ def _results_root_for_dataset(dataset_name: str) -> str:
     return os.path.abspath(os.path.join(_project_root(), "results", dataset_name))
 
 def _setup_logging(results_root: str) -> Tuple[str, str, Any]:
-    # Timestamped logs dir (per pipeline run)
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     logs_dir = os.path.join(results_root, f"logs_{ts}")
     os.makedirs(logs_dir, exist_ok=True)
@@ -410,7 +395,6 @@ def _setup_logging(results_root: str) -> Tuple[str, str, Any]:
         pass
 
     log_fp = open(log_path, "a", encoding="utf-8")
-
     sys.stdout = TeeStream(sys.__stdout__, log_fp)  # type: ignore
     sys.stderr = TeeStream(sys.__stderr__, log_fp)  # type: ignore
 
@@ -535,6 +519,34 @@ def _mean_safe(vals: List[float]) -> Optional[float]:
         return None
     return sum(vals) / float(len(vals))
 
+def _find_scores_in_json(obj: Any) -> List[float]:
+    out: List[float] = []
+    if isinstance(obj, (int, float)):
+        out.append(float(obj))
+    elif isinstance(obj, list):
+        for x in obj:
+            out.extend(_find_scores_in_json(x))
+    elif isinstance(obj, dict):
+        if isinstance(obj.get("scores"), list):
+            out.extend(_find_scores_in_json(obj["scores"]))
+        else:
+            for v in obj.values():
+                out.extend(_find_scores_in_json(v))
+    return out
+
+# [FIX] Helper to pick Best Score based on direction
+def _pick_best(scores: List[float], direction: str = "maximize") -> Optional[float]:
+    valid = [s for s in scores if isinstance(s, (int, float)) and s != -999 and s != float('inf')]
+    if not valid:
+        return None
+    if direction.lower() == "minimize":
+        return min(valid)
+    return max(valid)
+
+# =============================================================================
+# Phase log parsers
+# =============================================================================
+
 def _read_text(path: str) -> str:
     try:
         if not path or not os.path.exists(path):
@@ -544,30 +556,7 @@ def _read_text(path: str) -> str:
     except Exception:
         return ""
 
-def _find_scores_in_json(obj: Any) -> List[float]:
-    out: List[float] = []
-    if isinstance(obj, (int, float)):
-        out.append(float(obj))
-    elif isinstance(obj, list):
-        for x in obj:
-            out.extend(_find_scores_in_json(x))
-    elif isinstance(obj, dict):
-        # common patterns
-        if isinstance(obj.get("scores"), list):
-            out.extend(_find_scores_in_json(obj["scores"]))
-        else:
-            for v in obj.values():
-                out.extend(_find_scores_in_json(v))
-    return out
-
-# =============================================================================
-# Phase log parsers (for clean/robust/bug)
-# =============================================================================
-
 def _parse_phase1_log(log_text: str) -> Dict[str, Any]:
-    """
-    Phase 1 runs are parallel; we infer run ids and bug runs via nearest RunX path following a cell failure.
-    """
     run_ids = set(int(m.group(1)) for m in re.finditer(r"Executing design_analysis_\d{8}_\d{6}_Run(\d+)", log_text))
     finished_ids = set(int(m.group(1)) for m in re.finditer(r"Finished design_analysis_\d{8}_\d{6}_Run(\d+)", log_text))
     attempted = len(run_ids) if run_ids else len(finished_ids)
@@ -594,23 +583,10 @@ def _parse_phase1_log(log_text: str) -> Dict[str, Any]:
     }
 
 def _parse_phase2_log(log_text: str, metric: str) -> Dict[str, Any]:
-    """
-    Iteration-level parsing.
-    Success = iteration produced a numeric score for {metric}.
-    Bug = iteration had any error/recovery signals (graph error, LLM parse failure, auto-fix, traceback).
-    """
     bug_markers = [
-        "Notebook Generation Failed",
-        "LLM_GEN_FAILURE",
-        "CRITICAL PARSE FAILURE",
-        "[GRAPH] ❌",
-        "Error in Node",
-        "Initiating Adaptive Fix",
-        "[FIX]",
-        "Traceback",
-        "Exception:",
+        "Notebook Generation Failed", "LLM_GEN_FAILURE", "CRITICAL PARSE FAILURE",
+        "[GRAPH] ❌", "Error in Node", "Initiating Adaptive Fix", "[FIX]", "Traceback", "Exception:",
     ]
-
     iters: Dict[int, Dict[str, Any]] = {}
     cur_iter: Optional[int] = None
     for ln in log_text.splitlines():
@@ -627,7 +603,6 @@ def _parse_phase2_log(log_text: str, metric: str) -> Dict[str, Any]:
             iters.setdefault(cur_iter, {"bug": False, "score": None})
             iters[cur_iter]["bug"] = True
 
-        # metric line
         mm = re.search(rf"\[CHECK\].*?\b{re.escape(metric)}\s*:\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)", ln)
         if mm:
             try:
@@ -651,24 +626,11 @@ def _parse_phase2_log(log_text: str, metric: str) -> Dict[str, Any]:
     }
 
 def _parse_phase3_log(log_text: str, metric: str) -> Dict[str, Any]:
-    """
-    Iteration-level parsing.
-    Success = iteration produced Candidate Score.
-    Bug = invalid LLM response / report fallback / execution recovery signals.
-    """
     bug_markers = [
-        "Invalid LLM response. Skipping",
-        "LLM Generation Failed",
-        "Report generation failed",
-        "Static Fallback Report",
-        "Request failed after",  # retry exhausted
-        "Errors Found",
-        "Final Execution Failed",
-        "Logic Error",
-        "Traceback",
-        "Exception:",
+        "Invalid LLM response. Skipping", "LLM Generation Failed", "Report generation failed",
+        "Static Fallback Report", "Request failed after", "Errors Found", "Final Execution Failed",
+        "Logic Error", "Traceback", "Exception:",
     ]
-
     iters: Dict[int, Dict[str, Any]] = {}
     cur_iter: Optional[int] = None
 
@@ -679,7 +641,6 @@ def _parse_phase3_log(log_text: str, metric: str) -> Dict[str, Any]:
             iters.setdefault(cur_iter, {"bug": False, "score": None})
             continue
 
-        # result summary carries explicit iter id; prefer it
         m2 = re.search(r"\[RESULT\]\s*Iteration\s+(\d+)\s+Summary", ln)
         if m2:
             cur_iter = int(m2.group(1))
@@ -693,7 +654,6 @@ def _parse_phase3_log(log_text: str, metric: str) -> Dict[str, Any]:
             iters.setdefault(cur_iter, {"bug": False, "score": None})
             iters[cur_iter]["bug"] = True
 
-        # candidate score line (may appear without metric label)
         ms = re.search(r"Candidate Score:\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)", ln)
         if ms:
             try:
@@ -716,19 +676,12 @@ def _parse_phase3_log(log_text: str, metric: str) -> Dict[str, Any]:
         "scores": scores,
     }
 
-# =============================================================================
-# Phase stats from artifacts (+ log quality signals)
-# =============================================================================
-
 def _phase1_scores_from_artifacts(design_dir: str) -> Tuple[Optional[float], Optional[float]]:
-    # Try to load a per-run score list if present
     cand_files: List[str] = []
     for name in ["heuristic_scores.json", "scores.json", "heuristics.json", "run_scores.json"]:
         p = os.path.join(design_dir, name)
         if os.path.exists(p):
             cand_files.append(p)
-
-    # fallback: any json containing "score" in filename
     cand_files.extend(sorted(glob.glob(os.path.join(design_dir, "*score*.json"))))
 
     scores: List[float] = []
@@ -737,16 +690,15 @@ def _phase1_scores_from_artifacts(design_dir: str) -> Tuple[Optional[float], Opt
         if obj is None:
             continue
         vals = _find_scores_in_json(obj)
-        # Heuristic score is usually >1; filter obvious non-scores if mixed
-        vals = [v for v in vals if isinstance(v, (int, float)) and not (v != v)]  # drop NaN
+        vals = [v for v in vals if isinstance(v, (int, float)) and not (v != v)]
         if vals:
             scores = vals
             break
 
     avg = _mean_safe(scores) if scores else None
+    # Phase 1 is strictly maximization (heuristic)
     best = max(scores) if scores else None
 
-    # If not found, use reference.json best score
     if best is None:
         ref = _safe_read_json(os.path.join(design_dir, "reference", "reference.json")) or {}
         if isinstance(ref.get("score"), (int, float)):
@@ -756,9 +708,6 @@ def _phase1_scores_from_artifacts(design_dir: str) -> Tuple[Optional[float], Opt
     return avg, best
 
 def _phase2_scores_from_artifacts(ge_dir: str, metric: str, t_start: float, t_end: float) -> List[float]:
-    """
-    Prefer prompt_run_* metrics.json within the phase time window.
-    """
     scores: List[float] = []
     prompt_root = os.path.join(ge_dir, "prompt")
     if not os.path.exists(prompt_root):
@@ -770,7 +719,7 @@ def _phase2_scores_from_artifacts(ge_dir: str, metric: str, t_start: float, t_en
             mt = os.path.getmtime(d)
         except Exception:
             continue
-        if t_start - 30 <= mt <= t_end + 30:  # buffer
+        if t_start - 30 <= mt <= t_end + 30:
             run_dirs.append(d)
     run_dirs.sort(key=lambda p: os.path.getmtime(p))
 
@@ -784,7 +733,6 @@ def _phase2_scores_from_artifacts(ge_dir: str, metric: str, t_start: float, t_en
 
 def _phase3_scores_from_artifacts(rf_dir: str, metric: str, t_start: float, t_end: float) -> List[float]:
     scores: List[float] = []
-    # find latest review_run_ within time window
     best_path = None
     best_mtime = -1.0
     for name in os.listdir(rf_dir) if os.path.exists(rf_dir) else []:
@@ -811,7 +759,6 @@ def _phase3_scores_from_artifacts(rf_dir: str, metric: str, t_start: float, t_en
                 scores.append(float(sc))
         return scores
 
-    # fallback: metrics_best.json
     mb = _safe_read_json(os.path.join(best_path, "metrics_best.json")) or {}
     v = _extract_primary_score(mb, metric)
     if isinstance(v, (int, float)):
@@ -828,15 +775,14 @@ def _rates(attempted: int, clean_success: int, succeeded: int, bug: int) -> Tupl
 
 def _print_final_scoreboard(summary: Dict[str, Any]):
     stages = summary.get("stages", {})
-
     if console:
         table = Table(title=f"📊 Scoreboard (dataset={summary.get('dataset')})")
         table.add_column("Stage")
         table.add_column("Success Rate ↑", justify="right")
         table.add_column("Robust SR ↑", justify="right")
         table.add_column("Bug Rate ↓", justify="right")
-        table.add_column("Avg@Budget ↑", justify="right")
-        table.add_column("Best@Budget ↑", justify="right")
+        table.add_column("Avg@Budget", justify="right")
+        table.add_column("Best@Budget", justify="right")
         table.add_column("Metric")
         table.add_column("Budget", justify="right")
         table.add_column("Attempted", justify="right")
@@ -881,14 +827,12 @@ def _print_final_scoreboard(summary: Dict[str, Any]):
 def main():
     _ensure_project_cwd()
 
-    # Optional: pipeline-level config (single file to edit for common knobs)
     pipe_cfg = _load_pipeline_config()
     extra_env = None
     if isinstance(pipe_cfg, dict):
         try:
             _materialize_merged_configs(pipe_cfg)
             extra_env = _pipeline_extra_env(pipe_cfg)
-
             gpu_name = None
             if isinstance(pipe_cfg.get("common"), dict):
                 gpu_name = pipe_cfg["common"].get("gpu_model") or pipe_cfg["common"].get("gpu_name")
@@ -935,7 +879,6 @@ def main():
             if extra_args:
                 cmd.extend(extra_args)
 
-            # Per-phase log (under timestamped logs_dir)
             phase_log_file = os.path.join(logs_dir, PHASE_LOG_NAME.get(name, f"{name}.log".replace(" ", "_").lower()))
             phase_logs[name] = phase_log_file
 
@@ -990,6 +933,11 @@ def main():
         stage1_cfg = PHASE_MAP["Phase 1"].get("_loaded_cfg", {})
         stage2_cfg = PHASE_MAP["Phase 2"].get("_loaded_cfg", {})
         stage3_cfg = PHASE_MAP["Phase 3"].get("_loaded_cfg", {})
+        
+        # [FIX] Determine Optimization Direction from Phase 3 Config
+        optim_dir = "maximize"
+        if isinstance(stage3_cfg, dict):
+            optim_dir = get_nested(stage3_cfg, ["review", "direction"], "maximize").lower()
 
         base = _results_root_for_dataset(ds_name)
         design_dir = os.path.join(base, "design_analysis")
@@ -1004,7 +952,6 @@ def main():
         p1_log_text = _read_text(phase_logs.get("Phase 1", ""))
         p1_q = _parse_phase1_log(p1_log_text) if p1_log_text else {"attempted": 0, "succeeded": 0, "bug": 0, "clean_success": 0}
         p1_avg, p1_best = _phase1_scores_from_artifacts(design_dir)
-
         p1_sr, p1_robust, p1_bug_rate = _rates(p1_q["attempted"], p1_q["clean_success"], p1_q["succeeded"], p1_q["bug"])
 
         p1 = {
@@ -1028,18 +975,17 @@ def main():
         p2_metric = str(get_nested(stage2_cfg, ["experiment", "primary_metric"], "PCC"))
         p2_t0 = stage_timings.get("Phase 2", {}).get("start", 0.0)
         p2_t1 = stage_timings.get("Phase 2", {}).get("end", time.time())
-
         p2_log_text = _read_text(phase_logs.get("Phase 2", ""))
         p2_q = _parse_phase2_log(p2_log_text, p2_metric) if p2_log_text else {"attempted": 0, "succeeded": 0, "bug": 0, "clean_success": 0, "scores": []}
 
-        # artifact scores as fallback if log missing
         if not p2_q.get("scores"):
             p2_q["scores"] = _phase2_scores_from_artifacts(ge_dir, p2_metric, p2_t0, p2_t1)
             p2_q["succeeded"] = len(p2_q["scores"])
             p2_q["attempted"] = p2_q["succeeded"]
 
         p2_avg = _mean_safe([float(x) for x in p2_q.get("scores", []) if isinstance(x, (int, float))])
-        p2_best = max(p2_q["scores"]) if p2_q.get("scores") else None
+        # [FIX] Use direction-aware best picker
+        p2_best = _pick_best(p2_q.get("scores", []), optim_dir)
 
         p2_sr, p2_robust, p2_bug_rate = _rates(p2_q["attempted"], p2_q["clean_success"], p2_q["succeeded"], p2_q["bug"])
 
@@ -1064,7 +1010,6 @@ def main():
         p3_metric = str(get_nested(stage3_cfg, ["review", "target_metric"], "PCC"))
         p3_t0 = stage_timings.get("Phase 3", {}).get("start", 0.0)
         p3_t1 = stage_timings.get("Phase 3", {}).get("end", time.time())
-
         p3_log_text = _read_text(phase_logs.get("Phase 3", ""))
         p3_q = _parse_phase3_log(p3_log_text, p3_metric) if p3_log_text else {"attempted": 0, "succeeded": 0, "bug": 0, "clean_success": 0, "scores": []}
 
@@ -1074,7 +1019,8 @@ def main():
             p3_q["attempted"] = max(p3_q["succeeded"], 0)
 
         p3_avg = _mean_safe([float(x) for x in p3_q.get("scores", []) if isinstance(x, (int, float))])
-        p3_best = max(p3_q["scores"]) if p3_q.get("scores") else None
+        # [FIX] Use direction-aware best picker
+        p3_best = _pick_best(p3_q.get("scores", []), optim_dir)
 
         p3_sr, p3_robust, p3_bug_rate = _rates(p3_q["attempted"], p3_q["clean_success"], p3_q["succeeded"], p3_q["bug"])
 
@@ -1102,14 +1048,15 @@ def main():
 
         total_sr, total_robust, total_bug_rate = _rates(total_attempted, total_clean, total_succeeded, total_bug)
 
-        # Total Avg/Best on FINAL metric only (Phase 3 target metric). If Phase 2 metric matches, include both.
         total_scores: List[float] = []
+        # Only aggregate scores from phases that match the final target metric
         if p2_metric == p3_metric and p2.get("avg_at_budget") is not None:
             total_scores.extend([float(x) for x in (p2_q.get("scores") or []) if isinstance(x, (int, float))])
         total_scores.extend([float(x) for x in (p3_q.get("scores") or []) if isinstance(x, (int, float))])
 
         total_avg = _mean_safe(total_scores)
-        total_best = max(total_scores) if total_scores else None
+        # [FIX] Use direction-aware best picker
+        total_best = _pick_best(total_scores, optim_dir)
 
         total_row = {
             "budget": (p1_budget or 0) + (p2_budget or 0) + (p3_budget or 0),
@@ -1126,7 +1073,7 @@ def main():
             "time_sec": float(pipeline_end - pipeline_start),
         }
 
-        # Attach times to per-phase rows
+        # Attach times
         p1["time_sec"] = stage_timings.get("Phase 1", {}).get("end", 0.0) - stage_timings.get("Phase 1", {}).get("start", 0.0)
         p2["time_sec"] = p2_t1 - p2_t0
         p3["time_sec"] = p3_t1 - p3_t0

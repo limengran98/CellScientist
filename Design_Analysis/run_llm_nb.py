@@ -1,15 +1,41 @@
 # run_llm_nb.py
-import os, json, re, io, contextlib, importlib, time, requests
+import os
+import sys
+import json
+import re
+import io
+import contextlib
+import importlib
+import time
+import requests
 from pathlib import Path
 import nbformat as nbf
 from nbclient import NotebookClient
 from nbclient.exceptions import CellExecutionError
 
+# [FIX] Ensure local imports work regardless of folder name
+THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+if THIS_DIR not in sys.path:
+    sys.path.insert(0, THIS_DIR)
+
 def _load_runner_clean():
-    """Import runner quietly."""
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-        mod = importlib.import_module("cellscientist.Design_Analysis.llm_notebook_runner")
+    """Import runner quietly and robustly."""
+    # [FIX] Removed output suppression loop causing issues on some systems
+    # [FIX] Removed hardcoded 'cellscientist' package path
+    try:
+        import llm_notebook_runner as mod
+    except ImportError:
+        # Fallback: Load explicitly from file path
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "llm_notebook_runner", 
+            os.path.join(THIS_DIR, "llm_notebook_runner.py")
+        )
+        mod = importlib.util.module_from_spec(spec)
+        # Register module to avoid reloading issues
+        sys.modules["llm_notebook_runner"] = mod
+        spec.loader.exec_module(mod)
+        
     return getattr(mod, "run_llm_notebook_from_file")
 
 # --- Centralized LLM Config Resolver ---
@@ -26,8 +52,10 @@ def resolve_llm_config(llm_cfg: dict) -> dict:
 
     base_url = None
     try:
-        base_dir = Path(__file__).resolve().parents[1] 
+        # [FIX] Resolve relative to THIS_DIR (Root/Design_Analysis/run_llm_nb.py -> Root)
+        base_dir = Path(THIS_DIR).parent
         prov_file = base_dir / "llm_providers.json"
+        
         prov_name = (llm.get("provider") or "").strip() or None
         if prov_name and prov_file.exists():
             data = json.loads(prov_file.read_text(encoding="utf-8"))
@@ -40,7 +68,7 @@ def resolve_llm_config(llm_cfg: dict) -> dict:
         pass 
 
     if not base_url:
-        base_url_env = llm.get("base_url_env")
+        base_url = llm.get("base_url_env")
         if base_url_env and os.environ.get(base_url_env):
             base_url = os.environ.get(base_url_env)
         else:
