@@ -88,7 +88,7 @@ def _log_tree_visual(workspace, iteration, strategy, decision, focus, status, sc
     Generates, prints, and appends a hierarchical ASCII tree visualization.
     """
     try:
-        score_display = f"{score:.4f}" if score != -999 else "N/A"
+        score_display = f"{score:.4f}" if score != -999 and score != float('inf') else "N/A"
     except Exception:
         score_display = "N/A"
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -203,7 +203,7 @@ def write_review_log(workspace, iteration, suggestion, score, current_best, stat
     icon = "✅" if status == "IMPROVED" else "❌" if status == "FAILED" else "⚠️"
 
     delta_str = "-"
-    if static_baseline is not None and score != -999:
+    if static_baseline is not None and score != -999 and score != float('inf'):
         try:
             diff = float(score) - float(static_baseline)
             delta_str = f"{diff:+.4f}"
@@ -211,7 +211,7 @@ def write_review_log(workspace, iteration, suggestion, score, current_best, stat
             delta_str = "-"
 
     try:
-        cand_score_disp = f"{float(score):.4f}" if score != -999 else "N/A"
+        cand_score_disp = f"{float(score):.4f}" if score != -999 and score != float('inf') else "N/A"
     except Exception:
         cand_score_disp = "N/A"
 
@@ -476,7 +476,7 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
             status = h.get('status', 'UNKNOWN')
 
             try:
-                score_disp = f"{float(score):.4f}" if score != -999 else "N/A"
+                score_disp = f"{float(score):.4f}" if score != -999 and score != float('inf') else "N/A"
             except Exception:
                 score_disp = "N/A"
 
@@ -638,12 +638,35 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
 
     review_cfg = cfg.get("review", {}) or {}
     target_metric = review_cfg.get("target_metric", "PCC")
+    
+    # [FIX] Read direction
+    direction = review_cfg.get("direction", "maximize").lower() 
+    
     threshold = float(review_cfg.get("pass_threshold", review_cfg.get("success_threshold", 0.0) or 0.0))
     max_iters = int(review_cfg.get("max_iterations", 3) or 3)
 
+    # [FIX] Define WORST_SCORE and is_better helper
+    WORST_SCORE = float('inf') if direction == "minimize" else -999.0
+
+    def is_better(new_val, old_val):
+        if new_val == -999.0 or new_val == float('inf'): 
+            return False
+        if old_val == WORST_SCORE: 
+            return True
+        if direction == "minimize":
+            return new_val < old_val
+        return new_val > old_val
+
     # Initialization
     current_metrics_path = os.path.join(workspace_dir, "metrics_base.json")
-    best_score_so_far = get_candidate_metric_value(current_metrics_path, target_metric)
+    
+    # [FIX] Logic for initial score
+    init_val = get_candidate_metric_value(current_metrics_path, target_metric)
+    
+    if direction == "minimize" and init_val == -999.0:
+        best_score_so_far = float('inf')
+    else:
+        best_score_so_far = init_val
 
     static_baseline_score = get_baseline_metric_value(current_metrics_path, target_metric)
     if static_baseline_score is None:
@@ -685,7 +708,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
     baseline_display = f"{static_baseline_score:.4f}" if static_baseline_score is not None else "N/A"
 
     print(f"\n[LOOP] Starting Optimization.")
-    print(f"       🎯 Target: {target_metric}")
+    print(f"       🎯 Target: {target_metric} ({direction})")
     print(f"       🏁 Original Baseline: {baseline_display}")
     print(f"       🥇 Current Best:      {best_score_so_far:.4f}")
 
@@ -794,13 +817,19 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                     shutil.copy(generated_metrics, iter_metrics_path)
 
                 candidate_score = get_candidate_metric_value(iter_metrics_path, target_metric)
+                
+                # [FIX] Handle invalid score for minimize logic
+                if direction == "minimize" and candidate_score == -999.0:
+                    candidate_score = float('inf')
+
                 current_run_baseline = get_baseline_metric_value(iter_metrics_path, target_metric)
                 comparison_baseline = current_run_baseline if current_run_baseline is not None else static_baseline_score
 
+                # [FIX] Use generic is_better comparison
                 status = "FAILED"
                 if not success:
                     status = "CRASH"
-                elif candidate_score > best_score_so_far:
+                elif is_better(candidate_score, best_score_so_far):
                     status = "IMPROVED"
 
                 print(f"-"*40)
@@ -877,16 +906,25 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                         except Exception as e:
                             print(f"[WARN] Report gen failed: {e}")
 
-                    beats_threshold = (best_score_so_far >= threshold)
+                    # [FIX] Final threshold checks with direction
+                    beats_threshold = False
+                    if direction == "minimize":
+                        beats_threshold = (best_score_so_far <= threshold)
+                    else:
+                        beats_threshold = (best_score_so_far >= threshold)
+                    
                     beats_baseline = True
-                    if static_baseline_score is not None and static_baseline_score != -999.0:
-                        beats_baseline = (best_score_so_far > static_baseline_score)
+                    if static_baseline_score is not None and static_baseline_score != WORST_SCORE:
+                        if direction == "minimize":
+                            beats_baseline = (best_score_so_far < static_baseline_score)
+                        else:
+                            beats_baseline = (best_score_so_far > static_baseline_score)
 
                     if beats_threshold and beats_baseline:
-                        print(f"\n[SUCCESS] Goal Reached! Score {best_score_so_far:.4f} >= Threshold ({threshold}) AND > Baseline ({static_baseline_score:.4f})")
+                        print(f"\n[SUCCESS] Goal Reached! Score {best_score_so_far:.4f} vs Threshold ({threshold})")
                         break
                     elif beats_threshold and not beats_baseline:
-                        print(f"\n[CONTINUE] Threshold passed ({best_score_so_far:.4f} >= {threshold}), but NOT beating Baseline ({static_baseline_score:.4f}). Continuing...")
+                        print(f"\n[CONTINUE] Threshold passed ({best_score_so_far:.4f} vs {threshold}), but NOT beating Baseline ({static_baseline_score:.4f}). Continuing...")
                 else:
                     print(f"📉 Improvement failed. Reverting to previous best.")
 
