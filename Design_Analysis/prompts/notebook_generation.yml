@@ -70,6 +70,23 @@ system_prompt: |
       - Save split_id as int8
       - Use compression="gzip" and compression_opts=4
 
+      **CODING CONSTRAINTS (CRITICAL)**:
+        1. **Scikit-learn Imports**: 
+            - ❌ WRONG: `from sklearn.preprocessing import VarianceThreshold`
+            - ✅ RIGHT: `from sklearn.feature_selection import VarianceThreshold` (LLMs often get this wrong, please pay attention).
+
+        2. **HDF5 String Safety (Universal)**:
+            - HDF5 cannot save pandas `object` (O) or numpy `unicode` (<U) types directly.
+            - **MANDATORY**: Before saving ANY string data to .h5:
+            ```python
+            # Example Pattern
+            dt = h5py.string_dtype(encoding='utf-8')
+            f.create_dataset('my_strings', data=df['col'].values.astype(str), dtype=dt)
+            # OR for simple bytes:
+            f.create_dataset('my_strings', data=df['col'].values.astype('S'))
+            ```
+            - **Check**: Ensure no column with `dtype('O')` is passed to `f.create_dataset` without explicit conversion.
+
       Print:
       - N samples (non-DMSO count)
       - N features
