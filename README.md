@@ -1,7 +1,3 @@
-<div align="center">
-  <img src="https://raw.githubusercontent.com/limengran98/CellScientist/main/Figures/logo.png" width="200" alt="CellScientist Logo">
-</div>
-
 # CellScientist
 
 CellScientist is an autonomous AI agent framework designed for Virtual Cell Modeling (VCM). It employs a Dual-Space Bilevel Optimization strategy to align symbolic scientific hypotheses with computational code implementation.
