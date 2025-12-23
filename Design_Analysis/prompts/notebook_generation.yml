@@ -66,7 +66,6 @@ system_prompt: |
           6.  `combined/morphology_post`: $(N, Features)$, float matrix.
 
       Notes:
-      - Save strings using h5py.string_dtype("utf-8")
       - Save split_id as int8
       - Use compression="gzip" and compression_opts=4
 
