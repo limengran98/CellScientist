@@ -20,8 +20,6 @@ if THIS_DIR not in sys.path:
 
 def _load_runner_clean():
     """Import runner quietly and robustly."""
-    # [FIX] Removed output suppression loop causing issues on some systems
-    # [FIX] Removed hardcoded 'cellscientist' package path
     try:
         import llm_notebook_runner as mod
     except ImportError:
@@ -32,7 +30,6 @@ def _load_runner_clean():
             os.path.join(THIS_DIR, "llm_notebook_runner.py")
         )
         mod = importlib.util.module_from_spec(spec)
-        # Register module to avoid reloading issues
         sys.modules["llm_notebook_runner"] = mod
         spec.loader.exec_module(mod)
         
@@ -52,7 +49,7 @@ def resolve_llm_config(llm_cfg: dict) -> dict:
 
     base_url = None
     try:
-        # [FIX] Resolve relative to THIS_DIR (Root/Design_Analysis/run_llm_nb.py -> Root)
+        # [FIX] Resolve relative to THIS_DIR
         base_dir = Path(THIS_DIR).parent
         prov_file = base_dir / "llm_providers.json"
         
@@ -68,16 +65,15 @@ def resolve_llm_config(llm_cfg: dict) -> dict:
         pass 
 
     if not base_url:
-        base_url = llm.get("base_url_env")
-        if base_url_env and os.environ.get(base_url_env):
-            base_url = os.environ.get(base_url_env)
+        base_url_env_name = llm.get("base_url_env")
+        if base_url_env_name and os.environ.get(base_url_env_name):
+            base_url = os.environ.get(base_url_env_name)
         else:
             base_url = os.environ.get("OPENAI_BASE_URL") or "https://vip.yi-zhan.top/v1"
             
     if base_url and base_url.startswith("[") and base_url.endswith(")"):
         base_url = re.sub(r"\[(.*?)\]\((.*?)\)", r"\2", base_url)
 
-    # [CRITICAL] Preserve User Hyperparameters
     max_tokens = int(llm.get("max_tokens") or 10240)
     temperature = float(llm.get("temperature", 0.5)) 
 
@@ -95,7 +91,6 @@ def chat_json(messages, *, api_key, base_url, model, temperature=0.2, max_tokens
     def _post(payload):
         url = (base_url or "https://api.openai.com/v1").rstrip("/") + "/chat/completions"
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        # print(f"  [chat_json] ➡️  POST {model} (temp={temperature})", flush=True) 
         r = requests.post(url, headers=headers, json=payload, timeout=600)
         r.raise_for_status()
         return r.json()
@@ -161,7 +156,6 @@ class AdaptiveGraphExecutor(NotebookClient):
         self.llm_config = llm_config
         self.cuda_device_id = cuda_device_id
         
-        # Auto-fix settings
         exec_cfg = nb_cfg.get("exec", {})
         self.max_retries_per_node = int(exec_cfg.get("max_fix_rounds", 3))
         self.autofix_prompt = (run_cfg.get('prompts', {}).get('autofix', {}).get('system_prompt'))
@@ -169,19 +163,14 @@ class AdaptiveGraphExecutor(NotebookClient):
         self.total_fixes_applied = 0
 
     def run_adaptive(self):
-        """
-        Main execution loop.
-        """
-        # 1. Setup Environment (CUDA)
         env_vars = os.environ.copy()
         if self.cuda_device_id is not None:
             env_vars["CUDA_VISIBLE_DEVICES"] = str(self.cuda_device_id)
             print(f"🖥️  [Adaptive] CUDA Device set to: {self.cuda_device_id}", flush=True)
 
-        # 2. Start Kernel (Persistent)
         print("🔌 [Adaptive] Starting Kernel...", flush=True)
         self.create_kernel_manager()
-        self.start_new_kernel(env=env_vars) # Pass env here
+        self.start_new_kernel(env=env_vars) 
         self.start_new_kernel_client()
 
         try:
@@ -192,7 +181,6 @@ class AdaptiveGraphExecutor(NotebookClient):
                     cell_idx += 1
                     continue
                 
-                # [MODIFIED] Better logging: Show Snippet, No carriage return
                 src_snippet = cell.source.strip().split('\n')[0][:70]
                 if len(cell.source) > 70: src_snippet += "..."
                 print(f"▶️  [Adaptive] Executing Cell {cell_idx}: {src_snippet}", flush=True)
@@ -200,12 +188,10 @@ class AdaptiveGraphExecutor(NotebookClient):
                 try:
                     self.execute_cell(cell, cell_idx)
                     print(f"   ✅ Success (Cell {cell_idx})", flush=True)
-                    cell_idx += 1 # Move to next node
+                    cell_idx += 1 
                     
                 except CellExecutionError:
                     print(f"   ❌ Failed (Cell {cell_idx}). Initiating Auto-Fix...", flush=True)
-
-                    # Attempt Fix + validate by re-executing within the same kernel.
                     fixed_and_executed = self._attempt_fix_node(cell, cell_idx)
 
                     if fixed_and_executed:
@@ -223,13 +209,6 @@ class AdaptiveGraphExecutor(NotebookClient):
         return self.nb
 
     def _attempt_fix_node(self, cell, cell_idx):
-        """Fix a single failing node (cell) using the LLM.
-
-        IMPORTANT: We validate fixes *inside* this function by immediately re-executing
-        the cell in the same kernel. This prevents infinite loops where each failure
-        triggers a fresh "Attempt 1/3" cycle.
-        """
-
         def _collect_errors() -> list:
             errs = []
             for out in cell.get("outputs", []) or []:
@@ -244,14 +223,12 @@ class AdaptiveGraphExecutor(NotebookClient):
                     })
             return errs
 
-        # We will refresh errors each attempt because the failure mode may change.
         errors = _collect_errors()
         if not errors:
             print("   (No specific traceback found in outputs)", flush=True)
             return False
 
         for attempt in range(self.max_retries_per_node):
-            # Show a compact error summary to help debugging without scrolling.
             last = errors[-1] if errors else {}
             ename = last.get("ename")
             evalue = last.get("evalue")
@@ -260,7 +237,6 @@ class AdaptiveGraphExecutor(NotebookClient):
             else:
                 print(f"   🔧 Fix Attempt {attempt+1}/{self.max_retries_per_node}...", flush=True)
 
-            # Build prompt
             paths = self.nb_cfg.get("paths", {})
             messages = build_fix_messages(
                 language="python",
@@ -272,7 +248,6 @@ class AdaptiveGraphExecutor(NotebookClient):
                 autofix_prompt_str=self.autofix_prompt
             )
 
-            # Call LLM
             resp = chat_json(
                 messages,
                 api_key=self.llm_config["api_key"],
@@ -287,7 +262,6 @@ class AdaptiveGraphExecutor(NotebookClient):
                 print("   LLM returned no edits.", flush=True)
                 continue
 
-            # Apply edit
             edit = edits[0]
             new_source = (edit.get("source") or "")
             if not isinstance(new_source, str) or not new_source.strip():
@@ -301,14 +275,12 @@ class AdaptiveGraphExecutor(NotebookClient):
             cell.source = new_source
             self.total_fixes_applied += 1
 
-            # Clear outputs before re-executing, otherwise stale tracebacks may persist.
             try:
                 cell["outputs"] = []
                 cell["execution_count"] = None
             except Exception:
                 pass
 
-            # Validate by executing immediately; if it still fails, loop continues.
             try:
                 self.execute_cell(cell, cell_idx)
                 print("   ✅ Fix validated by successful execution.", flush=True)
@@ -317,7 +289,6 @@ class AdaptiveGraphExecutor(NotebookClient):
                 print("   ❌ Still failing after applying fix.", flush=True)
                 errors = _collect_errors()
                 if not errors:
-                    # If for some reason outputs don't contain tracebacks, keep going but avoid crashing.
                     errors = [{"cell_index": cell_idx, "ename": "CellExecutionError", "evalue": "(no traceback)", "traceback_tail": "", "code": cell.get("source", "")}]
                 continue
             except Exception as e:
@@ -326,8 +297,6 @@ class AdaptiveGraphExecutor(NotebookClient):
                 continue
 
         return False
-
-
 
 def build_fix_messages(language, data_path, csv_preview, paper_excerpt, errors, headings, autofix_prompt_str):
     sys_prompt = autofix_prompt_str or "You are a Python expert. Fix the code errors. Return JSON {'edits': ...}."
@@ -361,10 +330,6 @@ def build_fix_messages(language, data_path, csv_preview, paper_excerpt, errors, 
 # --- Main Entry Point ---
 
 def auto_fix_notebook(executed_path: str, run_cfg: dict) -> str:
-    """
-    Entry point now uses AdaptiveGraphExecutor for stateful, node-based fixing.
-    """
-    
     nb_cfg = (((run_cfg.get("phases") or {}).get("task_analysis") or {}).get("llm_notebook") or {})
     exec_cfg = nb_cfg.get("exec", {}) or {}
     
@@ -379,10 +344,8 @@ def auto_fix_notebook(executed_path: str, run_cfg: dict) -> str:
 
     print(f"🚀 [AUTO-FIX] Starting Adaptive Execution for {nb_path.name}", flush=True)
     
-    # Load Notebook
     nb = nbf.read(str(nb_path), as_version=4)
     
-    # Configure Executor
     timeout_sec = int(exec_cfg.get("timeout_seconds", 1800))
     cuda_id = exec_cfg.get("cuda_device_id", None)
 
@@ -394,9 +357,9 @@ def auto_fix_notebook(executed_path: str, run_cfg: dict) -> str:
         cuda_device_id=cuda_id,
         timeout=timeout_sec,
         kernel_name="python3",
-        allow_errors=False # We handle errors manually
+        allow_errors=False 
     )
-    # Run Stateful Loop
+    
     try:
         final_nb = executor.run_adaptive()
     except Exception as e:
@@ -408,7 +371,6 @@ def auto_fix_notebook(executed_path: str, run_cfg: dict) -> str:
             print(f"⚠️ [AUTO-FIX] Failed to save failed notebook: {w}", flush=True)
         raise
 
-    # Save Result
     fixed_path = nb_path.with_name(nb_path.stem + "_adaptive_fixed.ipynb")
     nbf.write(final_nb, str(fixed_path))
     
