@@ -36,7 +36,6 @@ CellScientist/
 │
 ├── pipeline_config.json      # ⭐ Unified pipeline-level configuration (recommended)
 ├── run_cellscientist.py      # 🚀 Unified pipeline runner
-├── llm_providers.json
 ├── requirements.txt
 └── README.md
 ```

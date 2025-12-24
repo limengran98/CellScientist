@@ -17,7 +17,7 @@
   },
   "experiment": {
     "primary_metric": "PCC",
-    "max_iterations": 5,
+    "max_iterations": 3,
     "success_threshold": 0.5
   },
   "prompt_branch": {
@@ -34,7 +34,7 @@
     "enable_llm_autofix": true,
     "enable_hypergraph_viz": true,
     "viz_format": "mermaid",
-    "cuda_device_id": 0
+    "cuda_device_id": null
   },
   "literature": {
     "enabled": false,

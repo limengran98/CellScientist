@@ -22,7 +22,7 @@
           "save_intermediate": true,
           "allow_errors": false,
           "max_fix_rounds": 3,
-          "cuda_device_id": 0
+          "cuda_device_id": null
         },
         "llm": {
           "provider": "yizhan",
@@ -36,7 +36,7 @@
           "presence_penalty": 0
         },
         "multi": {
-          "num_runs": 4,
+          "num_runs": 1,
           "enabled": true,
           "max_parallel_workers": 1,
           "name_template": "NB{idx:02d}-seed{seed}",

@@ -19,7 +19,7 @@
   "review": {
     "target_metric": "PCC",
     "direction": "maximize",
-    "max_iterations": 10,
+    "max_iterations": 3,
     "pass_threshold": 0.7,
     "force_cells": [
       0,
@@ -47,7 +47,7 @@
   "exec": {
     "timeout_seconds": 18000,
     "max_fix_rounds": 3,
-    "cuda_device_id": 0
+    "cuda_device_id": null
   },
   "literature": {
     "enabled": false,
