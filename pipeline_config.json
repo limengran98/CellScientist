@@ -1,7 +1,7 @@
 {
   "dataset_name": "BBBC036",
   "common": {
-    "cuda_device_id": 0,
+    "cuda_device_id": 3,
     "cuda_visible_devices": null
   },
   "llm": {
@@ -10,7 +10,7 @@
     "max_tokens": null
   },
   "llm_report": {
-    "model": "gpt-5.2",
+    "model": "gemini-3-pro-all",
     "base_url": "https://vip.yi-zhan.top/v1",
     "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835",
     "max_tokens": 40000,

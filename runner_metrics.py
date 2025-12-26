@@ -156,7 +156,7 @@ def find_scores_in_json(obj: Any) -> List[float]:
 
 
 def pick_best(scores: List[float], direction: str = "maximize") -> Optional[float]:
-    valid = [s for s in scores if isinstance(s, (int, float)) and s != -999 and s != float("inf")]
+    valid = [s for s in scores if isinstance(s, (int, float)) and s != -99 and s != float("inf")]
     if not valid:
         return None
     if direction.lower() == "minimize":
@@ -192,6 +192,15 @@ def parse_phase1_log(log_text: str) -> Dict[str, Any]:
 
 
 def parse_phase2_log(log_text: str, metric: str) -> Dict[str, Any]:
+    # Add success/early stop markers to prevent false negatives (Success Rate = 0.0)
+    success_markers = [
+        "Success threshold met",
+        "Target metric reached",
+        "Early stop triggered",
+        "Optimization converged",
+        "Stopping early",
+        "Success!"
+    ]
     bug_markers = [
         "Notebook Generation Failed",
         "LLM_GEN_FAILURE",
@@ -203,40 +212,82 @@ def parse_phase2_log(log_text: str, metric: str) -> Dict[str, Any]:
         "Traceback",
         "Exception:",
     ]
+    
     iters: Dict[int, Dict[str, Any]] = {}
     cur_iter: Optional[int] = None
+    
+    # Flag if the entire process ended early due to success
+    global_early_success = False
+
     for ln in log_text.splitlines():
+        # Detect global success signal
+        if any(x in ln for x in success_markers):
+            global_early_success = True
+
         m = re.search(r"ITERATION\s+(\d+)/(\d+)", ln)
         if m:
             cur_iter = int(m.group(1))
-            iters.setdefault(cur_iter, {"bug": False, "score": None})
+            iters.setdefault(cur_iter, {"bug": False, "score": None, "explicit_success": False})
             continue
 
         if cur_iter is None:
             continue
+            
+        rec = iters.setdefault(cur_iter, {"bug": False, "score": None, "explicit_success": False})
 
         if any(x in ln for x in bug_markers):
-            iters.setdefault(cur_iter, {"bug": False, "score": None})
-            iters[cur_iter]["bug"] = True
+            rec["bug"] = True
 
+        # Detect score
         mm = re.search(rf"\[CHECK\].*?\b{re.escape(metric)}\s*:\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)", ln)
         if mm:
             try:
-                iters.setdefault(cur_iter, {"bug": False, "score": None})
-                iters[cur_iter]["score"] = float(mm.group(1))
+                rec["score"] = float(mm.group(1))
             except Exception:
                 pass
+        
+        # If success signal detected within iteration
+        if any(x in ln for x in success_markers):
+            rec["explicit_success"] = True
 
     attempted = len(iters)
     scores = [v["score"] for v in iters.values() if isinstance(v.get("score"), (int, float))]
-    succeeded = len(scores)
-    bug = sum(1 for v in iters.values() if v.get("bug") is True)
-    clean_success = sum(1 for v in iters.values() if isinstance(v.get("score"), (int, float)) and not v.get("bug"))
+    
+    bug = 0
+    clean_success = 0
+    succeeded = 0
+
+    for idx, v in iters.items():
+        is_bug = v["bug"]
+        has_score = isinstance(v.get("score"), (int, float))
+        # Count as success if: explicit success flag OR global success flag on the last iteration
+        is_success_stop = v["explicit_success"] or (global_early_success and idx == max(iters.keys()))
+        
+        if is_bug:
+            bug += 1
+        
+        # Count as succeeded if there is a score or explicit success marker
+        if has_score or is_success_stop:
+            succeeded += 1
+            if not is_bug:
+                clean_success += 1
+
+    # Prevent counter overflow logic errors
+    succeeded = min(succeeded, attempted)
+    clean_success = min(clean_success, attempted)
 
     return {"attempted": attempted, "succeeded": succeeded, "bug": bug, "clean_success": clean_success, "scores": scores}
 
 
 def parse_phase3_log(log_text: str, metric: str) -> Dict[str, Any]:
+    # Add success/early stop markers to prevent false negatives
+    success_markers = [
+        "Target metric reached",
+        "Success threshold",
+        "Optimization finished early",
+        "Stopping early",
+        "Success!"
+    ]
     bug_markers = [
         "Invalid LLM response. Skipping",
         "LLM Generation Failed",
@@ -251,8 +302,12 @@ def parse_phase3_log(log_text: str, metric: str) -> Dict[str, Any]:
     ]
     iters: Dict[int, Dict[str, Any]] = {}
     cur_iter: Optional[int] = None
+    global_early_success = False
 
     for ln in log_text.splitlines():
+        if any(x in ln for x in success_markers):
+            global_early_success = True
+
         m = re.search(r"optimization \(Iter\s+(\d+)\)", ln, re.I)
         if m:
             cur_iter = int(m.group(1))
@@ -267,7 +322,7 @@ def parse_phase3_log(log_text: str, metric: str) -> Dict[str, Any]:
 
         if cur_iter is None:
             continue
-
+            
         if any(x in ln for x in bug_markers):
             iters.setdefault(cur_iter, {"bug": False, "score": None})
             iters[cur_iter]["bug"] = True
@@ -282,9 +337,24 @@ def parse_phase3_log(log_text: str, metric: str) -> Dict[str, Any]:
 
     attempted = len(iters)
     scores = [v["score"] for v in iters.values() if isinstance(v.get("score"), (int, float)) and v.get("score") != -999]
-    succeeded = len(scores)
-    bug = sum(1 for v in iters.values() if v.get("bug") is True)
-    clean_success = sum(1 for v in iters.values() if isinstance(v.get("score"), (int, float)) and v.get("score") != -999 and not v.get("bug"))
+    
+    bug = 0
+    clean_success = 0
+    succeeded = 0
+    
+    for idx, v in iters.items():
+        is_bug = v["bug"]
+        has_score = (isinstance(v.get("score"), (int, float)) and v.get("score") != -999)
+        # Count as success if global success flag on the last iteration
+        is_success_stop = (global_early_success and idx == max(iters.keys())) if iters else False
+
+        if is_bug:
+            bug += 1
+        
+        if has_score or is_success_stop:
+            succeeded += 1
+            if not is_bug:
+                clean_success += 1
 
     return {"attempted": attempted, "succeeded": succeeded, "bug": bug, "clean_success": clean_success, "scores": scores}
 

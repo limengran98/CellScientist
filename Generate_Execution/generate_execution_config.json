@@ -30,7 +30,7 @@
   },
   "exec": {
     "timeout_seconds": 36000,
-    "max_fix_rounds": 3,
+    "max_fix_rounds": 5,
     "enable_llm_autofix": true,
     "enable_hypergraph_viz": true,
     "viz_format": "mermaid",

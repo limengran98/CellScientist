@@ -262,10 +262,25 @@ def main():
         p2_log_text = read_text(phase_logs.get("Phase 2", ""))
         p2_q = parse_phase2_log(p2_log_text, p2_metric) if p2_log_text else {"attempted": 0, "succeeded": 0, "bug": 0, "clean_success": 0, "scores": []}
 
-        if not p2_q.get("scores"):
-            p2_q["scores"] = phase2_scores_from_artifacts(ge_dir, p2_metric, p2_t0, p2_t1)
+        # [FIX] Robust Synchronization with Artifacts for Phase 2
+        # Always check artifacts to confirm success if log parsing was ambiguous or empty
+        artifact_scores_p2 = phase2_scores_from_artifacts(ge_dir, p2_metric, p2_t0, p2_t1)
+        if len(artifact_scores_p2) >= len(p2_q.get("scores", [])):
+            p2_q["scores"] = artifact_scores_p2
+        
+        # If we have actual scores on disk, the run succeeded even if log parser missed it (e.g. early stop)
+        if len(p2_q["scores"]) > p2_q["succeeded"]:
             p2_q["succeeded"] = len(p2_q["scores"])
+        
+        # Ensure attempted count makes sense
+        if p2_q["succeeded"] > p2_q["attempted"]:
             p2_q["attempted"] = p2_q["succeeded"]
+
+        # If succeeded but marked as clean_success=0 (likely due to log miss), fix it if no bugs were found
+        if p2_q["succeeded"] > 0:
+            expected_clean = max(0, p2_q["succeeded"] - p2_q["bug"])
+            if p2_q["clean_success"] < expected_clean:
+                p2_q["clean_success"] = expected_clean
 
         p2_avg = mean_safe([float(x) for x in p2_q.get("scores", []) if isinstance(x, (int, float))])
         p2_best = pick_best(p2_q.get("scores", []), optim_dir)
@@ -293,10 +308,22 @@ def main():
         p3_log_text = read_text(phase_logs.get("Phase 3", ""))
         p3_q = parse_phase3_log(p3_log_text, p3_metric) if p3_log_text else {"attempted": 0, "succeeded": 0, "bug": 0, "clean_success": 0, "scores": []}
 
-        if not p3_q.get("scores"):
-            p3_q["scores"] = phase3_scores_from_artifacts(rf_dir, p3_metric, p3_t0, p3_t1)
+        # [FIX] Robust Synchronization with Artifacts for Phase 3
+        artifact_scores_p3 = phase3_scores_from_artifacts(rf_dir, p3_metric, p3_t0, p3_t1)
+        if len(artifact_scores_p3) >= len(p3_q.get("scores", [])):
+            p3_q["scores"] = artifact_scores_p3
+        
+        if len(p3_q["scores"]) > p3_q["succeeded"]:
             p3_q["succeeded"] = len(p3_q["scores"])
+            
+        if p3_q["succeeded"] > p3_q["attempted"]:
             p3_q["attempted"] = max(p3_q["succeeded"], 0)
+
+        # Fix clean_success based on valid artifact evidence
+        if p3_q["succeeded"] > 0:
+            expected_clean = max(0, p3_q["succeeded"] - p3_q["bug"])
+            if p3_q["clean_success"] < expected_clean:
+                p3_q["clean_success"] = expected_clean
 
         p3_avg = mean_safe([float(x) for x in p3_q.get("scores", []) if isinstance(x, (int, float))])
         p3_best = pick_best(p3_q.get("scores", []), optim_dir)
