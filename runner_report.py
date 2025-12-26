@@ -297,93 +297,8 @@ def chat_text(messages: List[Dict[str, Any]], llm_cfg: Dict[str, Any]) -> str:
 # =============================================================================
 # Selecting best runs + iteration extraction
 # =============================================================================
-
-
-def _extract_metric_from_metrics_obj(obj: Any, metric_key: str) -> Optional[float]:
-    try:
-        if not isinstance(obj, dict):
-            return None
-        if metric_key in obj and isinstance(obj[metric_key], (int, float)):
-            return float(obj[metric_key])
-        agg = obj.get("aggregate")
-        if isinstance(agg, dict) and metric_key in agg and isinstance(agg.get(metric_key), (int, float)):
-            return float(agg[metric_key])
-    except Exception:
-        return None
-    return None
-
-
-def find_best_phase2_prompt_run(
-    generate_root: str,
-    metric: str,
-    direction: str,
-    t0: Optional[float],
-    t1: Optional[float],
-) -> Tuple[Optional[str], Optional[float]]:
-    cand = [p for p in Path(generate_root).glob("**/prompt_run_*")]
-    best_dir: Optional[str] = None
-    best_score: Optional[float] = None
-
-    lo = (t0 - 120) if t0 else None
-    hi = (t1 + 120) if t1 else None
-
-    def better(a: float, b: float) -> bool:
-        return a < b if direction.lower() == "minimize" else a > b
-
-    def in_window(d: Path) -> bool:
-        if lo is None and hi is None:
-            return True
-        try:
-            mt = d.stat().st_mtime
-            if lo is not None and mt < lo:
-                return False
-            if hi is not None and mt > hi:
-                return False
-        except Exception:
-            return True
-        return True
-
-    for only_window in [True, False]:
-        for d in cand:
-            if not d.is_dir():
-                continue
-            if only_window and not in_window(d):
-                continue
-            m_obj = safe_read_json(str(d / "metrics.json"))
-            if not m_obj:
-                continue
-            sc = _extract_metric_from_metrics_obj(m_obj, metric)
-            if sc is None or sc == -999 or sc == float("inf"):
-                continue
-            if best_score is None or better(sc, best_score):
-                best_score, best_dir = sc, str(d)
-        if best_dir is not None:
-            break
-
-    return best_dir, best_score
-
-
-def find_review_run_dir(review_root: str, t0: Optional[float], t1: Optional[float]) -> Optional[str]:
-    cand = sorted(Path(review_root).glob("review_run_*"), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
-    lo = (t0 - 120) if t0 else None
-    hi = (t1 + 120) if t1 else None
-
-    for d in cand:
-        if not d.is_dir():
-            continue
-        try:
-            mt = d.stat().st_mtime
-            if lo is not None and mt < lo:
-                continue
-            if hi is not None and mt > hi:
-                continue
-        except Exception:
-            pass
-        return str(d)
-    for d in cand:
-        if d.is_dir():
-            return str(d)
-    return None
+# [NOTE] Removed 'search' functions (find_best_phase2_prompt_run, find_review_run_dir)
+# to support explicit path passing and avoid race conditions.
 
 
 def phase2_iters_detail_from_log(log_text: str, metric: str) -> List[Dict[str, Any]]:
@@ -472,6 +387,9 @@ def generate_final_report(
     phase_logs: Dict[str, str],
     pipeline_log_path: str,
     pipe_cfg: Optional[Dict[str, Any]],
+    # [NEW] Explicit path arguments to replace search functions
+    explicit_p2_path: Optional[str] = None,
+    explicit_p3_path: Optional[str] = None,
     direction: str,
     metric: str,
 ) -> Optional[str]:
@@ -483,21 +401,26 @@ def generate_final_report(
     # Locate key artifacts
     phase1_summary_path = os.path.join(results_root, "design_analysis", "reference", "summary_report.md")
 
-    p2_root = os.path.join(results_root, "generate_execution")
-    p2_t0 = stage_timings.get("Phase 2", {}).get("start")
-    p2_t1 = stage_timings.get("Phase 2", {}).get("end")
-    best_p2_dir, _best_p2_score = find_best_phase2_prompt_run(p2_root, metric, direction, p2_t0, p2_t1)
+    # [FIX] Use explicit paths instead of searching based on time
+    best_p2_dir = explicit_p2_path
+    if best_p2_dir and not os.path.exists(best_p2_dir):
+        # Fallback only if provided path is bad (shouldn't happen with log tracker)
+        print(f"[WARN] Explicit P2 path provided but not found: {best_p2_dir}")
+        best_p2_dir = None
+        
     phase2_report_path = os.path.join(best_p2_dir, "experiment_report.md") if best_p2_dir else ""
 
-    p3_root = os.path.join(results_root, "review_feedback")
-    p3_t0 = stage_timings.get("Phase 3", {}).get("start")
-    p3_t1 = stage_timings.get("Phase 3", {}).get("end")
-    p3_ws = find_review_run_dir(p3_root, p3_t0, p3_t1)
+    p3_ws = explicit_p3_path
+    if p3_ws and not os.path.exists(p3_ws):
+        print(f"[WARN] Explicit P3 path provided but not found: {p3_ws}")
+        p3_ws = None
+        
     phase3_report_path = os.path.join(p3_ws, "experiment_report.md") if p3_ws else ""
     phase3_opt_hist_path = os.path.join(p3_ws, "optimization_history.md") if p3_ws else ""
 
     # Export best code
     best_nb_src = ""
+    # Priority: Phase 3 Best -> Phase 2 Executed -> Phase 2 Prompt
     if p3_ws and os.path.exists(os.path.join(p3_ws, "notebook_best.ipynb")):
         best_nb_src = os.path.join(p3_ws, "notebook_best.ipynb")
     elif best_p2_dir and os.path.exists(os.path.join(best_p2_dir, "notebook_prompt_exec.ipynb")):
@@ -511,14 +434,17 @@ def generate_final_report(
 
     # Also copy key inputs for convenience
     safe_copy(phase1_summary_path, final_dir, "phase1_summary_report.md")
+    
     if best_p2_dir:
         safe_copy(os.path.join(best_p2_dir, "metrics.json"), final_dir, "phase2_best_metrics.json")
         safe_copy(phase2_report_path, final_dir, "phase2_best_experiment_report.md")
+        
     if p3_ws:
         safe_copy(os.path.join(p3_ws, "metrics_best.json"), final_dir, "phase3_best_metrics.json")
         safe_copy(phase3_report_path, final_dir, "phase3_experiment_report.md")
         safe_copy(phase3_opt_hist_path, final_dir, "phase3_optimization_history.md")
         safe_copy(os.path.join(p3_ws, "history_state.json"), final_dir, "phase3_history_state.json")
+        
     safe_copy(pipeline_log_path, final_dir, os.path.basename(pipeline_log_path))
     for _k, lp in (phase_logs or {}).items():
         safe_copy(lp, final_dir, os.path.basename(lp))

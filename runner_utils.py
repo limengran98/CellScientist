@@ -2,14 +2,8 @@
 # -*- coding: utf-8 -*-
 """Shared utilities for run_cellscientist.
 
-This module is intentionally dependency-light and contains:
-
-- Project-root helpers
-- JSON/text IO helpers
-- Streamed subprocess runner + tee logging
-- Small file-copy/export helpers
-
-It is used by the refactored run_cellscientist.py to keep that file small.
+Contains project-root helpers, IO helpers, streamed subprocess runner,
+and newly added explicit path extraction logic.
 """
 
 from __future__ import annotations
@@ -17,6 +11,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -113,6 +108,117 @@ def read_head_tail_lines(
     if len(out) > max_chars:
         out = out[:max_chars] + f"\n\n... [TRUNCATED to {max_chars} chars] ..."
     return out
+
+
+# =============================================================================
+# Path Extraction (Robust Strategy)
+# =============================================================================
+
+
+def find_recent_output_dir(base_dir: str, prefix: str, t_start: float) -> Optional[str]:
+    """
+    Fallback: Search for the most recently created directory in base_dir 
+    that matches the prefix and was created AFTER t_start.
+    
+    This acts as a safety net if log parsing fails due to code changes.
+    """
+    if not os.path.exists(base_dir):
+        return None
+    
+    candidates = []
+    # Allow 5 seconds of clock skew/filesystem delay
+    safe_start = t_start - 5.0 
+    
+    try:
+        for name in os.listdir(base_dir):
+            if not name.startswith(prefix):
+                continue
+            full_path = os.path.join(base_dir, name)
+            if not os.path.isdir(full_path):
+                continue
+            
+            try:
+                # Use getmtime (modification time) as creation time is not reliable on all OS
+                mtime = os.path.getmtime(full_path)
+                if mtime >= safe_start:
+                    candidates.append((mtime, full_path))
+            except OSError:
+                continue
+    except Exception:
+        return None
+
+    if not candidates:
+        return None
+    
+    # Sort by time descending (newest first)
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
+
+
+def extract_best_path_from_log(log_path: str, phase: str, base_dir: str = "", t_start: float = 0.0) -> Optional[str]:
+    """
+    Extracts the output directory path for the current run.
+    
+    Strategy:
+    1. Parsing the log file for explicit "Saved to" messages (High Precision, Best for Concurrency).
+    2. Searching the filesystem for the newest folder created after start time (High Robustness, Fallback).
+    """
+    
+    # --- Strategy 1: Log Parsing ---
+    text = read_text(log_path)
+    if text:
+        if phase == "Phase 2":
+            # Match: [ARCHIVE] Saved run to: prompt_run_xxxx
+            m_best = re.search(r"\[ARCHIVE\] Saved run to:\s*(.+)", text)
+            if m_best:
+                path_str = m_best.group(1).strip()
+                if not os.path.isabs(path_str) and base_dir:
+                    # Check nested prompt directory
+                    prompt_path = os.path.join(base_dir, "prompt", path_str)
+                    if os.path.exists(prompt_path): return prompt_path
+                    # Check direct directory
+                    direct_path = os.path.join(base_dir, path_str)
+                    if os.path.exists(direct_path): return direct_path
+                elif os.path.exists(path_str):
+                    return path_str
+            
+            # Backup Match: Saved final state (if archive log missing)
+            matches = list(re.finditer(r"\[EXEC\] Saved final state:\s*(.+)", text))
+            if matches:
+                last_file = matches[-1].group(1).strip()
+                dir_path = os.path.dirname(last_file)
+                if os.path.exists(dir_path): return dir_path
+
+        elif phase == "Phase 3":
+            # Match: Saved BEST Metrics to: ...
+            m_best = re.search(r"Saved BEST Metrics to:\s*(.+)", text)
+            if m_best:
+                file_path = m_best.group(1).strip()
+                dir_path = os.path.dirname(file_path)
+                if os.path.exists(dir_path): return dir_path
+            
+            # Backup Match: Results saved to
+            matches = list(re.finditer(r"\[Result\] Results saved to\s*(.+)", text))
+            if matches:
+                dir_path = matches[-1].group(1).strip()
+                if os.path.exists(dir_path): return dir_path
+
+    # --- Strategy 2: Filesystem Fallback ---
+    # Used if log parsing failed (e.g., log format changed), 
+    # but we know a folder must have been created after t_start.
+    
+    if phase == "Phase 2" and base_dir:
+        # Try finding in generate_execution/prompt/prompt_run_*
+        prompt_root = os.path.join(base_dir, "prompt")
+        found = find_recent_output_dir(prompt_root, "prompt_run_", t_start)
+        if found: return found
+        
+    elif phase == "Phase 3" and base_dir:
+        # Try finding in review_feedback/review_run_*
+        found = find_recent_output_dir(base_dir, "review_run_", t_start)
+        if found: return found
+
+    return None
 
 
 # =============================================================================

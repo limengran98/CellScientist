@@ -456,12 +456,24 @@ def phase3_scores_from_artifacts(rf_dir: str, metric: str, t_start: float, t_end
 
 
 def rates(attempted: int, clean_success: int, succeeded: int, bug: int) -> Tuple[float, float, float]:
+    """
+    Revised logic:
+    - Success Rate (total_success_rate): All successful runs / Attempted (Includes Auto-Fixed).
+    - Clean Rate (zero_shot_sr): Runs that succeeded WITHOUT auto-fix / Attempted.
+    - Bug Rate: Runs that triggered auto-fix / Attempted.
+    """
     if attempted <= 0:
         return 0.0, 0.0, 0.0
-    success_rate = clean_success / float(attempted)
-    robust_sr = succeeded / float(attempted)
+    
+    # [FIX] User Logic: Success Rate should be the total success rate (including auto-fixed)
+    total_success_rate = succeeded / float(attempted)
+    
+    # Clean Rate (Zero-Shot)
+    zero_shot_sr = clean_success / float(attempted)
+    
     bug_rate = bug / float(attempted)
-    return success_rate, robust_sr, bug_rate
+    
+    return total_success_rate, zero_shot_sr, bug_rate
 
 
 def print_final_scoreboard(summary: Dict[str, Any], console=None) -> None:
@@ -472,9 +484,10 @@ def print_final_scoreboard(summary: Dict[str, Any], console=None) -> None:
 
         table = Table(title=f"📊 Scoreboard (dataset={summary.get('dataset')})")
         table.add_column("Stage")
-        table.add_column("Success Rate ↑", justify="right")
-        table.add_column("Robust SR ↑", justify="right")
-        table.add_column("Bug Rate ↓", justify="right")
+        # [FIX] Header Names to match new logic
+        table.add_column("Success Rate ↑", justify="right", style="green") # Total Success (Fixed included)
+        table.add_column("Zero-Shot SR ↑", justify="right", style="cyan")  # Clean Success (No fixes)
+        table.add_column("Bug Rate ↓", justify="right", style="red")
         table.add_column("Avg@Budget", justify="right")
         table.add_column("Best@Budget", justify="right")
         table.add_column("Metric")
@@ -484,12 +497,14 @@ def print_final_scoreboard(summary: Dict[str, Any], console=None) -> None:
 
         for stage_name in ["Phase 1", "Phase 2", "Phase 3", "Total"]:
             row = stages.get(stage_name, {})
-            sr = row.get("success_rate")
-            robust = row.get("robust_sr")
+            sr = row.get("success_rate")       # Now Total Success
+            clean_sr = row.get("clean_rate")   # Now Clean/Zero-Shot Success
             bugr = row.get("bug_rate")
+            
             sr_s = f"{sr:.3f}" if isinstance(sr, (int, float)) else "-"
-            robust_s = f"{robust:.3f}" if isinstance(robust, (int, float)) else "-"
+            clean_s = f"{clean_sr:.3f}" if isinstance(clean_sr, (int, float)) else "-"
             bug_s = f"{bugr:.3f}" if isinstance(bugr, (int, float)) else "-"
+            
             avg = row.get("avg_at_budget")
             avg_s = f"{avg:.4f}" if isinstance(avg, (int, float)) else "-"
             best = row.get("best_at_budget")
@@ -501,7 +516,8 @@ def print_final_scoreboard(summary: Dict[str, Any], console=None) -> None:
             attempted_s = str(attempted) if attempted is not None else "-"
             tsec = row.get("time_sec")
             tsec_s = f"{tsec:.1f}" if isinstance(tsec, (int, float)) else "-"
-            table.add_row(stage_name, sr_s, robust_s, bug_s, avg_s, best_s, metric, budget_s, attempted_s, tsec_s)
+            
+            table.add_row(stage_name, sr_s, clean_s, bug_s, avg_s, best_s, metric, budget_s, attempted_s, tsec_s)
 
         console.print(table)
     else:
@@ -509,7 +525,7 @@ def print_final_scoreboard(summary: Dict[str, Any], console=None) -> None:
         for stage_name in ["Phase 1", "Phase 2", "Phase 3", "Total"]:
             row = stages.get(stage_name, {})
             print(
-                f"{stage_name}: SR={row.get('success_rate')}, Robust={row.get('robust_sr')}, "
+                f"{stage_name}: Success={row.get('success_rate')}, ZeroShot={row.get('clean_rate')}, "
                 f"BugRate={row.get('bug_rate')}, Avg={row.get('avg_at_budget')}, Best={row.get('best_at_budget')}, "
                 f"Metric={row.get('best_metric')}, Budget={row.get('budget')}, Attempted={row.get('attempted')}, Time={row.get('time_sec')}"
             )

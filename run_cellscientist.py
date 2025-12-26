@@ -2,15 +2,15 @@
 # -*- coding: utf-8 -*-
 # run_cellscientist.py
 #
-# Pipeline runner + robust metrics scoreboard:
-# - Success Rate (clean): successful runs WITHOUT any bug/recovery signals
-# - Robust SR: successful runs INCLUDING auto-fix/retries/fallbacks
-# - Bug Rate: fraction of attempts that had any bug/recovery signals
-# - Avg@Budget: average primary metric over successful attempts
-# - Best@Budget: best primary metric (respecting maximize/minimize direction)
+# Pipeline runner + robust metrics scoreboard.
 #
-# NOTE: Phase 1 metric is heuristic_score. Total Avg/Best are computed on the
-# pipeline final metric using Phase 2/3 scores only if they match.
+# Metrics Definitions:
+# - Success Rate (Total): All successful runs, including those fixed by Auto-Fix.
+# - Clean Rate (Zero-Shot): Successful runs WITHOUT any bug/recovery signals.
+# - Bug Rate: Fraction of attempts that triggered any error/fix logic.
+#
+# [UPDATE] Now includes Explicit Path Tracking to ensure simultaneous runs 
+# do not cross-read artifacts during report generation.
 
 from __future__ import annotations
 
@@ -46,6 +46,7 @@ from runner_utils import (
     append_phase_header,
     atomic_write_json,
     ensure_project_cwd,
+    extract_best_path_from_log, # [NEW]
     read_text,
     results_root_for_dataset,
     run_cmd_streamed,
@@ -151,6 +152,9 @@ def main():
 
     stage_timings: Dict[str, Dict[str, float]] = {}
     phase_logs: Dict[str, str] = {}
+    
+    # [NEW] Explicitly track paths to avoid globbing race conditions
+    explicit_paths: Dict[str, str] = {"Phase 2": None, "Phase 3": None}
 
     try:
         # -----------------------------------------------------------------
@@ -215,6 +219,28 @@ def main():
             end_ts = time.time()
             stage_timings[name]["end"] = end_ts
             print(f"✅ {name} Completed ({end_ts - start_ts:.1f}s)\n")
+            
+            # [NEW] Robust Path Capture
+            if name in ["Phase 2", "Phase 3"]:
+                base_search_dir = ""
+                if name == "Phase 2":
+                    base_search_dir = os.path.join(results_root, "generate_execution")
+                elif name == "Phase 3":
+                    base_search_dir = os.path.join(results_root, "review_feedback")
+                
+                # Pass start_ts for fallback mechanism
+                found_path = extract_best_path_from_log(
+                    phase_log_file, 
+                    name, 
+                    base_search_dir, 
+                    stage_timings[name]["start"]
+                )
+                
+                if found_path:
+                    explicit_paths[name] = found_path
+                    print(f"📌 [TRACKER] Locked {name} Output: {found_path}")
+                else:
+                    print(f"[WARN] Could not lock output path for {name}. Report generation might rely on fallback.")
 
         pipeline_end = time.time()
 
@@ -238,15 +264,18 @@ def main():
         p1_log_text = read_text(phase_logs.get("Phase 1", ""))
         p1_q = parse_phase1_log(p1_log_text) if p1_log_text else {"attempted": 0, "succeeded": 0, "bug": 0, "clean_success": 0}
         p1_avg, p1_best = phase1_scores_from_artifacts(design_dir)
-        p1_sr, p1_robust, p1_bug_rate = rates(p1_q["attempted"], p1_q["clean_success"], p1_q["succeeded"], p1_q["bug"])
+        
+        # [MODIFIED] Using new rate definitions
+        p1_total_sr, p1_clean_sr, p1_bug_rate = rates(p1_q["attempted"], p1_q["clean_success"], p1_q["succeeded"], p1_q["bug"])
+        
         p1 = {
             "budget": p1_budget,
             "attempted": p1_q["attempted"],
             "succeeded": p1_q["succeeded"],
             "clean_succeeded": p1_q["clean_success"],
             "bug_attempts": p1_q["bug"],
-            "success_rate": p1_sr,
-            "robust_sr": p1_robust,
+            "success_rate": p1_total_sr, # Now 1.0 if all runs finished (via fix)
+            "clean_rate": p1_clean_sr,   # Original Clean Rate
             "bug_rate": p1_bug_rate,
             "avg_at_budget": p1_avg,
             "best_at_budget": p1_best,
@@ -262,21 +291,17 @@ def main():
         p2_log_text = read_text(phase_logs.get("Phase 2", ""))
         p2_q = parse_phase2_log(p2_log_text, p2_metric) if p2_log_text else {"attempted": 0, "succeeded": 0, "bug": 0, "clean_success": 0, "scores": []}
 
-        # [FIX] Robust Synchronization with Artifacts for Phase 2
-        # Always check artifacts to confirm success if log parsing was ambiguous or empty
+        # Robust Sync with Artifacts
         artifact_scores_p2 = phase2_scores_from_artifacts(ge_dir, p2_metric, p2_t0, p2_t1)
         if len(artifact_scores_p2) >= len(p2_q.get("scores", [])):
             p2_q["scores"] = artifact_scores_p2
         
-        # If we have actual scores on disk, the run succeeded even if log parser missed it (e.g. early stop)
         if len(p2_q["scores"]) > p2_q["succeeded"]:
             p2_q["succeeded"] = len(p2_q["scores"])
         
-        # Ensure attempted count makes sense
         if p2_q["succeeded"] > p2_q["attempted"]:
             p2_q["attempted"] = p2_q["succeeded"]
 
-        # If succeeded but marked as clean_success=0 (likely due to log miss), fix it if no bugs were found
         if p2_q["succeeded"] > 0:
             expected_clean = max(0, p2_q["succeeded"] - p2_q["bug"])
             if p2_q["clean_success"] < expected_clean:
@@ -284,15 +309,18 @@ def main():
 
         p2_avg = mean_safe([float(x) for x in p2_q.get("scores", []) if isinstance(x, (int, float))])
         p2_best = pick_best(p2_q.get("scores", []), optim_dir)
-        p2_sr, p2_robust, p2_bug_rate = rates(p2_q["attempted"], p2_q["clean_success"], p2_q["succeeded"], p2_q["bug"])
+        
+        # [MODIFIED] Rates
+        p2_total_sr, p2_clean_sr, p2_bug_rate = rates(p2_q["attempted"], p2_q["clean_success"], p2_q["succeeded"], p2_q["bug"])
+        
         p2 = {
             "budget": p2_budget,
             "attempted": p2_q["attempted"],
             "succeeded": p2_q["succeeded"],
             "clean_succeeded": p2_q["clean_success"],
             "bug_attempts": p2_q["bug"],
-            "success_rate": p2_sr,
-            "robust_sr": p2_robust,
+            "success_rate": p2_total_sr,
+            "clean_rate": p2_clean_sr,
             "bug_rate": p2_bug_rate,
             "avg_at_budget": p2_avg,
             "best_at_budget": p2_best,
@@ -308,7 +336,7 @@ def main():
         p3_log_text = read_text(phase_logs.get("Phase 3", ""))
         p3_q = parse_phase3_log(p3_log_text, p3_metric) if p3_log_text else {"attempted": 0, "succeeded": 0, "bug": 0, "clean_success": 0, "scores": []}
 
-        # [FIX] Robust Synchronization with Artifacts for Phase 3
+        # Robust Sync with Artifacts
         artifact_scores_p3 = phase3_scores_from_artifacts(rf_dir, p3_metric, p3_t0, p3_t1)
         if len(artifact_scores_p3) >= len(p3_q.get("scores", [])):
             p3_q["scores"] = artifact_scores_p3
@@ -319,7 +347,6 @@ def main():
         if p3_q["succeeded"] > p3_q["attempted"]:
             p3_q["attempted"] = max(p3_q["succeeded"], 0)
 
-        # Fix clean_success based on valid artifact evidence
         if p3_q["succeeded"] > 0:
             expected_clean = max(0, p3_q["succeeded"] - p3_q["bug"])
             if p3_q["clean_success"] < expected_clean:
@@ -327,15 +354,18 @@ def main():
 
         p3_avg = mean_safe([float(x) for x in p3_q.get("scores", []) if isinstance(x, (int, float))])
         p3_best = pick_best(p3_q.get("scores", []), optim_dir)
-        p3_sr, p3_robust, p3_bug_rate = rates(p3_q["attempted"], p3_q["clean_success"], p3_q["succeeded"], p3_q["bug"])
+        
+        # [MODIFIED] Rates
+        p3_total_sr, p3_clean_sr, p3_bug_rate = rates(p3_q["attempted"], p3_q["clean_success"], p3_q["succeeded"], p3_q["bug"])
+        
         p3 = {
             "budget": p3_budget,
             "attempted": p3_q["attempted"],
             "succeeded": p3_q["succeeded"],
             "clean_succeeded": p3_q["clean_success"],
             "bug_attempts": p3_q["bug"],
-            "success_rate": p3_sr,
-            "robust_sr": p3_robust,
+            "success_rate": p3_total_sr,
+            "clean_rate": p3_clean_sr,
             "bug_rate": p3_bug_rate,
             "avg_at_budget": p3_avg,
             "best_at_budget": p3_best,
@@ -348,7 +378,9 @@ def main():
         total_succeeded = (p1["succeeded"] or 0) + (p2["succeeded"] or 0) + (p3["succeeded"] or 0)
         total_clean = (p1["clean_succeeded"] or 0) + (p2["clean_succeeded"] or 0) + (p3["clean_succeeded"] or 0)
         total_bug = (p1["bug_attempts"] or 0) + (p2["bug_attempts"] or 0) + (p3["bug_attempts"] or 0)
-        total_sr, total_robust, total_bug_rate = rates(total_attempted, total_clean, total_succeeded, total_bug)
+        
+        # [MODIFIED] Rates
+        total_sr, total_clean_sr, total_bug_rate = rates(total_attempted, total_clean, total_succeeded, total_bug)
 
         total_scores = []
         if p2_metric == p3_metric and p2.get("avg_at_budget") is not None:
@@ -364,7 +396,7 @@ def main():
             "clean_succeeded": total_clean,
             "bug_attempts": total_bug,
             "success_rate": total_sr,
-            "robust_sr": total_robust,
+            "clean_rate": total_clean_sr,
             "bug_rate": total_bug_rate,
             "avg_at_budget": total_avg,
             "best_at_budget": total_best,
@@ -400,6 +432,9 @@ def main():
                 phase_logs=phase_logs,
                 pipeline_log_path=pipeline_log_path,
                 pipe_cfg=pipe_cfg,
+                # [NEW] Pass explicitly locked paths
+                explicit_p2_path=explicit_paths["Phase 2"],
+                explicit_p3_path=explicit_paths["Phase 3"],
                 direction=optim_dir,
                 metric=p3_metric,
             )
