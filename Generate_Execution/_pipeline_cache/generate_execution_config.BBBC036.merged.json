@@ -17,7 +17,7 @@
   },
   "experiment": {
     "primary_metric": "PCC",
-    "max_iterations": 3,
+    "max_iterations": 5,
     "success_threshold": 0.5
   },
   "prompt_branch": {
@@ -29,7 +29,7 @@
     "max_tokens": 40000
   },
   "exec": {
-    "timeout_seconds": 36000,
+    "timeout_seconds": 360000,
     "max_fix_rounds": 5,
     "enable_llm_autofix": true,
     "enable_hypergraph_viz": true,
