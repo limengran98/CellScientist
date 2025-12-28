@@ -3,9 +3,9 @@
 """
 Advanced Metrics Analysis Module.
 
-Performs post-hoc analysis on the 'finall_results' artifacts to evaluate:
-1. Mechanism Diversity (GED): The breadth of the hypothesis space explored across ALL PHASES (1, 2, 3).
-2. Code Complexity: The simplicity and elegance of the final scientific explanation (Code).
+Performs post-hoc analysis on the 'finall_results' AND raw artifacts to evaluate:
+1. Mechanism Diversity (GED): The breadth of the hypothesis space explored across ALL PHASES.
+2. Code Complexity: The simplicity and elegance of the final scientific explanation.
 
 Outputs to: results/${dataset}/advanced_metrics/
 """
@@ -13,10 +13,11 @@ Outputs to: results/${dataset}/advanced_metrics/
 from __future__ import annotations
 
 import ast
+import glob
 import json
 import os
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from runner_utils import read_text, safe_read_json, read_text_limited
 from runner_report import resolve_report_llm_cfg, chat_text
@@ -28,7 +29,7 @@ from runner_report import resolve_report_llm_cfg, chat_text
 class ComplexityVisitor(ast.NodeVisitor):
     """Calculates Cyclomatic Complexity (McCabe) via AST."""
     def __init__(self):
-        self.complexity = 1  # Base complexity
+        self.complexity = 1
 
     def visit_If(self, node):
         self.complexity += 1
@@ -46,9 +47,6 @@ class ComplexityVisitor(ast.NodeVisitor):
         self.complexity += 1
         self.generic_visit(node)
 
-    def visit_FunctionDef(self, node):
-        self.generic_visit(node)
-    
     def visit_BoolOp(self, node):
         self.complexity += len(node.values) - 1
         self.generic_visit(node)
@@ -57,74 +55,165 @@ def calculate_ast_metrics(code_text: str) -> Dict[str, Any]:
     try:
         tree = ast.parse(code_text)
     except SyntaxError:
-        return {"cyclomatic_complexity": -1, "loc": len(code_text.splitlines()), "notes": "Syntax Error in AST parse"}
+        return {"cyclomatic_complexity": -1, "loc": len(code_text.splitlines()), "notes": "Syntax Error"}
 
     visitor = ComplexityVisitor()
     visitor.visit(tree)
     
     lines = code_text.splitlines()
-    loc = len(lines)
     sloc = len([l for l in lines if l.strip() and not l.strip().startswith("#")])
-    tokens = set(code_text.split())
-    vocab_size = len(tokens)
+    vocab_size = len(set(code_text.split()))
 
     return {
         "cyclomatic_complexity": visitor.complexity,
-        "loc": loc,
         "sloc": sloc,
-        "vocabulary_size": vocab_size,
-        "complexity_density": round(visitor.complexity / max(1, sloc), 3)
+        "complexity_density": round(visitor.complexity / max(1, sloc), 3),
+        "vocabulary_size": vocab_size
     }
 
 # =============================================================================
-# 2. LLM-based Evaluation Helpers
+# 2. LLM Helper
 # =============================================================================
 
-def analyze_via_llm(
-    content: str,
-    system_prompt: str,
-    user_prompt_template: str,
-    llm_cfg: Dict[str, Any]
-) -> Dict[str, Any]:
-    """Generic helper to get JSON metrics from LLM."""
+def analyze_via_llm(content: str, system_prompt: str, user_prompt_template: str, llm_cfg: Dict[str, Any]) -> Dict[str, Any]:
     user_msg = user_prompt_template.replace("${content}", content)
     system_prompt += "\nOutput MUST be valid JSON only. No markdown formatting."
     
     resp = chat_text(
-        [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_msg}
-        ],
+        [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_msg}],
         llm_cfg
     )
     
     try:
-        import re
         m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", resp, re.DOTALL)
-        if m:
-            return json.loads(m.group(1))
+        if m: return json.loads(m.group(1))
         m2 = re.search(r"(\{.*\})", resp, re.DOTALL)
-        if m2:
-            return json.loads(m2.group(1))
+        if m2: return json.loads(m2.group(1))
         return json.loads(resp)
     except Exception:
-        print(f"[WARN] Failed to parse LLM JSON response. Raw: {resp[:100]}...")
         return {"error": "JSON Parse Failed", "raw_response": resp}
 
-def _extract_phase2_digest(log_path: str) -> str:
-    """Extracts hypothesis generation attempts from Phase 2 log."""
-    text = read_text(log_path)
+# =============================================================================
+# 3. Smart Data Ingestion (The Optimization)
+# =============================================================================
+
+def _ingest_phase1_design(final_results_dir: str) -> str:
+    """Intelligently ingest Phase 1: Try JSON summary first, then Markdown headers."""
+    # 1. Try structured JSON (Best Case)
+    json_path = os.path.join(final_results_dir, "phase1_summary_report.json") # Often saved alongside MD
+    if os.path.exists(json_path):
+        data = safe_read_json(json_path)
+        if data:
+            # Extract key fields only to save tokens
+            return f"Structured Design:\n{json.dumps(data.get('report_content', data), indent=2)[:5000]}"
+
+    # 2. Fallback to Markdown with smart truncation
+    md_path = os.path.join(final_results_dir, "phase1_summary_report.md")
+    text = read_text_limited(md_path, max_chars=15000)
     if not text:
-        return "(Phase 2 log missing)"
+        return "(Phase 1 report missing)"
+    
+    # Simple heuristic to extract Objective/Hypothesis sections
+    # (Assuming standard report format)
+    lines = []
+    capture = True
+    for line in text.splitlines():
+        if line.startswith("#"):
+            if any(k in line.lower() for k in ["code", "appendix", "log"]):
+                capture = False
+            else:
+                capture = True
+        if capture:
+            lines.append(line)
+    
+    return "\n".join(lines)[:6000] # Return filtered text
+
+def _ingest_phase2_broad_search(results_root: str, final_results_dir: str) -> str:
+    """
+    Ingest Phase 2 by scanning the ACTUAL artifacts folders (Generate_Execution),
+    not just the logs. This captures the true diversity of prompts tried.
+    """
+    # 1. Locate Generate_Execution folder
+    # results_root is usually ../results/dataset
+    ge_dir = os.path.join(results_root, "generate_execution", "prompt")
+    
+    runs_digest = []
+    
+    if os.path.exists(ge_dir):
+        # Scan run folders
+        run_dirs = sorted(glob.glob(os.path.join(ge_dir, "prompt_run_*")))
+        for i, rdir in enumerate(run_dirs):
+            # Read Config (What was the strategy?)
+            cfg_path = os.path.join(rdir, "config.json")
+            cfg = safe_read_json(cfg_path)
+            
+            # Extract prompt focus/variant
+            # Structure depends on exact config shape, attempting robust retrieval
+            focus = "(Unknown)"
+            if cfg:
+                focus = (
+                    cfg.get("phases", {}).get("task_analysis", {}).get("llm_notebook", {}).get("focus_instruction") or
+                    cfg.get("prompt_variant") or 
+                    "Standard"
+                )
+            
+            # Read Metrics (Did it work?)
+            met_path = os.path.join(rdir, "metrics.json")
+            met = safe_read_json(met_path)
+            score = "N/A"
+            if met:
+                # Try to grab a primary score
+                score = met.get("winner_score", met.get("aggregate", {}).get("PCC", "N/A"))
+
+            runs_digest.append(f"Run {i+1}: Strategy/Focus='{focus}', Outcome_Score={score}")
+
+    if runs_digest:
+        return "Artifact Scan Results:\n" + "\n".join(runs_digest)
+    
+    # 2. Fallback to Log Parsing (if artifacts deleted)
+    log_path = os.path.join(final_results_dir, "phase2.log")
+    text = read_text(log_path)
+    if not text: return "(Phase 2 data missing)"
+    
+    # Regex fallback
     hits = []
-    lines = text.splitlines()
-    for i, line in enumerate(lines):
-        if "focus=" in line or "prompt_variants" in line or "Executing Run" in line or "ITERATION" in line:
-            hits.append(f"P2_Log_L{i}: {line.strip()}")
-    return "\n".join(hits[:50])
+    for line in text.splitlines():
+        if "focus=" in line or "prompt_variants" in line:
+            hits.append(line.strip())
+    return "Log Scan Results:\n" + "\n".join(hits[:50])
+
+def _ingest_phase3_depth(final_results_dir: str) -> str:
+    """Ingest Phase 3 trajectory with calculated optimization delta."""
+    p3_path = os.path.join(final_results_dir, "phase3_history_state.json")
+    data = safe_read_json(p3_path)
+    if not data or not isinstance(data, list):
+        return "(No Phase 3 optimization history)"
+    
+    digest = []
+    start_score = None
+    best_score = -999.0
+    
+    for entry in data:
+        if not isinstance(entry, dict): continue
+        sc = entry.get('score')
+        if isinstance(sc, (int, float)):
+            if start_score is None: start_score = sc
+            if sc > best_score: best_score = sc
+            
+        digest.append(
+            f"Iter {entry.get('iter')}: Action='{entry.get('decision')}', "
+            f"Focus='{entry.get('focus')}', Score={sc}"
+        )
+    
+    delta = 0.0
+    if start_score is not None and best_score > -999:
+        delta = best_score - start_score
+        
+    header = f"Optimization Stats: Start={start_score}, Best={best_score}, Delta={delta:+.4f}\nTrajectory:\n"
+    return header + "\n".join(digest)
 
 # =============================================================================
-# 3. Core Logic
+# 4. Main Entry Point
 # =============================================================================
 
 def perform_advanced_analysis(
@@ -134,199 +223,151 @@ def perform_advanced_analysis(
     pipe_cfg: Optional[Dict[str, Any]],
 ) -> None:
     """
-    Main entry point for advanced metrics.
-    Reads artifacts from finall_results, analyzes Phase 1 + 2 + 3.
+    Main entry point. 
     """
     final_results_dir = os.path.join(logs_dir, "finall_results")
+    # Infer results_root from logs_dir (logs_dir is usually .../results/dataset/logs)
+    results_root = os.path.dirname(logs_dir)
+    
     out_dir = os.path.join(logs_dir, "advanced_metrics")
     os.makedirs(out_dir, exist_ok=True)
     
-    print(f"\n🔍 [Advanced Analysis] Starting deep eval in: {out_dir}")
+    print(f"\n🔍 [Advanced Analysis] Smart Ingestion active. Output: {out_dir}")
 
-    # --- 1. Load Artifacts (All 3 Phases) ---
-    # Phase 1: Design thinking (Summary Report)
-    p1_report_path = os.path.join(final_results_dir, "phase1_summary_report.md")
-    # Phase 2: Generation attempts (Log)
-    p2_log_path = os.path.join(final_results_dir, "phase2.log")
-    # Phase 3: Optimization trajectory (History JSON)
-    p3_history_path = os.path.join(final_results_dir, "phase3_history_state.json")
+    # --- 1. Smart Ingestion ---
+    p1_context = _ingest_phase1_design(final_results_dir)
+    p2_context = _ingest_phase2_broad_search(results_root, final_results_dir)
+    p3_context = _ingest_phase3_depth(final_results_dir)
     
-    # Code: Final Result
+    # Get Code
     code_path = os.path.join(final_results_dir, "best_code.py")
     if not os.path.exists(code_path):
         nb_path = os.path.join(final_results_dir, "best_code.ipynb")
         if os.path.exists(nb_path):
             from runner_utils import export_notebook_as_py
             export_notebook_as_py(nb_path, code_path)
-
-    # Read Content
-    p1_text = read_text_limited(p1_report_path, max_chars=10000) or "(Phase 1 report missing)"
-    p2_digest = _extract_phase2_digest(p2_log_path)
-    p3_data = safe_read_json(p3_history_path) or []
     code_text = read_text(code_path)
     
     llm_cfg = resolve_report_llm_cfg(pipe_cfg)
     
     # -------------------------------------------------------
-    # A. Mechanism Diversity (Full Trajectory: P1 -> P2 -> P3)
+    # A. Mechanism Diversity (GED)
     # -------------------------------------------------------
-    
-    # Digest Phase 3
-    p3_digest = []
-    if isinstance(p3_data, list):
-        for entry in p3_data:
-            if isinstance(entry, dict):
-                p3_digest.append(
-                    f"P3_Iter_{entry.get('iter')}: Strategy='{entry.get('strategy')}', "
-                    f"Focus='{entry.get('focus')}', Decision='{entry.get('decision')}'"
-                )
-    p3_str = "\n".join(p3_digest) if p3_digest else "(No Phase 3 history)"
-
     full_history_context = f"""
-    === Phase 1: Initial Design Space (Conceptualization) ===
-    {p1_text[:3000]}... [truncated]
+    === Phase 1: Design Space (Problem Framing) ===
+    {p1_context}
     
-    === Phase 2: Hypothesis Generation Space (Broad Search) ===
-    {p2_digest}
+    === Phase 2: Generation Space (Broad Search / Multi-Hypothesis) ===
+    {p2_context}
     
-    === Phase 3: Hypothesis Optimization Space (Deep Search) ===
-    {p3_str}
+    === Phase 3: Optimization Space (Deep Search / Refinement) ===
+    {p3_context}
     """
     
     div_sys = (
-        "You are a meta-researcher evaluating the 'Mechanism Diversity' (GED) of a scientific AI agent. "
-        "You must evaluate the evolution of hypotheses across THREE phases: Design (P1), Generation (P2), and Optimization (P3)."
+        "You are a Meta-Scientist evaluating the 'Mechanism Diversity' (GED) of an AI discovery agent. "
+        "Assess how well the agent explored the scientific hypothesis space. "
+        "Did it try distinct strategies (High Diversity) or just repeat trivial variations (Low Diversity)?"
     )
     div_user = """
-    Analyze the full scientific exploration trajectory below:
+    Analyze the exploration trajectory:
     
     ${content}
     
-    Evaluate 'Mechanism Diversity' on these dimensions (Score 0-10):
-    1. **Design Originality (Phase 1)**: Did the initial analysis (P1) propose a novel or logical problem framing, or was it generic?
-    2. **Hypothesis Breadth (Phase 2)**: Did Phase 2 explore distinct, non-overlapping strategies (High GED), or just minor variations?
-    3. **Optimization Efficiency (Phase 3)**: Did Phase 3 effectively prune the space and converge, or randomly drift?
-    4. **Overall Semantic Span**: The total conceptual distance covered from P1 start to P3 end.
+    Evaluate (Score 0-10):
+    1. **Hypothesis Independence (Phase 2)**: Look at the 'Artifact Scan Results'. Did the agent actually execute DISTINCT strategies (e.g., different algorithms, features), or just different random seeds?
+    2. **Optimization Efficacy (Phase 3)**: Look at the 'Optimization Stats'. Did the agent improve the score via logical steps?
+    3. **Global Exploration Distance (GED)**: The overall semantic distance covered from P1 design to P3 final.
     
-    Return JSON format:
+    Return JSON:
     {
-        "design_originality_score": float,
-        "hypothesis_breadth_score": float,
-        "optimization_efficiency_score": float,
-        "overall_semantic_span_score": float,
-        "diversity_analysis_summary": "string summary (max 150 words)",
-        "key_conceptual_shifts": ["list", "of", "major", "shifts"]
+        "hypothesis_independence_score": float,
+        "optimization_efficacy_score": float,
+        "global_exploration_distance_score": float,
+        "diversity_summary": "Concise analysis string",
+        "strategies_tried": ["list", "of", "distinct", "strategies"]
     }
     """
     
-    print("   ... Analyzing Mechanism Diversity (P1 + P2 + P3)...")
+    print("   ... Analyzing Diversity (GED) with Artifact Data...")
     diversity_metrics = analyze_via_llm(full_history_context, div_sys, div_user, llm_cfg)
     diversity_metrics["valid_data"] = True
 
     # -------------------------------------------------------
-    # B. Code Complexity (Scientific Parsimony)
+    # B. Code Complexity
     # -------------------------------------------------------
-    
     complexity_metrics = {"valid_data": False}
-    
     if code_text:
-        print("   ... Analyzing Code Complexity (Final Result)...")
-        # 1. Hard Metrics
+        print("   ... Analyzing Code Complexity...")
         ast_mets = calculate_ast_metrics(code_text)
         
-        # 2. Soft Metrics (LLM)
-        comp_sys = (
-            "You are a senior research engineer. Evaluate the 'Scientific Complexity' of this code. "
-            "We value Ockham's Razor: the simplest sufficient explanation."
-        )
+        comp_sys = "Evaluate Scientific Code Parsimony (Ockham's Razor)."
         comp_user = """
-        Review the final best code (truncated):
-        
+        Code (Truncated):
         ```python
         ${content}
         ```
         
-        Evaluate (Score 0-10):
-        1. **Parsimony Score**: Is the logic simple and direct? (10=Simple/Elegant, 0=Bloated).
-        2. **Interpretability**: Can a scientist easily map this code to biological meaning?
-        3. **Structural Robustness**: Is it modular and safe?
+        Evaluate (0-10):
+        1. **Parsimony**: Simplicity relative to function.
+        2. **Modularity**: Good scientific engineering?
         
-        Return JSON format:
+        Return JSON:
         {
             "parsimony_score": float,
-            "interpretability_score": float,
-            "structural_robustness_score": float,
-            "complexity_analysis_summary": "string summary"
+            "modularity_score": float,
+            "complexity_summary": "string"
         }
         """
-        trunc_code = code_text[:20000]
+        trunc_code = code_text[:15000]
         llm_comp = analyze_via_llm(trunc_code, comp_sys, comp_user, llm_cfg)
         
         complexity_metrics = {
             "valid_data": True,
-            "algorithmic_metrics": ast_mets,
-            "semantic_metrics": llm_comp
+            "algorithmic": ast_mets,
+            "semantic": llm_comp
         }
-    else:
-        print("[WARN] No code found for Complexity analysis.")
 
     # -------------------------------------------------------
-    # C. Save Results
+    # C. Save
     # -------------------------------------------------------
     full_report = {
         "dataset": dataset_name,
-        "mechanism_diversity": diversity_metrics,
-        "code_complexity": complexity_metrics,
-        "generated_at": _now_iso()
+        "diversity_ged": diversity_metrics,
+        "complexity": complexity_metrics,
+        "timestamp": _now_iso()
     }
     
     json_path = os.path.join(out_dir, "advanced_metrics.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(full_report, f, indent=2)
         
-    # Generate Markdown Summary
-    md_lines = [
-        f"# Advanced Analysis Report: {dataset_name}",
-        f"**Date**: {_now_iso()}",
+    # Markdown Report
+    md = [
+        f"# Advanced Scientific Metrics: {dataset_name}",
+        f"Generated: {_now_iso()}",
         "",
-        "## 1. Mechanism Diversity (GED & Exploration)",
-        "**Scope**: Phase 1 (Design) -> Phase 2 (Generation) -> Phase 3 (Optimization)",
+        "## 1. Mechanism Diversity (GED)",
+        "**Context**: Full lifecycle analysis (Design -> Gen -> Opt)",
+        f"- **Hypothesis Independence (P2)**: {diversity_metrics.get('hypothesis_independence_score', '-')}/10",
+        f"- **Optimization Efficacy (P3)**: {diversity_metrics.get('optimization_efficacy_score', '-')}/10",
+        f"- **Global GED Score**: {diversity_metrics.get('global_exploration_distance_score', '-')}/10",
         "",
-        "### Scores (0-10)",
-        f"- **Design Originality (P1)**: {diversity_metrics.get('design_originality_score', 'N/A')}",
-        f"- **Hypothesis Breadth (P2)**: {diversity_metrics.get('hypothesis_breadth_score', 'N/A')}",
-        f"- **Optimization Efficiency (P3)**: {diversity_metrics.get('optimization_efficiency_score', 'N/A')}",
-        f"- **Overall Semantic Span**: {diversity_metrics.get('overall_semantic_span_score', 'N/A')}",
+        "### Detected Strategies:",
+        ", ".join(diversity_metrics.get('strategies_tried', [])),
+        f"> {diversity_metrics.get('diversity_summary', '-')}",
         "",
-        "### Key Conceptual Shifts:",
-        "\n".join([f"- {s}" for s in diversity_metrics.get('key_conceptual_shifts', [])]),
-        "",
-        f"> **Analysis**: {diversity_metrics.get('diversity_analysis_summary', 'N/A')}",
-        "",
-        "## 2. Code Complexity (Scientific Parsimony)",
-        "**Target**: Final Best Code Solution",
-        "",
-        "### Algorithmic Metrics (AST)",
-        f"- **Cyclomatic Complexity**: {complexity_metrics.get('algorithmic_metrics', {}).get('cyclomatic_complexity', 'N/A')}",
-        f"- **Vocabulary Size**: {complexity_metrics.get('algorithmic_metrics', {}).get('vocabulary_size', 'N/A')}",
-        "",
-        "### Semantic Metrics (LLM)",
-        f"- **Parsimony (Ockham's Razor)**: {complexity_metrics.get('semantic_metrics', {}).get('parsimony_score', 'N/A')}/10",
-        f"- **Interpretability**: {complexity_metrics.get('semantic_metrics', {}).get('interpretability_score', 'N/A')}/10",
-        "",
-        f"> **Analysis**: {complexity_metrics.get('semantic_metrics', {}).get('complexity_analysis_summary', 'N/A')}"
+        "## 2. Code Parsimony",
+        f"- **Algorithmic Density**: {complexity_metrics.get('algorithmic', {}).get('complexity_density', '-')}",
+        f"- **Parsimony Score**: {complexity_metrics.get('semantic', {}).get('parsimony_score', '-')}/10",
+        f"> {complexity_metrics.get('semantic', {}).get('complexity_summary', '-')}"
     ]
     
-    md_path = os.path.join(out_dir, "advanced_analysis_report.md")
-    with open(md_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(md_lines))
+    with open(os.path.join(out_dir, "advanced_analysis_report.md"), "w", encoding="utf-8") as f:
+        f.write("\n".join(md))
         
     print(f"✅ Advanced metrics saved to: {json_path}")
-    print(f"✅ Advanced report saved to: {md_path}")
 
 def _now_iso() -> str:
     import datetime
     return datetime.datetime.now().isoformat()
-
-if __name__ == "__main__":
-    print("Run via run_cellscientist.py")
