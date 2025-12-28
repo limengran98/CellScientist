@@ -17,7 +17,7 @@
     "timeout_seconds": 360000
   },
   "evaluation": {
-    "metric_column": ["AUC-ROC"], 
+    "metric_column": ["ROC-AUC"], 
     "direction": "maximize"
   },
   "llm": {

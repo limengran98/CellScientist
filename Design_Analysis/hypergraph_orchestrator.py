@@ -7,6 +7,7 @@ from typing import Optional, Dict, Any, List
 from pathlib import Path
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import nbformat  # [Added] Ensure nbformat is imported for error checking
 
 from config_loader import load_app_config
 from cellscientist_phase_1 import run_pipeline_basic
@@ -45,12 +46,7 @@ def _hash_file(p: Path) -> str:
         return ""
 
 def _is_valid_hdf5(p: Path) -> bool:
-    """Best-effort HDF5 validation.
-
-    Some environments may not have h5py installed; in that case we fall back
-    to checking the HDF5 file signature so that generated artifacts can still
-    be exported to the reference directory.
-    """
+    """Best-effort HDF5 validation."""
     if not p.exists():
         return False
     try:
@@ -68,13 +64,7 @@ def _is_valid_hdf5(p: Path) -> bool:
             return False
 
 def _resolve_from_cfg(path_str: Optional[str], cfg_root: Path) -> Optional[Path]:
-    """Resolve a filesystem path deterministically relative to the config directory.
-
-    IMPORTANT:
-    - We intentionally do NOT resolve relative to current working directory (cwd),
-      because run_cellscientist.py may run phases with different cwd values.
-    - This prevents accidental paths like /results/... when cwd == /.
-    """
+    """Resolve a filesystem path deterministically relative to the config directory."""
     if path_str is None:
         return None
     s = str(path_str).strip()
@@ -84,6 +74,25 @@ def _resolve_from_cfg(path_str: Optional[str], cfg_root: Path) -> Optional[Path]
     if p.is_absolute():
         return p.resolve()
     return (cfg_root / p).resolve()
+
+def _notebook_has_errors(ipynb_path: str) -> bool:
+    """[NEW] Check if a notebook contains execution errors."""
+    if not ipynb_path or not os.path.exists(ipynb_path):
+        return True
+    try:
+        nb = nbformat.read(ipynb_path, as_version=4)
+        # 1. Check explicit metadata error flag (set by llm_notebook_runner)
+        if nb.metadata.get("execution_errors"):
+            return True
+        # 2. Check cell outputs for errors
+        for cell in nb.cells:
+            if cell.cell_type == "code":
+                for out in cell.get("outputs", []) or []:
+                    if out.output_type == "error":
+                        return True
+        return False
+    except Exception:
+        return True # Parse error implies failure
 
 # --------------------
 # Per-run logic (Worker Function)
@@ -137,15 +146,25 @@ def _process_single_run(idx, variant, seed, base_cfg, num_runs, cfg_root: Path) 
 
         print(f"🚀 [{idx+1}/{num_runs}] Executing {run_name}...", flush=True)
 
-        # 1) Run pipeline
+        # 1) Run pipeline (Standard execution)
         executed_path = run_pipeline_basic(str(tmp_cfg_path), phase_name="task_analysis")
 
-        # 2) Auto-Fix (guarded to avoid double-fix)
+        # 2) Auto-Fix (Smart Check)
         exec_cfg = (nb_cfg.get("exec") or {})
         enable_adaptive_fix = bool(exec_cfg.get("enable_adaptive_fix", True))
+        
         final_exec = executed_path
-        if enable_adaptive_fix and ("adaptive_fixed" not in Path(executed_path).stem):
-            final_exec = auto_fix_notebook(executed_path, cfg)
+        
+        # [FIX] Check for errors BEFORE invoking auto-fix to avoid redundant re-execution
+        has_errors = _notebook_has_errors(executed_path)
+        
+        if enable_adaptive_fix:
+            if has_errors:
+                if "adaptive_fixed" not in Path(executed_path).stem:
+                    print(f"🔧 [{run_name}] Errors detected. Initiating Auto-Fix...", flush=True)
+                    final_exec = auto_fix_notebook(executed_path, cfg)
+            else:
+                print(f"✅ [{run_name}] Initial execution successful. Skipping Auto-Fix.", flush=True)
 
         exec_p = Path(final_exec)
         unexec_p = Path(nb_cfg["paths"]["out"])
@@ -218,7 +237,7 @@ def orchestrate(cfg_path: str, prompts_dir_path: Optional[str] = None):
         return
 
     hypergraph = {
-        "name": multi_cfg.get("hypergraph_name", "CellScientist"),
+        "name": multi_cfg.get("hypergraph_name", "CellScientist-HyperGraph"),
         "created_utc": datetime.utcnow().isoformat() + "Z",
         "nodes": [{"node_id": f"step-{k+1}", "name": n} for k, n in enumerate(multi_cfg.get("node_names", []))],
         "hyperedges": [{

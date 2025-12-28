@@ -1,7 +1,7 @@
 {
-  "dataset_name": "BBBC047",
+  "dataset_name": "BBBC036",
   "common": {
-    "cuda_device_id": 3,
+    "cuda_device_id": 1,
     "cuda_visible_devices": null
   },
   "llm": {
