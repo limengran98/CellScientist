@@ -164,6 +164,34 @@ def pick_best(scores: List[float], direction: str = "maximize") -> Optional[floa
     return max(valid)
 
 
+def _sum_execution_time(log_text: str) -> float:
+    """Helper to parse cumulative execution time from logs.
+    
+    Matches patterns like:
+    - Execution time: 12.34s
+    - [EXEC] ... (12.34s)
+    - Took 12.34 seconds
+    """
+    total_sec = 0.0
+    # Pattern 1: Execution time: 1.23s
+    matches = re.findall(r"Execution time:\s*([\d\.]+)s", log_text, re.IGNORECASE)
+    for m in matches:
+        try:
+            total_sec += float(m)
+        except:
+            pass
+            
+    # Pattern 2: [EXEC] ... (1.23s)
+    matches2 = re.findall(r"\[EXEC\].*?\(([\d\.]+)s\)", log_text, re.IGNORECASE)
+    for m in matches2:
+        try:
+            total_sec += float(m)
+        except:
+            pass
+            
+    return total_sec
+
+
 # =============================================================================
 # Phase log parsers
 # =============================================================================
@@ -187,8 +215,17 @@ def parse_phase1_log(log_text: str) -> Dict[str, Any]:
 
     bug = len(bug_runs)
     clean_success = max(0, succeeded - len([r for r in bug_runs if r in finished_ids])) if attempted else 0
+    
+    # Phase 1 is mostly LLM/Analysis, execution time usually 0 unless explicitly logged
+    exec_time = _sum_execution_time(log_text)
 
-    return {"attempted": attempted, "succeeded": succeeded, "bug": bug, "clean_success": clean_success}
+    return {
+        "attempted": attempted, 
+        "succeeded": succeeded, 
+        "bug": bug, 
+        "clean_success": clean_success,
+        "exec_time": exec_time
+    }
 
 
 def parse_phase2_log(log_text: str, metric: str) -> Dict[str, Any]:
@@ -275,8 +312,18 @@ def parse_phase2_log(log_text: str, metric: str) -> Dict[str, Any]:
     # Prevent counter overflow logic errors
     succeeded = min(succeeded, attempted)
     clean_success = min(clean_success, attempted)
+    
+    # [NEW] Extract specific model execution time
+    exec_time = _sum_execution_time(log_text)
 
-    return {"attempted": attempted, "succeeded": succeeded, "bug": bug, "clean_success": clean_success, "scores": scores}
+    return {
+        "attempted": attempted, 
+        "succeeded": succeeded, 
+        "bug": bug, 
+        "clean_success": clean_success, 
+        "scores": scores,
+        "exec_time": exec_time
+    }
 
 
 def parse_phase3_log(log_text: str, metric: str) -> Dict[str, Any]:
@@ -355,8 +402,18 @@ def parse_phase3_log(log_text: str, metric: str) -> Dict[str, Any]:
             succeeded += 1
             if not is_bug:
                 clean_success += 1
+    
+    # [NEW] Extract specific model execution time
+    exec_time = _sum_execution_time(log_text)
 
-    return {"attempted": attempted, "succeeded": succeeded, "bug": bug, "clean_success": clean_success, "scores": scores}
+    return {
+        "attempted": attempted, 
+        "succeeded": succeeded, 
+        "bug": bug, 
+        "clean_success": clean_success, 
+        "scores": scores,
+        "exec_time": exec_time
+    }
 
 
 # =============================================================================
@@ -493,7 +550,10 @@ def print_final_scoreboard(summary: Dict[str, Any], console=None) -> None:
         table.add_column("Metric")
         table.add_column("Budget", justify="right")
         table.add_column("Attempted", justify="right")
-        table.add_column("Time ↓ (s)", justify="right")
+        
+        # [NEW] Add Non-Exec time column
+        table.add_column("Non-Exec (s)", justify="right", style="yellow")
+        table.add_column("Total Time (s)", justify="right")
 
         for stage_name in ["Phase 1", "Phase 2", "Phase 3", "Total"]:
             row = stages.get(stage_name, {})
@@ -514,18 +574,27 @@ def print_final_scoreboard(summary: Dict[str, Any], console=None) -> None:
             budget_s = str(budget) if budget is not None else "-"
             attempted = row.get("attempted")
             attempted_s = str(attempted) if attempted is not None else "-"
+            
             tsec = row.get("time_sec")
             tsec_s = f"{tsec:.1f}" if isinstance(tsec, (int, float)) else "-"
             
-            table.add_row(stage_name, sr_s, clean_s, bug_s, avg_s, best_s, metric, budget_s, attempted_s, tsec_s)
+            # [NEW] Calculate Non-Exec Time
+            exec_time = row.get("exec_time", 0.0)
+            non_exec = (tsec - exec_time) if isinstance(tsec, (int, float)) and isinstance(exec_time, (int, float)) else 0.0
+            non_exec_s = f"{non_exec:.1f}"
+
+            table.add_row(stage_name, sr_s, clean_s, bug_s, avg_s, best_s, metric, budget_s, attempted_s, non_exec_s, tsec_s)
 
         console.print(table)
     else:
         print("\n=== Scoreboard ===")
         for stage_name in ["Phase 1", "Phase 2", "Phase 3", "Total"]:
             row = stages.get(stage_name, {})
+            tsec = row.get("time_sec", 0.0)
+            exec_time = row.get("exec_time", 0.0)
+            non_exec = tsec - exec_time
             print(
                 f"{stage_name}: Success={row.get('success_rate')}, ZeroShot={row.get('clean_rate')}, "
                 f"BugRate={row.get('bug_rate')}, Avg={row.get('avg_at_budget')}, Best={row.get('best_at_budget')}, "
-                f"Metric={row.get('best_metric')}, Budget={row.get('budget')}, Attempted={row.get('attempted')}, Time={row.get('time_sec')}"
+                f"Metric={row.get('best_metric')}, Non-Exec={non_exec:.1f}s, Time={tsec}"
             )
