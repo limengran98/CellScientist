@@ -4,6 +4,8 @@
 Execute in terminal:
 ```bash
 python main_agent.py --config config.json --prompt prompts/code_optimizer.yaml
+
+python main_agent.py --config config-mol.json --prompt prompts/code_optimizer-mol.yaml
 ````
 
 
