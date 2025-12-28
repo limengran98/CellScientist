@@ -11,6 +11,7 @@
 #
 # [UPDATE] Now includes Explicit Path Tracking to ensure simultaneous runs 
 # do not cross-read artifacts during report generation.
+# [UPDATE] Integrates Advanced Metrics (Mechanism Diversity & Code Complexity) covering Phase 1-3.
 
 from __future__ import annotations
 
@@ -42,6 +43,9 @@ from runner_metrics import (
     rates,
 )
 from runner_report import generate_final_report
+# [NEW] Import the advanced metrics module
+from runner_advanced_metrics import perform_advanced_analysis
+
 from runner_utils import (
     append_phase_header,
     atomic_write_json,
@@ -450,6 +454,19 @@ def main():
             )
         except Exception as e:
             print(f"[WARN] Final report generation skipped/failed: {e}")
+
+        # -----------------------------------------------------------------
+        # [NEW] Advanced Metrics: Mechanism Diversity & Code Complexity
+        # -----------------------------------------------------------------
+        try:
+            # Reads from logs_dir/finall_results, writes to logs_dir/advanced_metrics
+            perform_advanced_analysis(
+                dataset_name=ds_name,
+                logs_dir=logs_dir,
+                pipe_cfg=pipe_cfg
+            )
+        except Exception as e:
+            print(f"[WARN] Advanced metrics analysis failed: {e}")
 
         if console:
             from rich.panel import Panel
