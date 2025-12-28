@@ -26,7 +26,7 @@
         },
         "llm": {
           "provider": "yizhan",
-          "model": "gemini-3-pro-all",
+          "model": "claude-opus-4-5-20251101-thinking",
           "base_url": "https://vip.yi-zhan.top/v1",
           "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835",
           "temperature": 0.5,
