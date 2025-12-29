@@ -5,7 +5,7 @@
     "cuda_visible_devices": null
   },
   "llm": {
-    "model": "claude-opus-4-1-20250805-thinking",
+    "model": "gemini-3-pro-all",
     "temperature": null,
     "max_tokens": null
   },
