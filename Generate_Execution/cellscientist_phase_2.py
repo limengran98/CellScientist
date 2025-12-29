@@ -27,17 +27,38 @@ from design_execution.prompt_orchestrator import (
 )
 
 def _setup_stage1_resources(cfg: dict, enable_idea: bool = False):
-    s1_dir = cfg.get("paths", {}).get("stage1_analysis_dir")
-    if not s1_dir:
+    s1_dir_str = cfg.get("paths", {}).get("stage1_analysis_dir")
+    if not s1_dir_str:
         print("[SETUP][WARN] 'stage1_analysis_dir' missing in config.", flush=True)
         return
 
+    s1_path = os.path.abspath(s1_dir_str)
+    final_ref_dir = s1_path
+    
+    # [MODIFIED] Auto-Discovery of latest timestamped folder
+    # If the configured path is just the root (doesn't contain the data directly)
+    if not os.path.exists(os.path.join(s1_path, "REFERENCE_DATA.h5")):
+        if os.path.isdir(s1_path):
+            # Sort by name (timestamp is YYYYMMDD... so alphabetic sort works)
+            subdirs = sorted([
+                os.path.join(s1_path, d) 
+                for d in os.listdir(s1_path) 
+                if os.path.isdir(os.path.join(s1_path, d)) and not d.startswith(".")
+            ])
+            if subdirs:
+                final_ref_dir = subdirs[-1]
+                print(f"[SETUP] 🔎 Auto-detected latest reference run: {os.path.basename(final_ref_dir)}", flush=True)
+            else:
+                print(f"[SETUP][WARN] No subdirectories found in {s1_path}. Waiting for Phase 1?", flush=True)
+
     h5_path = None
-    cand_h5 = os.path.join(s1_dir, "REFERENCE_DATA.h5")
+    cand_h5 = os.path.join(final_ref_dir, "REFERENCE_DATA.h5")
+    
     if os.path.exists(cand_h5):
-        h5_path = os.path.abspath(cand_h5)
+        h5_path = cand_h5
     else:
-        h5s = glob.glob(os.path.join(s1_dir, "*.h5"))
+        # Fallback: find any .h5
+        h5s = glob.glob(os.path.join(final_ref_dir, "*.h5"))
         if h5s:
             h5_path = os.path.abspath(h5s[0])
 
@@ -45,10 +66,14 @@ def _setup_stage1_resources(cfg: dict, enable_idea: bool = False):
         os.environ["STAGE1_H5_PATH"] = h5_path
         print(f"[SETUP] Data Anchor: {h5_path}", flush=True)
     else:
-        print(f"[SETUP][WARN] No HDF5 found in {s1_dir}", flush=True)
+        print(f"[SETUP][WARN] No HDF5 found in resolved path: {final_ref_dir}", flush=True)
 
+    # Idea loading relative to the resolved H5 path
     if enable_idea:
-        idea_path = os.path.join(os.path.dirname(h5_path or s1_dir), "idea.json")
+        # Try finding idea.json next to the H5 file first
+        base_dir = os.path.dirname(h5_path) if h5_path else final_ref_dir
+        idea_path = os.path.join(base_dir, "idea.json")
+        
         if os.path.exists(idea_path):
             os.environ["STAGE1_IDEA_PATH"] = idea_path
             print(f"[SETUP] Idea File: {idea_path}", flush=True)

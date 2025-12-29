@@ -67,10 +67,15 @@ def _audit_intermediate_files(trial_dir: str):
 def phase_generate(
     cfg: Dict[str, Any], 
     spec_path: str, 
-    run_name: Optional[str] = None # [NEW] Support fixed run name
+    run_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """Phase 1: Generate Notebook."""
-    debug_dir = os.path.join(cfg["paths"]["design_execution_root"], "debug_prompt")
+    # [FIX] Make debug_prompt directory unique to avoid collisions between concurrent processes
+    ts_now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    pid = os.getpid()
+    debug_folder_name = f"debug_prompt_{ts_now}_{pid}"
+    
+    debug_dir = os.path.join(cfg["paths"]["design_execution_root"], debug_folder_name)
     out_root = _get_save_root(cfg)
     
     nb, _user_prompt, strategy_md = generate_notebook_content(cfg, spec_path, debug_dir)
@@ -86,9 +91,8 @@ def phase_generate(
             except OSError as e:
                 print(f"[ORCH][WARN] Failed to clean workspace {trial_dir}: {e}", flush=True)
     else:
-        # Standard mode: Timestamp
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        trial_dir = os.path.join(out_root, "prompt", f"prompt_run_{ts}")
+        # Standard mode: Timestamp + PID for safety
+        trial_dir = os.path.join(out_root, "prompt", f"prompt_run_{ts_now}_{pid}")
         
     os.makedirs(trial_dir, exist_ok=True)
     

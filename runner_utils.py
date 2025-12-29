@@ -167,7 +167,16 @@ def extract_best_path_from_log(log_path: str, phase: str, base_dir: str = "", t_
     # --- Strategy 1: Log Parsing ---
     text = read_text(log_path)
     if text:
-        if phase == "Phase 2":
+        if phase == "Phase 1":
+            # [NEW] Match Phase 1 unique export path
+            # Expected log: "📦 [REFERENCE] Exporting to unique path: /path/to/Ref_..."
+            m_p1 = re.search(r"\[REFERENCE\] Exporting to unique path:\s*(.+)", text)
+            if m_p1:
+                path_str = m_p1.group(1).strip()
+                if os.path.exists(path_str):
+                    return path_str
+
+        elif phase == "Phase 2":
             # Match: [ARCHIVE] Saved run to: prompt_run_xxxx
             m_best = re.search(r"\[ARCHIVE\] Saved run to:\s*(.+)", text)
             if m_best:

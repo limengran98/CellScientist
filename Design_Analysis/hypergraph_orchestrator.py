@@ -101,13 +101,14 @@ def _process_single_run(idx, variant, seed, base_cfg, num_runs, cfg_root: Path) 
     """Worker function for ThreadPoolExecutor."""
     try:
         import copy
+        import os # Ensure os is imported
         cfg = copy.deepcopy(base_cfg)
 
         nb_cfg = cfg["phases"]["task_analysis"]["llm_notebook"]
         multi = nb_cfg.get("multi", {})
         paths = nb_cfg.get("paths", {})
 
-        # Resolve output directory relative to config directory (NOT cwd)
+        # Resolve output directory
         out_dir_str = multi.get("out_dir")
         if not out_dir_str:
             out_candidate = paths.get("out")
@@ -118,13 +119,15 @@ def _process_single_run(idx, variant, seed, base_cfg, num_runs, cfg_root: Path) 
         out_dir = _resolve_from_cfg(out_dir_str, cfg_root) or (cfg_root / "hypergraph_runs")
         _ensure_dir(out_dir)
 
-        # Semantic naming strategy
+        # [FIX] Semantic naming strategy WITH PID
         t_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_name = f"design_analysis_{t_str}_Run{idx+1}"
+        pid = os.getpid()
+        run_name = f"design_analysis_{t_str}_{pid}_Run{idx+1}"
 
         run_dir = (out_dir / run_name).resolve()
         _ensure_dir(run_dir)
-
+        
+        # ... (rest of the function remains the same) ...
         # Inject variant
         base_prompt = (cfg.get("prompts", {}).get("notebook_generation", {}).get("user_prompt"))
         nb_cfg["prompt"] = base_prompt
@@ -155,7 +158,7 @@ def _process_single_run(idx, variant, seed, base_cfg, num_runs, cfg_root: Path) 
         
         final_exec = executed_path
         
-        # [FIX] Check for errors BEFORE invoking auto-fix to avoid redundant re-execution
+        # Check for errors BEFORE invoking auto-fix
         has_errors = _notebook_has_errors(executed_path)
         
         if enable_adaptive_fix:
@@ -192,11 +195,12 @@ def _process_single_run(idx, variant, seed, base_cfg, num_runs, cfg_root: Path) 
     except Exception as e:
         print(f"❌ [{idx+1}] Run failed: {e}", flush=True)
         return None
-
 # --------------------
+
 # Orchestrator
 # --------------------
 def orchestrate(cfg_path: str, prompts_dir_path: Optional[str] = None):
+    # ... (start of function same as before) ...
     cfg_path = str(cfg_path)
     cfg_root = Path(cfg_path).resolve().parent
 
@@ -252,7 +256,11 @@ def orchestrate(cfg_path: str, prompts_dir_path: Optional[str] = None):
     _ensure_dir(multi_out_dir)
     hypergraph_dir = (multi_out_dir / "hypergraph_runs").resolve()
     _ensure_dir(hypergraph_dir)
-    hp_path = hypergraph_dir / "hypergraph.json"
+    
+    # [FIX] Unique hypergraph filename to avoid race condition overwrite
+    hp_filename = f"hypergraph_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.getpid()}.json"
+    hp_path = hypergraph_dir / hp_filename
+    
     hp_path.write_text(json.dumps(hypergraph, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"✅ Hypergraph saved: {hp_path}", flush=True)
 
@@ -620,12 +628,11 @@ def select_and_export_reference(hypergraph_path: str, cfg_path: str, prompts_dir
     })
 
     base_out = _resolve_from_cfg(multi.get("out_dir") or "hypergraph_runs", cfg_root) or (cfg_root / "hypergraph_runs")
-    export_dir = _resolve_from_cfg(ref_cfg.get("export_dir") or str(base_out / "reference"), cfg_root) or (base_out / "reference")
-    export_dir.mkdir(parents=True, exist_ok=True)
-
-    # Make path issues obvious in logs
-    print(f"📦 [REFERENCE] export_dir resolved to: {export_dir}", flush=True)
-
+    
+    # [MODIFIED] Use the config path as the ROOT for all references
+    ref_root = _resolve_from_cfg(ref_cfg.get("export_dir") or str(base_out / "reference"), cfg_root) or (base_out / "reference")
+    
+    # Check weights to determine best edge
     best = None
     best_score = -1e18
     for e in edges:
@@ -637,6 +644,20 @@ def select_and_export_reference(hypergraph_path: str, cfg_path: str, prompts_dir
     if not best:
         print("⚠️ [REFERENCE] Could not determine best edge.", flush=True)
         return
+
+    # [MODIFIED] Create specific timestamped sub-folder
+    from datetime import datetime
+    ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = best.get("edge_id", "Unknown")
+    # Clean run_id to be path-safe
+    run_id_clean = "".join([c for c in run_id if c.isalnum() or c in "_-"])
+    
+    # New Export Dir: .../reference/Ref_20251126_120000_RunX
+    export_dir = ref_root / f"Ref_{ts_str}_{run_id_clean}"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    
+    print(f"📦 [REFERENCE] Best Run: {run_id} (Score: {best_score:.4f})", flush=True)
+    print(f"📦 [REFERENCE] Exporting to unique path: {export_dir}", flush=True)
 
     attrs = best.get("attrs", {})
     src_ipynb = attrs.get("executed_ipynb")

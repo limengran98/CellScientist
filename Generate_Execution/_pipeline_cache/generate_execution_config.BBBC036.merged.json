@@ -8,9 +8,9 @@
     "literature_knowledge_json": "../results/${dataset_name}/literature/domain_knowledge.json"
   },
   "llm": {
-    "model": "claude-opus-4-5-20251101-thinking",
+    "model": "qwen3-max",
     "base_url": "https://vip.yi-zhan.top/v1",
-    "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835",
+    "api_key": "sk-wJjSrt9UUaoFkfIl478b4cF78dE349A9B3Fc20575bEfFb1b",
     "max_tokens": 40000,
     "temperature": 0.5,
     "timeout": 600

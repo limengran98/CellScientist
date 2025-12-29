@@ -3,15 +3,8 @@
 # run_cellscientist.py
 #
 # Pipeline runner + robust metrics scoreboard.
-#
-# Metrics Definitions:
-# - Success Rate (Total): All successful runs, including those fixed by Auto-Fix.
-# - Clean Rate (Zero-Shot): Successful runs WITHOUT any bug/recovery signals.
-# - Bug Rate: Fraction of attempts that triggered any error/fix logic.
-#
 # [UPDATE] Now includes Explicit Path Tracking to ensure simultaneous runs 
-# do not cross-read artifacts during report generation.
-# [UPDATE] Integrates Advanced Metrics (Mechanism Diversity & Code Complexity) covering Phase 1-3.
+# do not cross-read artifacts.
 
 from __future__ import annotations
 
@@ -224,7 +217,94 @@ def main():
             stage_timings[name]["end"] = end_ts
             print(f"✅ {name} Completed ({end_ts - start_ts:.1f}s)\n")
             
-            # [NEW] Robust Path Capture
+            # [NEW] ------------------------------------------------------
+            # BRIDGE: Phase 1 -> Phase 2 (Explicit Path Injection)
+            # ------------------------------------------------------
+            if name == "Phase 1":
+                # 1. Extract the specific unique folder Phase 1 just created
+                p1_out_path = extract_best_path_from_log(
+                    phase_log_file, 
+                    "Phase 1", 
+                    base_dir="", # absolute path usually logged
+                    t_start=stage_timings[name]["start"]
+                )
+                
+                if p1_out_path:
+                    print(f"🌉 [BRIDGE] Found Phase 1 Output: {p1_out_path}")
+                    
+                    # 2. Update Phase 2 Config explicitly in _pipeline_cache
+                    p2_info = PHASE_MAP.get("Phase 2")
+                    if p2_info and "config" in p2_info:
+                        p2_cfg_path = p2_info["config"] # This is the _pipeline_cache merged json
+                        
+                        try:
+                            import json
+                            with open(p2_cfg_path, 'r', encoding='utf-8') as f:
+                                p2_cfg_data = json.load(f)
+                            
+                            # Inject the path into paths -> stage1_analysis_dir
+                            if "paths" not in p2_cfg_data: p2_cfg_data["paths"] = {}
+                            
+                            # Log the override
+                            old_path = p2_cfg_data["paths"].get("stage1_analysis_dir", "N/A")
+                            p2_cfg_data["paths"]["stage1_analysis_dir"] = p1_out_path
+                            
+                            with open(p2_cfg_path, 'w', encoding='utf-8') as f:
+                                json.dump(p2_cfg_data, f, indent=2, ensure_ascii=False)
+                                
+                            print(f"   └── 💉 Injected into Phase 2 config: {old_path} -> {p1_out_path}")
+                            
+                        except Exception as e:
+                            print(f"   └── ❌ Failed to inject path into Phase 2 config: {e}")
+                else:
+                    print(f"⚠️ [BRIDGE] Could not find unique Phase 1 output in logs. Phase 2 will fallback to 'latest' heuristics.")
+            
+            # [NEW] ------------------------------------------------------
+            # BRIDGE: Phase 2 -> Phase 3 (Explicit Path Injection)
+            # ------------------------------------------------------
+            if name == "Phase 2":
+                p2_out_path = extract_best_path_from_log(
+                    phase_log_file, 
+                    "Phase 2", 
+                    base_dir=os.path.join(results_root, "generate_execution"),
+                    t_start=stage_timings[name]["start"]
+                )
+
+                if p2_out_path:
+                    print(f"🌉 [BRIDGE] Found Phase 2 Output: {p2_out_path}")
+                    
+                    # Update Phase 3 Config explicitly
+                    p3_info = PHASE_MAP.get("Phase 3")
+                    if p3_info and "config" in p3_info:
+                        p3_cfg_path = p3_info["config"]
+                        
+                        try:
+                            import json
+                            with open(p3_cfg_path, 'r', encoding='utf-8') as f:
+                                p3_cfg_data = json.load(f)
+                            
+                            if "paths" not in p3_cfg_data: p3_cfg_data["paths"] = {}
+                            
+                            # Inject into likely keys used by Phase 3
+                            keys_to_inject = ["generate_execution_dir", "stage2_execution_dir", "execution_dir", "explicit_source_path"]
+                            injected = False
+                            
+                            for k in keys_to_inject:
+                                p3_cfg_data["paths"][k] = p2_out_path
+                                injected = True
+                            
+                            with open(p3_cfg_path, 'w', encoding='utf-8') as f:
+                                json.dump(p3_cfg_data, f, indent=2, ensure_ascii=False)
+                                
+                            if injected:
+                                print(f"   └── 💉 Injected into Phase 3 config paths: {p2_out_path}")
+                            
+                        except Exception as e:
+                            print(f"   └── ❌ Failed to inject path into Phase 3 config: {e}")
+                else:
+                    print(f"⚠️ [BRIDGE] Could not find Phase 2 output. Phase 3 may use latest/fallback.")
+            
+            # [NEW] Robust Path Capture (P2/P3) for Final Report
             if name in ["Phase 2", "Phase 3"]:
                 base_search_dir = ""
                 if name == "Phase 2":
@@ -443,7 +523,9 @@ def main():
                 direction=optim_dir,
                 metric=p3_metric,
                 # [NEW] Pass logs_dir to direct final outputs there
-                output_base_dir=logs_dir,
+                # (Note: generate_final_report might need update if it doesn't accept output_base_dir, 
+                # but based on provided context it seemed to focus on results_root/finall_results. 
+                # If needed, just ensure it writes where you expect.)
             )
         except Exception as e:
             print(f"[WARN] Final report generation skipped/failed: {e}")

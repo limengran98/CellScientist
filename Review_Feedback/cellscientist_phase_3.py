@@ -44,33 +44,45 @@ except ImportError:
 def _resolve_h5_path(cfg):
     """
     Resolves the absolute path of the STAGE 1 H5 Data.
-    Mimics Phase 2's robust finding logic.
+    Mimics Phase 2's robust finding logic (Auto-Discovery).
     """
-    s1_dir = (cfg.get("paths", {}) or {}).get("stage1_analysis_dir")
-    if not s1_dir:
+    s1_dir_str = (cfg.get("paths", {}) or {}).get("stage1_analysis_dir")
+    if not s1_dir_str:
         return None
 
-    # 1. Try as absolute path or relative to cwd
-    abs_s1_dir = os.path.abspath(s1_dir)
+    s1_path = os.path.abspath(s1_dir_str)
+    final_ref_dir = s1_path
 
-    if not os.path.exists(abs_s1_dir):
-        print(f"[WARN] Data directory not found: {abs_s1_dir}")
-        return None
+    # --- [SYNCED WITH PHASE 2] AUTO-DISCOVERY LOGIC START ---
+    # Check if the configured path directly contains the data
+    if not os.path.exists(os.path.join(s1_path, "REFERENCE_DATA.h5")):
+        # If not, assume it's a parent folder containing timestamped runs.
+        # We look for subdirectories and pick the LAST one (latest timestamp).
+        if os.path.isdir(s1_path):
+            subdirs = sorted([
+                os.path.join(s1_path, d) 
+                for d in os.listdir(s1_path) 
+                if os.path.isdir(os.path.join(s1_path, d)) and not d.startswith(".")
+            ])
+            if subdirs:
+                final_ref_dir = subdirs[-1]
+                print(f"[DATA] 🔎 Auto-detected latest reference run: {os.path.basename(final_ref_dir)}")
+    # --- AUTO-DISCOVERY LOGIC END ---
 
     # 2. Look for REFERENCE_DATA.h5 first (Standard Convention)
-    cand_h5 = os.path.join(abs_s1_dir, "REFERENCE_DATA.h5")
+    cand_h5 = os.path.join(final_ref_dir, "REFERENCE_DATA.h5")
     if os.path.exists(cand_h5):
         print(f"[DATA] Found Stage 1 Data (Explicit): {cand_h5}")
         return cand_h5
 
     # 3. Fallback: Any .h5 file
-    h5_files = glob.glob(os.path.join(abs_s1_dir, "*.h5"))
+    h5_files = glob.glob(os.path.join(final_ref_dir, "*.h5"))
     if h5_files:
         target_h5 = h5_files[0]
         print(f"[DATA] Found Stage 1 Data (Auto-detected): {target_h5}")
         return target_h5
 
-    print(f"[WARN] No .h5 files found in {abs_s1_dir}")
+    print(f"[WARN] No .h5 files found in {final_ref_dir}")
     return None
 
 def _resolve_relative_resources(cfg):
@@ -266,28 +278,51 @@ def _get_paths(cfg: dict) -> dict:
 def find_best_phase2_trial(cfg, explicit_path=None):
     """
     Finds the source trial directory.
+    Supports robust detection:
+    1. Explicit Path (Argument or Config)
+    2. Explicit Path (Robust check if path IS the run dir)
+    3. Auto-detection in 'prompt' subdirectory
     """
+    # 1. Check argument explicit path
     if explicit_path:
         abs_path = os.path.abspath(explicit_path) if not os.path.isabs(explicit_path) else explicit_path
         print(f"[INIT] Checking specified path: {abs_path}")
+        
+        # Check if this IS the run directory
+        if os.path.exists(os.path.join(abs_path, "metrics.json")):
+             print(f"[INIT] Locked to specified source (Direct): {abs_path}")
+             return abs_path
 
-        nb_path = os.path.join(abs_path, "notebook_prompt_exec.ipynb")
-        metrics_path = os.path.join(abs_path, "metrics.json")
-
-        if os.path.exists(nb_path) and os.path.exists(metrics_path):
-            print(f"[INIT] Locked to specified source: {abs_path}")
-            return abs_path
-        raise FileNotFoundError(
-            f"Specified path exists but missing 'notebook_prompt_exec.ipynb' or 'metrics.json': {abs_path}"
-        )
-
+    # 2. Check config explicit path (bridge from run_cellscientist.py)
     paths = _get_paths(cfg)
+    cfg_explicit = paths.get("explicit_source_path")
+    
+    # [ROBUSTNESS] Also check execution_dir/generate_execution_dir in case it was injected there
+    if not cfg_explicit:
+        # If run_cellscientist injected the full run path here, we should use it
+        candidates = [paths.get("generate_execution_dir"), paths.get("execution_dir")]
+        for c in candidates:
+            if c and os.path.exists(os.path.join(c, "metrics.json")):
+                cfg_explicit = c
+                break
+
+    if cfg_explicit:
+        abs_path = os.path.abspath(cfg_explicit)
+        if os.path.exists(os.path.join(abs_path, "metrics.json")):
+            print(f"[INIT] Locked to config explicit source: {abs_path}")
+            return abs_path
+
+    # 3. Fallback: Search in default locations (Auto-detection)
     gen_root = paths.get("generate_execution_root") or paths.get("generate_execution_dir") or paths.get("generate_execution") \
                or os.path.join("results", cfg.get("dataset_name", "dataset"), "generate_execution")
-    prompt_root = os.path.join(os.path.abspath(gen_root), "prompt")
+    
+    # Check if gen_root itself IS the run dir (edge case)
+    if os.path.exists(os.path.join(gen_root, "metrics.json")):
+        return gen_root
 
+    prompt_root = os.path.join(os.path.abspath(gen_root), "prompt")
     if not os.path.exists(prompt_root):
-        raise FileNotFoundError(f"Generation root not found: {prompt_root}")
+        raise FileNotFoundError(f"Generation root not found or invalid: {prompt_root}")
 
     runs = sorted(glob.glob(os.path.join(prompt_root, "prompt_run_*")), reverse=True)
 
@@ -302,13 +337,16 @@ def find_best_phase2_trial(cfg, explicit_path=None):
     raise FileNotFoundError("No valid Phase 2 execution results found (Auto-detection failed).")
 
 def setup_phase3_workspace(cfg, source_trial_path):
+    # [FIX] Add PID to prevent concurrency collision
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    pid = os.getpid()
+    
     paths = _get_paths(cfg)
     out_root = paths.get("review_feedback_root") or paths.get("review_feedback_dir") \
                or os.path.join("results", cfg.get("dataset_name", "dataset"), "review_feedback")
     out_root = os.path.abspath(out_root)
 
-    workspace = os.path.join(out_root, f"review_run_{ts}")
+    workspace = os.path.join(out_root, f"review_run_{ts}_{pid}")
     os.makedirs(workspace, exist_ok=True)
 
     src_nb = os.path.join(source_trial_path, "notebook_prompt_exec.ipynb")
@@ -347,7 +385,7 @@ def identify_mutable_cells(nb, cfg):
             continue
 
         if cell.cell_type == "markdown":
-            if any(k in src for k in ["Strategy", "Idea", "Hypothesis", "Research"]):
+            if any(k in src for k in ["Strategy", "Idea", "Hypothesis", "Research Plan"]):
                 mutable_indices.append(i)
             continue
 
