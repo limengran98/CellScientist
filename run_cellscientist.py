@@ -266,7 +266,7 @@ def main():
         p1_budget = planned_phase1_budget(stage1_cfg)
         p1_metric = "heuristic_score"
         p1_log_text = read_text(phase_logs.get("Phase 1", ""))
-        p1_q = parse_phase1_log(p1_log_text) if p1_log_text else {"attempted": 0, "succeeded": 0, "bug": 0, "clean_success": 0, "exec_time": 0.0}
+        p1_q = parse_phase1_log(p1_log_text) if p1_log_text else {"attempted": 0, "succeeded": 0, "bug": 0, "clean_success": 0}
         p1_avg, p1_best = phase1_scores_from_artifacts(design_dir)
         
         # [MODIFIED] Using new rate definitions
@@ -285,7 +285,6 @@ def main():
             "best_at_budget": p1_best,
             "best_metric": p1_metric,
             "time_sec": stage_timings.get("Phase 1", {}).get("end", 0.0) - stage_timings.get("Phase 1", {}).get("start", 0.0),
-            "exec_time": p1_q.get("exec_time", 0.0), # [NEW]
         }
 
         # Phase 2
@@ -294,7 +293,7 @@ def main():
         p2_t0 = stage_timings.get("Phase 2", {}).get("start", 0.0)
         p2_t1 = stage_timings.get("Phase 2", {}).get("end", time.time())
         p2_log_text = read_text(phase_logs.get("Phase 2", ""))
-        p2_q = parse_phase2_log(p2_log_text, p2_metric) if p2_log_text else {"attempted": 0, "succeeded": 0, "bug": 0, "clean_success": 0, "scores": [], "exec_time": 0.0}
+        p2_q = parse_phase2_log(p2_log_text, p2_metric) if p2_log_text else {"attempted": 0, "succeeded": 0, "bug": 0, "clean_success": 0, "scores": []}
 
         # Robust Sync with Artifacts
         artifact_scores_p2 = phase2_scores_from_artifacts(ge_dir, p2_metric, p2_t0, p2_t1)
@@ -331,7 +330,6 @@ def main():
             "best_at_budget": p2_best,
             "best_metric": p2_metric,
             "time_sec": float(p2_t1 - p2_t0),
-            "exec_time": p2_q.get("exec_time", 0.0), # [NEW]
         }
 
         # Phase 3
@@ -340,7 +338,7 @@ def main():
         p3_t0 = stage_timings.get("Phase 3", {}).get("start", 0.0)
         p3_t1 = stage_timings.get("Phase 3", {}).get("end", time.time())
         p3_log_text = read_text(phase_logs.get("Phase 3", ""))
-        p3_q = parse_phase3_log(p3_log_text, p3_metric) if p3_log_text else {"attempted": 0, "succeeded": 0, "bug": 0, "clean_success": 0, "scores": [], "exec_time": 0.0}
+        p3_q = parse_phase3_log(p3_log_text, p3_metric) if p3_log_text else {"attempted": 0, "succeeded": 0, "bug": 0, "clean_success": 0, "scores": []}
 
         # Robust Sync with Artifacts
         artifact_scores_p3 = phase3_scores_from_artifacts(rf_dir, p3_metric, p3_t0, p3_t1)
@@ -377,7 +375,6 @@ def main():
             "best_at_budget": p3_best,
             "best_metric": p3_metric,
             "time_sec": float(p3_t1 - p3_t0),
-            "exec_time": p3_q.get("exec_time", 0.0), # [NEW]
         }
 
         # Total
@@ -397,9 +394,6 @@ def main():
         total_avg = mean_safe(total_scores)
         total_best = pick_best(total_scores, optim_dir)
         
-        # [NEW] Total Exec Time
-        total_exec_time = (p1.get("exec_time", 0.0) + p2.get("exec_time", 0.0) + p3.get("exec_time", 0.0))
-        
         total_row = {
             "budget": (p1_budget or 0) + (p2_budget or 0) + (p3_budget or 0),
             "attempted": total_attempted,
@@ -413,7 +407,6 @@ def main():
             "best_at_budget": total_best,
             "best_metric": p3_metric,
             "time_sec": float(pipeline_end - pipeline_start),
-            "exec_time": total_exec_time, # [NEW]
         }
 
         summary = {
@@ -460,11 +453,17 @@ def main():
         # -----------------------------------------------------------------
         try:
             # Reads from logs_dir/finall_results, writes to logs_dir/advanced_metrics
-            perform_advanced_analysis(
+            adv_metrics = perform_advanced_analysis(
                 dataset_name=ds_name,
                 logs_dir=logs_dir,
                 pipe_cfg=pipe_cfg
             )
+            
+            # [NEW] Merge into pipeline_summary.json
+            if adv_metrics:
+                summary["advanced_metrics"] = adv_metrics
+                atomic_write_json(summary_path, summary)
+                
         except Exception as e:
             print(f"[WARN] Advanced metrics analysis failed: {e}")
 

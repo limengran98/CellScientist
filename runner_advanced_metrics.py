@@ -19,10 +19,99 @@ import ast
 import json
 import os
 import re
-from typing import Any, Dict, List, Optional
+import textwrap
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
-from runner_utils import read_text, safe_read_json, read_text_limited
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
+from runner_utils import read_text, safe_read_json, read_text_limited, project_root
 from runner_report import resolve_report_llm_cfg, chat_text
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
+ADVANCED_PROMPT_PATH = os.path.join(project_root(), "Final_Report", "prompts", "advanced_metrics.yaml")
+
+DEFAULT_PROMPTS = {
+    "mechanism_diversity": {
+        "system": (
+            "You are a Meta-Scientist. Evaluate the 'Mechanism Diversity' (GED) and 'Exploration Quality' "
+            "of this scientific discovery pipeline. Use the logs to judge breadth and the reports to judge depth."
+        ),
+        "user_template": textwrap.dedent("""\
+            Analyze the full exploration lifecycle:
+            ${content}
+            
+            Evaluate (Score 0-10):
+            1. **Hypothesis Diversity (Phase 2)**: Based on the Log Digest, did the system try DISTINCT strategies (High GED) or just random variations (Low GED)?
+            2. **Optimization Logic (Phase 3)**: Did the trajectory show logical refinement (Scientific Method) vs random guessing?
+            3. **Global Semantic Span**: The conceptual distance from the P1 Design to the P3 Final State.
+            
+            Return JSON:
+            {
+                "hypothesis_diversity_score": float,
+                "optimization_logic_score": float,
+                "global_semantic_span_score": float,
+                "diversity_summary": "Concise analysis of the exploration breadth vs depth",
+                "detected_strategy_types": ["list", "of", "strategies"]
+            }
+        """)
+    },
+    "code_complexity": {
+        "system": "You are a Code Scientist. Evaluate the 'Scientific Complexity' and 'Parsimony' of this solution.",
+        "user_template": textwrap.dedent("""\
+            Review the code:
+            ${content}
+            
+            Evaluate (Score 0-10):
+            1. **Parsimony (Ockham's Razor)**: Is the solution simple/elegant (10) or bloated/over-engineered (0)?
+            2. **Interpretability**: Can a domain scientist understand the logic?
+            3. **Modularity**: Is the code structure robust?
+            
+            Return JSON:
+            {
+                "parsimony_score": float,
+                "interpretability_score": float,
+                "modularity_score": float,
+                "complexity_analysis": "string"
+            }
+        """)
+    }
+}
+
+def ensure_advanced_prompt_file_exists() -> None:
+    """Create default advanced metrics prompt file if missing."""
+    p = Path(ADVANCED_PROMPT_PATH)
+    if p.exists():
+        return
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if yaml:
+            with open(p, "w", encoding="utf-8") as f:
+                yaml.dump(DEFAULT_PROMPTS, f, default_flow_style=False, allow_unicode=True)
+    except Exception as e:
+        print(f"[WARN] Failed to create default advanced prompt file: {e}")
+
+def load_advanced_prompts() -> Dict[str, Dict[str, str]]:
+    """Load prompts from YAML or fallback to defaults."""
+    ensure_advanced_prompt_file_exists()
+    if yaml is None:
+        return DEFAULT_PROMPTS
+    try:
+        p = Path(ADVANCED_PROMPT_PATH)
+        if p.exists():
+            data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+            # Validate basic structure
+            if "mechanism_diversity" in data and "code_complexity" in data:
+                return data
+    except Exception as e:
+        print(f"[WARN] Failed to load advanced_metrics.yaml ({e}). Using defaults.")
+    return DEFAULT_PROMPTS
 
 # =============================================================================
 # 1. AST Metrics (Hard Code Complexity)
@@ -149,7 +238,58 @@ def analyze_via_llm(content: str, system_prompt: str, user_prompt_template: str,
         return {"error": "JSON Parse Failed", "raw": resp}
 
 # =============================================================================
-# 4. Main Entry Point
+# 4. Reporting
+# =============================================================================
+
+def print_advanced_table(metrics: Dict[str, Any], dataset_name: str) -> None:
+    """Print a Rich table of the advanced metrics."""
+    try:
+        from rich.console import Console
+        from rich.table import Table
+        from rich.panel import Panel
+        console = Console()
+    except ImportError:
+        return 
+
+    ged = metrics.get("mechanism_diversity", {})
+    code = metrics.get("code_complexity", {})
+    code_alg = code.get("algorithmic", {})
+    code_sem = code.get("semantic", {})
+
+    table = Table(title=f"🧠 Advanced Scientific Metrics ({dataset_name})", border_style="magenta")
+    
+    # Mechanism Diversity Column
+    table.add_column("Mechanism Diversity (GED)", style="cyan")
+    table.add_column("Code Complexity (Parsimony)", style="green")
+    
+    # Extract values
+    hyp_div = ged.get('hypothesis_diversity_score', '-')
+    opt_log = ged.get('optimization_logic_score', '-')
+    glob_span = ged.get('global_semantic_span_score', '-')
+    
+    alg_dens = code_alg.get('complexity_density', '-')
+    parsimony = code_sem.get('parsimony_score', '-')
+    interp = code_sem.get('interpretability_score', '-')
+
+    # Format rows
+    col1 = (
+        f"Hypothesis Div (P2): {hyp_div}/10\n"
+        f"Optimization Logic (P3): {opt_log}/10\n"
+        f"Global Span: {glob_span}/10"
+    )
+    col2 = (
+        f"Parsimony: {parsimony}/10\n"
+        f"Interpretability: {interp}/10\n"
+        f"Complexity Density: {alg_dens}"
+    )
+    
+    table.add_row(col1, col2)
+    console.print(table)
+    console.print(Panel(f"[italic]{ged.get('diversity_summary', 'No summary')}[/]", title="Diversity Analysis", border_style="dim"))
+
+
+# =============================================================================
+# 5. Main Entry Point
 # =============================================================================
 
 def perform_advanced_analysis(
@@ -157,7 +297,7 @@ def perform_advanced_analysis(
     dataset_name: str,
     logs_dir: str,  # The base dir where 'finall_results' is located
     pipe_cfg: Optional[Dict[str, Any]],
-) -> None:
+) -> Optional[Dict[str, Any]]:
     
     finall_dir = os.path.join(logs_dir, "finall_results")
     out_dir = os.path.join(logs_dir, "advanced_metrics")
@@ -166,11 +306,16 @@ def perform_advanced_analysis(
     print(f"\n🔍 [Advanced Analysis] Reading comprehensive artifacts from: {finall_dir}")
     if not os.path.exists(finall_dir):
         print(f"[WARN] finall_results not found at {finall_dir}. Skipping advanced metrics.")
-        return
+        return None
 
     # 1. Ingest EVERYTHING relevant from finall_results
     data = ingest_finall_results_comprehensive(finall_dir)
     llm_cfg = resolve_report_llm_cfg(pipe_cfg)
+    
+    # Load Prompts (File or Default)
+    prompts = load_advanced_prompts()
+    ged_prompts = prompts.get("mechanism_diversity", DEFAULT_PROMPTS["mechanism_diversity"])
+    comp_prompts = prompts.get("code_complexity", DEFAULT_PROMPTS["code_complexity"])
     
     # -------------------------------------------------------
     # A. Mechanism Diversity (GED) - Full Lifecycle
@@ -190,31 +335,13 @@ def perform_advanced_analysis(
     {data['p3_trajectory']}
     """
     
-    ged_sys = (
-        "You are a Meta-Scientist. Evaluate the 'Mechanism Diversity' (GED) and 'Exploration Quality' "
-        "of this scientific discovery pipeline. Use the logs to judge breadth and the reports to judge depth."
-    )
-    ged_user = """
-    Analyze the full exploration lifecycle:
-    ${content}
-    
-    Evaluate (Score 0-10):
-    1. **Hypothesis Diversity (Phase 2)**: Based on the Log Digest, did the system try DISTINCT strategies (High GED) or just random variations (Low GED)?
-    2. **Optimization Logic (Phase 3)**: Did the trajectory show logical refinement (Scientific Method) vs random guessing?
-    3. **Global Semantic Span**: The conceptual distance from the P1 Design to the P3 Final State.
-    
-    Return JSON:
-    {
-        "hypothesis_diversity_score": float,
-        "optimization_logic_score": float,
-        "global_semantic_span_score": float,
-        "diversity_summary": "Concise analysis of the exploration breadth vs depth",
-        "detected_strategy_types": ["list", "of", "strategies"]
-    }
-    """
-    
     print("   ... Calculating Mechanism Diversity (GED)...")
-    ged_res = analyze_via_llm(ged_context, ged_sys, ged_user, llm_cfg)
+    ged_res = analyze_via_llm(
+        content=ged_context, 
+        system_prompt=ged_prompts["system"], 
+        user_prompt_template=ged_prompts["user_template"], 
+        llm_cfg=llm_cfg
+    )
     
     # -------------------------------------------------------
     # B. Code Complexity (Scientific Parsimony)
@@ -224,27 +351,13 @@ def perform_advanced_analysis(
     {data['final_code'][:20000]}
     """
     
-    comp_sys = "You are a Code Scientist. Evaluate the 'Scientific Complexity' and 'Parsimony' of this solution."
-    comp_user = """
-    Review the code:
-    ${content}
-    
-    Evaluate (Score 0-10):
-    1. **Parsimony (Ockham's Razor)**: Is the solution simple/elegant (10) or bloated/over-engineered (0)?
-    2. **Interpretability**: Can a domain scientist understand the logic?
-    3. **Modularity**: Is the code structure robust?
-    
-    Return JSON:
-    {
-        "parsimony_score": float,
-        "interpretability_score": float,
-        "modularity_score": float,
-        "complexity_analysis": "string"
-    }
-    """
-    
     print("   ... Calculating Code Complexity...")
-    comp_res_sem = analyze_via_llm(comp_context, comp_sys, comp_user, llm_cfg)
+    comp_res_sem = analyze_via_llm(
+        content=comp_context, 
+        system_prompt=comp_prompts["system"], 
+        user_prompt_template=comp_prompts["user_template"], 
+        llm_cfg=llm_cfg
+    )
     comp_res_hard = calculate_ast_metrics(data['final_code'] or "")
     
     # -------------------------------------------------------
@@ -292,6 +405,11 @@ def perform_advanced_analysis(
         
     print(f"✅ Advanced metrics saved to: {json_path}")
     print(f"✅ Advanced report saved to: {md_path}")
+    
+    # [NEW] Print table to console
+    print_advanced_table(full_report["metrics"], dataset_name)
+    
+    return full_report
 
 def _now_iso() -> str:
     import datetime

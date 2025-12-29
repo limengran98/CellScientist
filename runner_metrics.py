@@ -10,7 +10,6 @@ from __future__ import annotations
 import glob
 import os
 import re
-from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from runner_config import get_nested
@@ -166,96 +165,6 @@ def pick_best(scores: List[float], direction: str = "maximize") -> Optional[floa
 
 
 # =============================================================================
-# Time Extraction Helpers (Log Parsing)
-# =============================================================================
-
-def _extract_timestamp(line: str) -> Optional[datetime]:
-    """
-    Attempts to extract a timestamp from the beginning of a log line.
-    Supports formats:
-    - [2025-01-01 12:00:00,123] ...
-    - 2025-01-01 12:00:00,123 ...
-    - [12:00:00] ...
-    """
-    # Try Regex for common patterns
-    # 1. Standard full date time: YYYY-MM-DD HH:MM:SS
-    m = re.search(r"(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})", line)
-    if m:
-        try:
-            return datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
-        except:
-            pass
-            
-    # 2. HH:MM:SS only (assume today/irrelevant date for diffs if within same day)
-    m2 = re.search(r"(\d{2}:\d{2}:\d{2})", line)
-    if m2:
-        try:
-            # Only time available, use dummy date
-            t = datetime.strptime(m2.group(1), "%H:%M:%S")
-            return t # Note: Date will be 1900-01-01, but delta works if runs don't cross midnight
-        except:
-            pass
-            
-    return None
-
-
-def _sum_logs_duration(log_text: str, start_pat: str, end_pat: str, greedy_end: bool = False) -> float:
-    """
-    Calculates total duration by finding blocks between start_pat and end_pat.
-    
-    Args:
-        greedy_end: If True, searches for the LAST end_pat before the NEXT start_pat.
-                    (Useful for Phase 1/3 where multiple cells might run in one block).
-    """
-    total_seconds = 0.0
-    lines = log_text.splitlines()
-    
-    current_start_time = None
-    last_valid_end_time = None
-    
-    start_re = re.compile(start_pat)
-    end_re = re.compile(end_pat)
-    
-    for line in lines:
-        ts = _extract_timestamp(line)
-        if not ts:
-            continue
-            
-        # Check for Start
-        if start_re.search(line):
-            # If we were already in a block and greedy matching, commit the previous block
-            if current_start_time and last_valid_end_time:
-                 # Logic: New start means previous block is definitely over
-                 delta = (last_valid_end_time - current_start_time).total_seconds()
-                 if delta > 0: total_seconds += delta
-                 last_valid_end_time = None
-            
-            # Start new block (or restart if we found a start before an end, handling retries)
-            current_start_time = ts
-            last_valid_end_time = None # Reset pending end
-            continue
-            
-        # Check for End
-        if current_start_time and end_re.search(line):
-            if greedy_end:
-                # Update candidate end time, but don't commit yet
-                # We wait until the NEXT start or EOF to commit
-                last_valid_end_time = ts
-            else:
-                # Immediate commit (Non-greedy)
-                delta = (ts - current_start_time).total_seconds()
-                if delta > 0: total_seconds += delta
-                current_start_time = None # Close block
-    
-    # Commit pending greedy block at end of file
-    if greedy_end and current_start_time and last_valid_end_time:
-        delta = (last_valid_end_time - current_start_time).total_seconds()
-        if delta > 0: total_seconds += delta
-        
-    return total_seconds
-
-
-# =============================================================================
 # Phase log parsers
 # =============================================================================
 
@@ -279,20 +188,11 @@ def parse_phase1_log(log_text: str) -> Dict[str, Any]:
     bug = len(bug_runs)
     clean_success = max(0, succeeded - len([r for r in bug_runs if r in finished_ids])) if attempted else 0
     
-    # Phase 1: From "Starting Kernel" to LAST "Success (Cell xx)" in that run
-    exec_time = _sum_logs_duration(
-        log_text, 
-        start_pat=r"Starting Kernel", 
-        end_pat=r"Success \(Cell \d+\)", 
-        greedy_end=True 
-    )
-
     return {
         "attempted": attempted, 
         "succeeded": succeeded, 
         "bug": bug, 
-        "clean_success": clean_success,
-        "exec_time": exec_time
+        "clean_success": clean_success
     }
 
 
@@ -373,21 +273,12 @@ def parse_phase2_log(log_text: str, metric: str) -> Dict[str, Any]:
     succeeded = min(succeeded, attempted)
     clean_success = min(clean_success, attempted)
     
-    # Phase 2: Start -> Shutdown is a clean closed block. No greedy needed.
-    exec_time = _sum_logs_duration(
-        log_text, 
-        start_pat=r"Initializing Kernel in", 
-        end_pat=r"Shutting down kernel\.", 
-        greedy_end=False 
-    )
-
     return {
         "attempted": attempted, 
         "succeeded": succeeded, 
         "bug": bug, 
         "clean_success": clean_success, 
-        "scores": scores,
-        "exec_time": exec_time
+        "scores": scores
     }
 
 
@@ -466,22 +357,12 @@ def parse_phase3_log(log_text: str, metric: str) -> Dict[str, Any]:
             if not is_bug:
                 clean_success += 1
     
-    # Phase 3: Start -> [EXEC] Cell xx Done. 
-    # Use greedy_end=True to capture up to the LAST cell done in that iteration block.
-    exec_time = _sum_logs_duration(
-        log_text, 
-        start_pat=r"\[EXEC\]\s*💉\s*Injecting Code Variables", 
-        end_pat=r"\[EXEC\]\s*✅\s*Cell\s*\d+\s*Done\.", 
-        greedy_end=True 
-    )
-
     return {
         "attempted": attempted, 
         "succeeded": succeeded, 
         "bug": bug, 
         "clean_success": clean_success, 
-        "scores": scores,
-        "exec_time": exec_time
+        "scores": scores
     }
 
 
@@ -615,8 +496,7 @@ def print_final_scoreboard(summary: Dict[str, Any], console=None) -> None:
         table.add_column("Budget", justify="right")
         table.add_column("Attempted", justify="right")
         
-        # [NEW] Add Non-Exec time column
-        table.add_column("Non-Exec (s)", justify="right", style="yellow")
+        # [REMOVED] Non-Exec time column
         table.add_column("Total Time (s)", justify="right")
 
         for stage_name in ["Phase 1", "Phase 2", "Phase 3", "Total"]:
@@ -642,23 +522,15 @@ def print_final_scoreboard(summary: Dict[str, Any], console=None) -> None:
             tsec = row.get("time_sec")
             tsec_s = f"{tsec:.1f}" if isinstance(tsec, (int, float)) else "-"
             
-            # [NEW] Calculate Non-Exec Time
-            exec_time = row.get("exec_time", 0.0)
-            non_exec = (tsec - exec_time) if isinstance(tsec, (int, float)) and isinstance(exec_time, (int, float)) else 0.0
-            non_exec_s = f"{non_exec:.1f}"
-
-            table.add_row(stage_name, sr_s, clean_s, bug_s, avg_s, best_s, metric, budget_s, attempted_s, non_exec_s, tsec_s)
+            table.add_row(stage_name, sr_s, clean_s, bug_s, avg_s, best_s, metric, budget_s, attempted_s, tsec_s)
 
         console.print(table)
     else:
         print("\n=== Scoreboard ===")
         for stage_name in ["Phase 1", "Phase 2", "Phase 3", "Total"]:
             row = stages.get(stage_name, {})
-            tsec = row.get("time_sec", 0.0)
-            exec_time = row.get("exec_time", 0.0)
-            non_exec = tsec - exec_time if isinstance(tsec, (int, float)) else 0.0
             print(
                 f"{stage_name}: Success={row.get('success_rate')}, ZeroShot={row.get('clean_rate')}, "
                 f"BugRate={row.get('bug_rate')}, Avg={row.get('avg_at_budget')}, Best={row.get('best_at_budget')}, "
-                f"Metric={row.get('best_metric')}, Non-Exec={non_exec:.1f}s, Time={row.get('time_sec')}"
+                f"Metric={row.get('best_metric')}, Time={row.get('time_sec')}"
             )

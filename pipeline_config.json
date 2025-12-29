@@ -10,7 +10,7 @@
     "max_tokens": null
   },
   "llm_report": {
-    "model": "claude-opus-4-5-20251101-thinking",
+    "model": "gemini-3-pro-preview-thinking",
     "base_url": "https://vip.yi-zhan.top/v1",
     "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835",
     "max_tokens": 40000,

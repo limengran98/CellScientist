@@ -2,7 +2,7 @@
   "target_project": {
     "root_dir": "/data/users/limengran/torch-molecule-main",
     "target_files": [
-      "torch_molecule/predictor/gnn/model.py"
+      "torch_molecule/predictor/grin/model.py"
     ]
   },
   "evolution": {
@@ -30,7 +30,7 @@
   "providers": {
     "yizhan": {
       "base_url": "https://vip.yi-zhan.top/v1",
-      "api_key": "sk-bTxDIYUAspAvG0qi18B9Db216a5640D59eE0627333693835"
+      "api_key": "sk-wJjSrt9UUaoFkfIl478b4cF78dE349A9B3Fc20575bEfFb1b"
     }
   }
 }
