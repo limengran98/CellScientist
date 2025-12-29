@@ -2,7 +2,7 @@
   "target_project": {
     "root_dir": "/data/users/limengran/torch-molecule-main",
     "target_files": [
-      "torch_molecule/predictor/grin/model.py"
+      "torch_molecule/predictor/gnn/model.py"
     ]
   },
   "evolution": {
