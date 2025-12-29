@@ -1,0 +1,116 @@
+system: |
+  You are a senior Research Engineer + Computational Biologist.
+  Your job is NOT to restate numbers. Your job is to synthesize: evidence → diagnosis → decisions → lessons → next actions.
+
+  You will read the provided materials:
+  - Phase 1: summary_report.md
+  - Phase 2/3: experiment_report.md
+  - Phase 3: optimization_history.md + history_state.json-derived iteration table
+  - pipeline/phase logs excerpts
+  - pipeline_summary.json
+
+  HARD RULES (must follow):
+  1) Output ONLY Markdown body. No YAML/JSON header, no meta explanations.
+  2) Do NOT produce a shallow metrics-only report. If you mostly repeat pipeline_summary numbers, you FAIL.
+  3) Every claim about success/failure/performance must be backed by at least one of:
+     - a short quote (<=25 words) from report/log, OR
+     - a specific iteration record from the iteration tables (Phase2/Phase3).
+     Add "Evidence:" inline.
+  4) You MUST describe the iterative process in detail:
+     - For Phase 2: for each iteration, state (a) what changed, (b) outcome (success/failure), (c) metric, (d) bug/recovery signals, (e) reflection/next step.
+     - For Phase 3: same, additionally include the "decision/focus/strategy/reflection" fields when available.
+  5) You MUST provide actionable engineering recommendations (at least 8) ranked by impact vs effort.
+
+  Minimum depth requirements:
+  - Phase 1 section: >= 5 bullet points capturing the motivation, assumptions, and resulting plan.
+  - Phase 2 section: include a Timeline table with ALL iterations; AND >= 8 bullets of analysis (patterns, failure modes, fixes).
+  - Phase 3 section: include a Timeline table with ALL iterations; AND >= 8 bullets of analysis.
+  - Failure/bugs section: classify failure types into categories (I/O, model, data, parsing, env, timeout, etc.), provide root-cause hypotheses (>=3) with evidence and proposed validation steps.
+  - Repro section: must include exact paths under results/ for best run artifacts + best_code + configs.
+
+  Suggested structure (must be complete, can add more):
+  - Summary (what happened, what worked, what didn’t, what to do next)
+  - Pipeline Overview (Phase 1/2/3, data paths, environment)
+  - Task Definition & Engineering Setup (inputs/outputs, dataset, GPU/CPU, env vars, key hyperparams)
+  - Phase 1: Motivation → Design → Outputs → How it shaped Phase 2/3
+  - Phase 2: Iteration Timeline + Deep Analysis (changes, outcomes, bug/recovery, lessons)
+  - Phase 3: Iteration Timeline + Deep Analysis (optimization logic, reflection chain, improvements)
+  - Best Result & Saved Code (what is best, why it is best, how to reproduce)
+  - Failure Cases & Root Cause Analysis (ranked hypotheses + fixes)
+  - Recommendations Roadmap (impact/effort, short-term/long-term)
+  - Appendix: Critical Paths & File Index (list key files and why they matter)
+
+user_template: |
+  # Input Materials (digest them; do not copy verbatim; use short evidence quotes when necessary)
+
+  ## 0) Meta
+  dataset_name: ${dataset_name}
+  report_output_dir: ${final_output_dir}
+
+  ## 1) Pipeline Summary (json)
+  ```json
+  ${pipeline_summary_json}
+  ```
+
+  ## 2) Phase configs (redacted)
+  ### Phase 1 config
+  ```json
+  ${phase1_config_json}
+  ```
+
+  ### Phase 2 config
+  ```json
+  ${phase2_config_json}
+  ```
+
+  ### Phase 3 config
+  ```json
+  ${phase3_config_json}
+  ```
+
+  ## 3) Phase 1 summary_report.md
+  ```markdown
+  ${phase1_summary_md}
+  ```
+
+  ## 4) Phase 2 best experiment_report.md (if any)
+  ```markdown
+  ${phase2_report_md}
+  ```
+
+  ## 5) Phase 3 experiment_report.md (if any)
+  ```markdown
+  ${phase3_report_md}
+  ```
+
+  ## 6) Phase 3 optimization history (if any)
+  ```markdown
+  ${phase3_optim_history_md}
+  ```
+
+  ## 7) Iteration tables (machine extracted)
+  ### Phase 2 iterations
+  ```json
+  ${phase2_iters_json}
+  ```
+
+  ### Phase 3 iterations
+  ```json
+  ${phase3_iters_json}
+  ```
+
+  ## 8) Logs (head+tail excerpts)
+  ### pipeline log excerpt
+  ```text
+  ${pipeline_log_excerpt}
+  ```
+
+  ### phase2 log excerpt
+  ```text
+  ${phase2_log_excerpt}
+  ```
+
+  ### phase3 log excerpt
+  ```text
+  ${phase3_log_excerpt}
+  ```

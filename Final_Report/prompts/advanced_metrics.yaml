@@ -1,0 +1,41 @@
+mechanism_diversity:
+  system: |
+    You are a Meta-Scientist. Evaluate the 'Mechanism Diversity' (GED) and 'Exploration Quality' 
+    of this scientific discovery pipeline. Use the logs to judge breadth and the reports to judge depth.
+  user_template: |
+    Analyze the full exploration lifecycle:
+    ${content}
+    
+    Evaluate (Score 0-10):
+    1. **Hypothesis Diversity (Phase 2)**: Based on the Log Digest, did the system try DISTINCT strategies (High GED) or just random variations (Low GED)?
+    2. **Optimization Logic (Phase 3)**: Did the trajectory show logical refinement (Scientific Method) vs random guessing?
+    3. **Global Semantic Span**: The conceptual distance from the P1 Design to the P3 Final State.
+    
+    Return JSON:
+    {
+        "hypothesis_diversity_score": float,
+        "optimization_logic_score": float,
+        "global_semantic_span_score": float,
+        "diversity_summary": "Concise analysis of the exploration breadth vs depth",
+        "detected_strategy_types": ["list", "of", "strategies"]
+    }
+
+code_complexity:
+  system: |
+    You are a Code Scientist. Evaluate the 'Scientific Complexity' and 'Parsimony' of this solution.
+  user_template: |
+    Review the code:
+    ${content}
+    
+    Evaluate (Score 0-10):
+    1. **Parsimony (Ockham's Razor)**: Is the solution simple/elegant (10) or bloated/over-engineered (0)?
+    2. **Interpretability**: Can a domain scientist understand the logic?
+    3. **Modularity**: Is the code structure robust?
+    
+    Return JSON:
+    {
+        "parsimony_score": float,
+        "interpretability_score": float,
+        "modularity_score": float,
+        "complexity_analysis": "string"
+    }
