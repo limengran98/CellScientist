@@ -13,7 +13,7 @@ from copy import deepcopy
 from llm_utils import chat_json
 
 # =============================================================================
-# 0. Verbose Client (带输出监控的话痨版)
+# 0. Verbose Client
 # =============================================================================
 
 class VerboseNotebookClient(NotebookClient):
@@ -37,19 +37,19 @@ class VerboseNotebookClient(NotebookClient):
         
         outputs = cell.get("outputs", [])
         for out in outputs:
-            # 打印标准输出 (print语句)
+            
             if out.get("output_type") == "stream" and out.get("name") == "stdout":
                 text = out.get("text", "").strip()
                 if text:
                     print(f"       📝 [STDOUT]: {text}", flush=True)
             
-            # 打印标准错误 (stderr)
+
             elif out.get("output_type") == "stream" and out.get("name") == "stderr":
                 text = out.get("text", "").strip()
                 if text:
                     print(f"       ⚠️ [STDERR]: {text}", flush=True)
             
-            # 打印错误回溯 (Traceback)
+
             elif out.get("output_type") == "error":
                 ename = out.get("ename", "Error")
                 evalue = out.get("evalue", "Unknown")
@@ -60,29 +60,29 @@ class VerboseNotebookClient(NotebookClient):
             icon = "✅" if success else "❌"
             print(f"[EXEC] {icon} Cell {cell_index} Done.", flush=True)
 
-    # --- 拦截同步执行 ---
+
     def execute_cell(self, cell, cell_index, execution_count=None, store_history=True):
         self._log_start(cell, cell_index)
         try:
             result = super().execute_cell(cell, cell_index, execution_count, store_history)
-            self._log_outputs(cell, cell_index) # <--- [关键] 打印输出
+            self._log_outputs(cell, cell_index) 
             self._log_end(cell, cell_index, success=True)
             return result
         except Exception as e:
-            self._log_outputs(cell, cell_index) # <--- [关键] 即使挂了也要打印输出
+            self._log_outputs(cell, cell_index) 
             self._log_end(cell, cell_index, success=False)
             raise e
 
-    # --- 拦截异步执行 ---
+
     async def async_execute_cell(self, cell, cell_index, execution_count=None, store_history=True):
         self._log_start(cell, cell_index)
         try:
             result = await super().async_execute_cell(cell, cell_index, execution_count, store_history)
-            self._log_outputs(cell, cell_index) # <--- [关键] 打印输出
+            self._log_outputs(cell, cell_index) 
             self._log_end(cell, cell_index, success=True)
             return result
         except Exception as e:
-            self._log_outputs(cell, cell_index) # <--- [关键] 即使挂了也要打印输出
+            self._log_outputs(cell, cell_index) 
             self._log_end(cell, cell_index, success=False)
             raise e
 
@@ -117,7 +117,7 @@ def dump_error_log(workdir: str, errors: List[Dict], round_idx: int = 0) -> str:
     for e in errors:
         idx = e['cell_index']
         print(f"\n>> Cell {idx} Error: {e['ename']} - {e['evalue']}")
-        # 强制打印 Traceback 的最后几行
+
         trace_tail = e['traceback'][-500:] if len(e['traceback']) > 500 else e['traceback']
         print(f"   [Traceback]:\n{trace_tail}")
         

@@ -37,41 +37,48 @@ from runner_report import resolve_report_llm_cfg, chat_text
 
 ADVANCED_PROMPT_PATH = os.path.join(project_root(), "Final_Report", "prompts", "advanced_metrics.yaml")
 
+# [UPDATED] Defaults now match the Biological Context (Virtual Cell Scientist)
 DEFAULT_PROMPTS = {
     "mechanism_diversity": {
         "system": (
-            "You are a Meta-Scientist. Evaluate the 'Mechanism Diversity' (GED) and 'Exploration Quality' "
-            "of this scientific discovery pipeline. Use the logs to judge breadth and the reports to judge depth."
+            "You are a Senior Computational Systems Biologist specializing in Virtual Cell Modeling. "
+            "Your goal is to evaluate the 'Epistemic Diversity' (Mechanism Exploration Quality) of an AI Scientist "
+            "attempting to model complex cellular dynamics.\n"
+            "You interpret 'Diversity' not just as code variations, but as distinct *Biological Modeling Paradigms* "
+            "(e.g., ODEs vs. GNNs vs. Hypergraphs vs. Agent-based)."
         ),
         "user_template": textwrap.dedent("""\
-            Analyze the full exploration lifecycle:
+            Analyze the full exploration lifecycle of the Virtual Cell Scientist:
             ${content}
             
-            Evaluate (Score 0-10):
-            1. **Hypothesis Diversity (Phase 2)**: Based on the Log Digest, did the system try DISTINCT strategies (High GED) or just random variations (Low GED)?
-            2. **Optimization Logic (Phase 3)**: Did the trajectory show logical refinement (Scientific Method) vs random guessing?
-            3. **Global Semantic Span**: The conceptual distance from the P1 Design to the P3 Final State.
+            Evaluate (Score 0-10) based on the context of Computational Biology:
+            1. **Hypothesis Diversity (Phase 2)**: Did the system explore fundamentally different representations of the cell (e.g., topology-based vs. dynamics-based, discrete vs. continuous)? Or did it just tweak hyperparameters of the same model?
+            2. **Optimization Logic (Phase 3)**: Did the refinement trajectory show biological intuition? (e.g., fixing gradients, enforcing sparsity, or mimicking known biological constraints) vs. random metric-hacking.
+            3. **Global Semantic Span**: The conceptual distance from the initial naive design to the final "Virtual Cell" implementation. Did it bridge the gap between Dual-Spaces (Hypothesis vs. Parameter space)?
             
             Return JSON:
             {
                 "hypothesis_diversity_score": float,
                 "optimization_logic_score": float,
                 "global_semantic_span_score": float,
-                "diversity_summary": "Concise analysis of the exploration breadth vs depth",
-                "detected_strategy_types": ["list", "of", "strategies"]
+                "diversity_summary": "Concise analysis of the biological modeling breadth vs depth",
+                "detected_strategy_types": ["list", "of", "biological/computational", "strategies"]
             }
         """)
     },
     "code_complexity": {
-        "system": "You are a Code Scientist. Evaluate the 'Scientific Complexity' and 'Parsimony' of this solution.",
+        "system": (
+            "You are a Bioinformatics Software Architect. Evaluate the 'Scientific Parsimony' and 'Bio-Interpretability' of this Virtual Cell solution.\n"
+            "In this domain, 'Good Code' means the mathematical structure clearly maps to biological entities (Genes, Cells, Pathways)."
+        ),
         "user_template": textwrap.dedent("""\
-            Review the code:
+            Review the generated Virtual Cell code:
             ${content}
             
             Evaluate (Score 0-10):
-            1. **Parsimony (Ockham's Razor)**: Is the solution simple/elegant (10) or bloated/over-engineered (0)?
-            2. **Interpretability**: Can a domain scientist understand the logic?
-            3. **Modularity**: Is the code structure robust?
+            1. **Parsimony (Ockham's Razor)**: Is the modeling approach as simple as the biological complexity allows? Avoid "Rube Goldberg" machines. High score = Elegant mathematical representation.
+            2. **Bio-Interpretability**: Can a domain biologist read this code and understand the mechanism? (Are variables named after biological concepts? Is the flow logical regarding cell dynamics?)
+            3. **Modularity**: Is the code structure robust? Are components (e.g., Encoder, Simulator, Loss) decoupled like biological modules?
             
             Return JSON:
             {

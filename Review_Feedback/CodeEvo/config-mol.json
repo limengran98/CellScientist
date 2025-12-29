@@ -11,9 +11,9 @@
     "workspace_root": "../../results/CodeEvo_Molecule"
   },
   "execution": {
-    "command": "python plym_predict.py --dataset chembl2k --device cuda:3",
+    "command": "python plym_predict.py --dataset borad6k --device cuda:3",
     "log_file": "training_log.txt",
-    "metrics_probing_pattern": "output_prediction/chembl2k/leaderboard_scaffold_5fold.csv",
+    "metrics_probing_pattern": "output_prediction/borad6k/leaderboard_scaffold_5fold.csv",
     "timeout_seconds": 360000
   },
   "evaluation": {
