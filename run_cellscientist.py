@@ -522,10 +522,9 @@ def main():
                 explicit_p3_path=explicit_paths["Phase 3"],
                 direction=optim_dir,
                 metric=p3_metric,
-                # [NEW] Pass logs_dir to direct final outputs there
-                # (Note: generate_final_report might need update if it doesn't accept output_base_dir, 
-                # but based on provided context it seemed to focus on results_root/finall_results. 
-                # If needed, just ensure it writes where you expect.)
+                
+                # [FIX] Force report artifacts to be written to logs_dir
+                output_dir=logs_dir
             )
         except Exception as e:
             print(f"[WARN] Final report generation skipped/failed: {e}")
@@ -535,9 +534,10 @@ def main():
         # -----------------------------------------------------------------
         try:
             # Reads from logs_dir/finall_results, writes to logs_dir/advanced_metrics
+            # (Note: logs_dir now contains finall_results thanks to the fix above)
             adv_metrics = perform_advanced_analysis(
                 dataset_name=ds_name,
-                logs_dir=logs_dir,
+                logs_dir=logs_dir, 
                 pipe_cfg=pipe_cfg
             )
             
