@@ -4,15 +4,15 @@
     "generate_execution_root": "../results/${dataset_name}/generate_execution",
     "review_feedback_root": "../results/${dataset_name}/review_feedback",
     "stage1_analysis_dir": "../results/${dataset_name}/design_analysis/reference",
-    "explicit_source_path": "/data/users/limengran/CellScientist/results/BBBC036/generate_execution/prompt/prompt_run_20251229_080236",
+    "explicit_source_path": "/data/users/limengran/CellScientist/results/BBBC036/generate_execution/prompt/prompt_run_20251229_105718",
     "literature_dir": "../results/${dataset_name}/literature",
     "literature_knowledge_json": "../results/${dataset_name}/literature/domain_knowledge.json",
-    "generate_execution_dir": "/data/users/limengran/CellScientist/results/BBBC036/generate_execution/prompt/prompt_run_20251229_080236",
-    "stage2_execution_dir": "/data/users/limengran/CellScientist/results/BBBC036/generate_execution/prompt/prompt_run_20251229_080236",
-    "execution_dir": "/data/users/limengran/CellScientist/results/BBBC036/generate_execution/prompt/prompt_run_20251229_080236"
+    "generate_execution_dir": "/data/users/limengran/CellScientist/results/BBBC036/generate_execution/prompt/prompt_run_20251229_105718",
+    "stage2_execution_dir": "/data/users/limengran/CellScientist/results/BBBC036/generate_execution/prompt/prompt_run_20251229_105718",
+    "execution_dir": "/data/users/limengran/CellScientist/results/BBBC036/generate_execution/prompt/prompt_run_20251229_105718"
   },
   "llm": {
-    "model": "qwen3-max",
+    "model": "claude-opus-4-1-20250805-thinking",
     "base_url": "https://vip.yi-zhan.top/v1",
     "api_key": "sk-wJjSrt9UUaoFkfIl478b4cF78dE349A9B3Fc20575bEfFb1b",
     "temperature": 0.7,

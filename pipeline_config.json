@@ -5,7 +5,7 @@
     "cuda_visible_devices": null
   },
   "llm": {
-    "model": "qwen3-235b-a22b-thinking-2507",
+    "model": "claude-opus-4-1-20250805-thinking",
     "temperature": null,
     "max_tokens": null
   },

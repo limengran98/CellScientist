@@ -2,13 +2,13 @@
   "dataset_name": "BBBC036",
   "paths": {
     "baseline_source_dir": "../baseline/${dataset_name}",
-    "stage1_analysis_dir": "/data/users/limengran/CellScientist/results/BBBC036/design_analysis/reference/Ref_20251229_065727_design_analysis_20251229_060523_1132775_Run2",
+    "stage1_analysis_dir": "/data/users/limengran/CellScientist/results/BBBC036/design_analysis/reference/Ref_20251229_100824_design_analysis_20251229_095614_1260758_Run4",
     "design_execution_root": "../results/${dataset_name}/generate_execution",
     "literature_dir": "../results/${dataset_name}/literature",
     "literature_knowledge_json": "../results/${dataset_name}/literature/domain_knowledge.json"
   },
   "llm": {
-    "model": "qwen3-max",
+    "model": "claude-opus-4-1-20250805-thinking",
     "base_url": "https://vip.yi-zhan.top/v1",
     "api_key": "sk-wJjSrt9UUaoFkfIl478b4cF78dE349A9B3Fc20575bEfFb1b",
     "max_tokens": 40000,
