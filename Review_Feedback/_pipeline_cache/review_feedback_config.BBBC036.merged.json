@@ -9,7 +9,7 @@
     "literature_knowledge_json": "../results/${dataset_name}/literature/domain_knowledge.json"
   },
   "llm": {
-    "model": "gemini-3-pro-all",
+    "model": "qwen3-235b-a22b-thinking-2507",
     "base_url": "https://vip.yi-zhan.top/v1",
     "api_key": "sk-wJjSrt9UUaoFkfIl478b4cF78dE349A9B3Fc20575bEfFb1b",
     "temperature": 0.7,
@@ -19,7 +19,7 @@
   "review": {
     "target_metric": "PCC",
     "direction": "maximize",
-    "max_iterations": 1,
+    "max_iterations": 10,
     "pass_threshold": 0.7,
     "force_cells": [
       0,

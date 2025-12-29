@@ -5,7 +5,7 @@
     "cuda_visible_devices": null
   },
   "llm": {
-    "model": "gemini-3-pro-all",
+    "model": "qwen3-235b-a22b-thinking-2507",
     "temperature": null,
     "max_tokens": null
   },

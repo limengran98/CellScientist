@@ -170,8 +170,11 @@ def pick_best(scores: List[float], direction: str = "maximize") -> Optional[floa
 
 
 def parse_phase1_log(log_text: str) -> Dict[str, Any]:
-    run_ids = set(int(m.group(1)) for m in re.finditer(r"Executing design_analysis_\d{8}_\d{6}_Run(\d+)", log_text))
-    finished_ids = set(int(m.group(1)) for m in re.finditer(r"Finished design_analysis_\d{8}_\d{6}_Run(\d+)", log_text))
+    # [FIX] Relaxed regex to match filenames with PIDs (e.g., ..._1338115_Run1)
+    # Was: r"Executing design_analysis_\d{8}_\d{6}_Run(\d+)"
+    run_ids = set(int(m.group(1)) for m in re.finditer(r"Executing design_analysis_.*?_Run(\d+)", log_text))
+    finished_ids = set(int(m.group(1)) for m in re.finditer(r"Finished design_analysis_.*?_Run(\d+)", log_text))
+    
     attempted = len(run_ids) if run_ids else len(finished_ids)
     succeeded = len(finished_ids)
 
@@ -180,7 +183,8 @@ def parse_phase1_log(log_text: str) -> Dict[str, Any]:
     bug_runs: set[int] = set()
     for pos in fail_positions:
         for j in range(pos, min(pos + 50, len(lines))):
-            m = re.search(r"Run(\d+)/", lines[j])
+            # [FIX] Simplified to just catch the Run number regardless of prefix
+            m = re.search(r"Run(\d+)", lines[j])
             if m:
                 bug_runs.add(int(m.group(1)))
                 break
