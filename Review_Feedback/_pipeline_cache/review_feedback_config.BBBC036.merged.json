@@ -9,7 +9,7 @@
     "literature_knowledge_json": "../results/${dataset_name}/literature/domain_knowledge.json"
   },
   "llm": {
-    "model": "qwen3-235b-a22b-thinking-2507",
+    "model": "claude-sonnet-4-20250514-thinking",
     "base_url": "https://vip.yi-zhan.top/v1",
     "api_key": "sk-wJjSrt9UUaoFkfIl478b4cF78dE349A9B3Fc20575bEfFb1b",
     "temperature": 0.7,
