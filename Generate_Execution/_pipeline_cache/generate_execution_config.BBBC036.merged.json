@@ -2,7 +2,7 @@
   "dataset_name": "BBBC036",
   "paths": {
     "baseline_source_dir": "../baseline/${dataset_name}",
-    "stage1_analysis_dir": "../results/${dataset_name}/design_analysis/reference",
+    "stage1_analysis_dir": "/data/users/limengran/CellScientist/results/BBBC036/design_analysis/reference/Ref_20251229_065727_design_analysis_20251229_060523_1132775_Run2",
     "design_execution_root": "../results/${dataset_name}/generate_execution",
     "literature_dir": "../results/${dataset_name}/literature",
     "literature_knowledge_json": "../results/${dataset_name}/literature/domain_knowledge.json"
