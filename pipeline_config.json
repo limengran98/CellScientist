@@ -1,11 +1,11 @@
 {
-  "dataset_name": "BBBC036",
+  "dataset_name": "CPG0016",
   "common": {
-    "cuda_device_id": 1,
+    "cuda_device_id": 2,
     "cuda_visible_devices": null
   },
   "llm": {
-    "model": "gemini-3-pro-all",
+    "model": null,
     "temperature": null,
     "max_tokens": null
   },
