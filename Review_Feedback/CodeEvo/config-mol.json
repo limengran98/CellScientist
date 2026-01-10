@@ -1,6 +1,6 @@
 {
   "target_project": {
-    "root_dir": "/data/users/limengran/torch-molecule-main",
+    "root_dir": "/data/users/torch-molecule-main",
     "target_files": [
       "torch_molecule/predictor/gnn/model.py"
     ]
