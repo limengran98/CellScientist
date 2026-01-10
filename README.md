@@ -40,6 +40,15 @@ CellScientist/
 
 ```
 
+## Data
+### Cell Morphology
+- **[cpg0016 & cpg0003]** (Cell Painting Gallery) - [AWS Registry](https://registry.opendata.aws/cellpainting-gallery/), 细化下，cpg0016是在
+- cpg0016： https://cellpainting-gallery.s3.amazonaws.com/index.html#cpg0016-jump-assembled/source_all/workspace/profiles_assembled/COMPOUND/v1.0/
+- cpg0003: https://cellpainting-gallery.s3.amazonaws.com/index.html#cpg0003-rosetta/broad/workspace/preprocessed_data/ 里面的 CDRP-BBBC047-Bray 和 CDRPBIO-BBBC036-Bray
+
+The preprocessed Cell Morphology dataset used in this paper is available at [CellScientist HuggingFace](https://huggingface.co/datasets/Boom5426/CellScientist).
+
+
 * **Design_Analysis/** – handles design and analytical logic
 * **Generate_Execution/** – manages generation and execution processes
 * **Review_Feedback/** – reviews and iteratives optimization process
