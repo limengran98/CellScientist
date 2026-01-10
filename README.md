@@ -40,21 +40,33 @@ CellScientist/
 
 ```
 
-## Data
-### Cell Morphology
-- **[cpg0016 & cpg0003]** (Cell Painting Gallery) - [AWS Registry](https://registry.opendata.aws/cellpainting-gallery/), 细化下，cpg0016是在
-- cpg0016： https://cellpainting-gallery.s3.amazonaws.com/index.html#cpg0016-jump-assembled/source_all/workspace/profiles_assembled/COMPOUND/v1.0/
-- cpg0003: https://cellpainting-gallery.s3.amazonaws.com/index.html#cpg0003-rosetta/broad/workspace/preprocessed_data/ 里面的 CDRP-BBBC047-Bray 和 CDRPBIO-BBBC036-Bray
-
-The preprocessed Cell Morphology dataset used in this paper is available at [CellScientist HuggingFace](https://huggingface.co/datasets/Boom5426/CellScientist).
-
-
 * **Design_Analysis/** – handles design and analytical logic
 * **Generate_Execution/** – manages generation and execution processes
 * **Review_Feedback/** – reviews and iteratives optimization process
 * **llm_providers.json** – defines available LLM configurations
 * **requirements.txt** – Python dependencies
 * **run_cellscientist.py** – The master script that validates configurations and executes Phase 1, 2, and 3 sequentially in isolated environments.
+
+
+## Data
+
+### Cell Morphology
+
+- **[cpg0016 & cpg0003]** (Cell Painting Gallery)  
+  - **Registry**: [AWS Open Data Registry – Cell Painting Gallery](https://registry.opendata.aws/cellpainting-gallery/)
+  - **cpg0016**: Contains compound perturbation profiles from the JUMP-CP project.  
+    🔗 [Browse on S3](https://cellpainting-gallery.s3.amazonaws.com/index.html#cpg0016-jump-assembled/source_all/workspace/profiles_assembled/COMPOUND/v1.0/)
+  - **cpg0003**: Includes the Rosetta dataset with two key subsets:  
+    - `CDRP-BBBC047-Bray`  
+    - `CDRPBIO-BBBC036-Bray`  
+    🔗 [Browse on S3](https://cellpainting-gallery.s3.amazonaws.com/index.html#cpg0003-rosetta/broad/workspace/preprocessed_data/)
+
+> 💡 The preprocessed Cell Morphology dataset used in this paper is also publicly available on Hugging Face:  
+> 📦 [**CellScientist Dataset** @ HuggingFace](https://huggingface.co/datasets/Boom5426/CellScientist)
+
+
+
+
 
 ## ⚙️ Experiment Settings & Environment
 
