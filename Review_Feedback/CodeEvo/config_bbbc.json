@@ -1,6 +1,6 @@
 {
   "target_project": {
-    "root_dir": "/data1/users/limengran/BBBC", 
+    "root_dir": "/data1/users/BBBC", 
     "target_files": [
       "model.py"
     ]
