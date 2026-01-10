@@ -1,6 +1,6 @@
 {
   "target_project": {
-    "root_dir": "/data/users/limengran/TranSiGen/",
+    "root_dir": "/data/users/TranSiGen/",
     "target_files": [
       "src/model.py"
     ]
