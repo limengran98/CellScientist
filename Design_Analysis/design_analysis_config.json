@@ -28,7 +28,7 @@
           "provider": "yizhan",
           "model": "gemini-3-pro-all",
           "base_url": "https://vip.yi-zhan.top/v1",
-          "api_key": "sk-wJjSrt9UUaoFkfIl478b4cF78dE349A9B3Fc20575bEfFb1b",
+          "api_key": "sk-",
           "temperature": 0.5,
           "max_tokens": 20480,
           "top_p": 1,
