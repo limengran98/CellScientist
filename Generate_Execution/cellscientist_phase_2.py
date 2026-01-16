@@ -25,6 +25,8 @@ from design_execution.config_loader import load_full_config
 from design_execution.prompt_orchestrator import (
     phase_generate, phase_execute, phase_analyze, run_full_pipeline
 )
+# [NEW] Import TokenMeter
+from design_execution.llm_utils import TokenMeter
 
 def _setup_stage1_resources(cfg: dict, enable_idea: bool = False):
     s1_dir_str = cfg.get("paths", {}).get("stage1_analysis_dir")
@@ -90,6 +92,7 @@ def _setup_stage1_resources(cfg: dict, enable_idea: bool = False):
         print("[SETUP] Idea Mode: OFF", flush=True)
 
 def _inject_api_key(cfg: dict):
+    """Ensure API Key is loaded into environment for llm_utils to find."""
     key = cfg.get("llm", {}).get("api_key")
     if key:
         os.environ["OPENAI_API_KEY"] = key
@@ -205,6 +208,9 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
     print(f"[LOOP] Save Root: {out_root}", flush=True)
     print(f"[LOOP] Loop Summary: {summary_path}", flush=True)
 
+    # [TELEM] Reset meter before starting loop to clear any setup noise
+    TokenMeter.get_and_reset()
+
     loop_started_ts = time.time()
     loop_started_iso = datetime.datetime.now().isoformat()
 
@@ -218,6 +224,12 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
         valid = sum(1 for r in iter_logs if r.get("status") in {"VALID", "SUCCESS"} or (isinstance(r.get("score"), (int, float)) and r.get("score") > -999.0))
         criteria_met_n = sum(1 for r in iter_logs if r.get("criteria_met") is True)
         best = max([r.get("score", -999.0) for r in iter_logs] + [-999.0])
+        
+        # [TELEM] Aggregate Total Cost for the whole loop
+        total_prompt = sum(r.get("usage", {}).get("prompt_tokens", 0) for r in iter_logs)
+        total_completion = sum(r.get("usage", {}).get("completion_tokens", 0) for r in iter_logs)
+        total_llm_time = sum(r.get("usage", {}).get("total_latency_sec", 0.0) for r in iter_logs)
+
         _atomic_write_json(summary_path, {
             "dataset": cfg.get("dataset_name"),
             "started_at": loop_started_iso,
@@ -234,6 +246,9 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
             "best_at_budget": float(best),
             "best_trial_dir": best_trial_dir,
             "archived_dir": archived_dir,
+            # [TELEM] Add top-level cost stats
+            "total_cost_tokens": total_prompt + total_completion,
+            "total_cost_latency": total_llm_time,
             "iterations": iter_logs,
             "total_time_sec": float(time.time() - loop_started_ts),
         })
@@ -242,6 +257,9 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
         for i in range(1, max_iters + 1):
             run_name = f"{workspace_prefix}_iter{i:03d}"
             print(f"\n{'='*40}\n🔄 ITERATION {i}/{max_iters} | run_name={run_name}\n{'='*40}", flush=True)
+
+            # [TELEM] Reset meter at start of iteration to capture ONLY this iteration's usage
+            TokenMeter.get_and_reset()
 
             iter_started = time.time()
             iter_trial_dir = None
@@ -259,6 +277,10 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
                 iter_status = "VALID" if score > -999.0 else "NO_METRIC"
                 criteria_met = bool(success)
 
+                # [TELEM] Capture Usage specific to this iteration
+                usage_stats = TokenMeter.get_and_reset()
+                print(f"[COST] Iteration {i}: {usage_stats['total_tokens']} tokens | {usage_stats['total_latency_sec']:.2f}s LLM time", flush=True)
+
                 if score > -999.0 and score > best_score:
                     prev_best = best_score
                     best_score = score
@@ -273,6 +295,7 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
                     "trial_dir": iter_trial_dir,
                     "duration_sec": float(time.time() - iter_started),
                     "criteria_met": criteria_met,
+                    "usage": usage_stats, # [TELEM] Save detailed usage
                 })
 
                 # Persist loop summary continuously (not just at end)
@@ -288,6 +311,8 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
 
             except KeyboardInterrupt:
                 print("\n[INTERRUPT] KeyboardInterrupt received. Saving loop summary and exiting.", flush=True)
+                # Capture partial usage
+                usage_stats = TokenMeter.get_and_reset()
                 iter_logs.append({
                     "iter": i,
                     "run_name": run_name,
@@ -296,6 +321,7 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
                     "trial_dir": iter_trial_dir,
                     "duration_sec": float(time.time() - iter_started),
                     "criteria_met": False,
+                    "usage": usage_stats,
                 })
                 _write_summary(final=True)
                 raise
@@ -305,6 +331,8 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
                 import traceback
                 traceback.print_exc()
 
+                # Capture partial usage
+                usage_stats = TokenMeter.get_and_reset()
                 iter_logs.append({
                     "iter": i,
                     "run_name": run_name,
@@ -314,6 +342,7 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
                     "duration_sec": float(time.time() - iter_started),
                     "criteria_met": False,
                     "error": str(e),
+                    "usage": usage_stats,
                 })
                 _write_summary(final=False)
 

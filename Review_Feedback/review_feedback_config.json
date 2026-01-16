@@ -11,7 +11,7 @@
   "llm": {
     "model": "gemini-3-pro-preview-thinking",
     "base_url": "https://vip.yi-zhan.top/v1",
-    "api_key": "sk-",
+    "api_key": "sk-00fKNXuFU5uFWIgC31666619E0044b78B64fB614904aCd9d",
     "temperature": 0.7,
     "max_tokens": 40000,
     "timeout": 600

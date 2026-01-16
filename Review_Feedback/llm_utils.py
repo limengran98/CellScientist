@@ -5,7 +5,69 @@ import re
 import time
 import requests
 import ast
+import threading
 from typing import Dict, Any, List, Optional, Union
+
+# =============================================================================
+# [NEW] Token Meter (Telemetry & Cost Tracking)
+# =============================================================================
+
+class TokenMeter:
+    """
+    Thread-safe singleton to track LLM usage (Tokens & Latency).
+    Used to generate Cost-Accuracy Pareto Frontier data for manuscripts.
+    """
+    _lock = threading.Lock()
+    _stats = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "total_latency_sec": 0.0,
+        "api_calls": 0,
+        "model_breakdown": {} 
+    }
+
+    @classmethod
+    def record(cls, response: dict, latency: float, model: str):
+        """Parse OpenAI-compatible usage format and record stats."""
+        usage = response.get("usage", {})
+        # Handle cases where usage might be None or empty
+        p_tok = usage.get("prompt_tokens", 0) if usage else 0
+        c_tok = usage.get("completion_tokens", 0) if usage else 0
+        t_tok = usage.get("total_tokens", p_tok + c_tok) if usage else 0
+
+        with cls._lock:
+            cls._stats["prompt_tokens"] += p_tok
+            cls._stats["completion_tokens"] += c_tok
+            cls._stats["total_tokens"] += t_tok
+            cls._stats["total_latency_sec"] += latency
+            cls._stats["api_calls"] += 1
+            
+            # Breakdown by model
+            if model not in cls._stats["model_breakdown"]:
+                cls._stats["model_breakdown"][model] = {"prompt": 0, "completion": 0, "calls": 0}
+            cls._stats["model_breakdown"][model]["prompt"] += p_tok
+            cls._stats["model_breakdown"][model]["completion"] += c_tok
+            cls._stats["model_breakdown"][model]["calls"] += 1
+
+    @classmethod
+    def get_and_reset(cls) -> dict:
+        """Return current snapshot and reset counters (Call after each iteration)."""
+        with cls._lock:
+            snapshot = cls._stats.copy()
+            # Deep copy breakdown to avoid reference issues
+            snapshot["model_breakdown"] = json.loads(json.dumps(cls._stats["model_breakdown"]))
+            
+            # Reset
+            cls._stats = {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "total_latency_sec": 0.0,
+                "api_calls": 0,
+                "model_breakdown": {}
+            }
+        return snapshot
 
 # =============================================================================
 # 1. Config & Resolution
@@ -66,9 +128,7 @@ def extract_json_from_text(text: str) -> Union[Dict, List]:
     text = text.strip()
 
     # Pre-processing: Remove potential markdown/text wrappers
-    # Removes text before the first '{' or '['
     text = re.sub(r'^[^{[]*', '', text) 
-    # Removes text after the last '}' or ']'
     text = re.sub(r'[^}\]]*$', '', text)
 
     # Strategy 1: Regex extraction of code blocks (```json ... ```)
@@ -86,7 +146,7 @@ def extract_json_from_text(text: str) -> Union[Dict, List]:
         try: 
             return json.loads(candidate)
         except: 
-            # [NEW] Sub-strategy: Try ast.literal_eval (Handles Python dicts with single quotes)
+            # Sub-strategy: Try ast.literal_eval (Handles Python dicts with single quotes)
             try: 
                 return ast.literal_eval(candidate)
             except: 
@@ -113,6 +173,10 @@ def extract_json_from_text(text: str) -> Union[Dict, List]:
 # =============================================================================
 
 def _post_request(url, headers, payload, timeout, retries=2):
+    """
+    Internal HTTP helper.
+    Note: Usage recording happens in chat_text because we need model context.
+    """
     for i in range(retries + 1):
         try:
             r = requests.post(url, headers=headers, json=payload, timeout=timeout)
@@ -129,7 +193,8 @@ def chat_text(
     messages: List[Dict], 
     cfg: Dict[str, Any], 
     temperature: Optional[float] = None,
-    debug_dir: Optional[str] = None
+    debug_dir: Optional[str] = None,
+    **kwargs # [FIX] Swallow 'meta' or other unexpected args
 ) -> str:
     """Standard Chat Completion returning String."""
     conf = resolve_llm_config(cfg)
@@ -145,7 +210,18 @@ def chat_text(
         "stream": False
     }
 
-    data = _post_request(url, headers, payload, conf["timeout"])
+    # [TELEM] Start Timer
+    t0 = time.time()
+    
+    try:
+        data = _post_request(url, headers, payload, conf["timeout"])
+    except Exception as e:
+        # Re-raise runtime errors from _post_request
+        raise e
+    
+    # [TELEM] Stop Timer & Record
+    duration = time.time() - t0
+    TokenMeter.record(data, duration, conf["model"])
     
     # Save Debug Info
     if debug_dir:
@@ -163,11 +239,11 @@ def chat_json(
     messages: List[Dict], 
     cfg: Dict[str, Any],
     temperature: float = 0.2,
-    max_retries: int = 3  # [NEW] Added retry parameter
+    max_retries: int = 3,
+    **kwargs # [FIX] Swallow 'meta' or other unexpected args
 ) -> Dict[str, Any]:
     """
     Chat Completion returning JSON with Auto-Retry Logic.
-    If JSON parsing fails, it sleeps and tries again (up to max_retries).
     """
     last_error = None
     
@@ -176,8 +252,9 @@ def chat_json(
             # On retries, slightly increase temperature to get a different response
             curr_temp = temperature + (0.1 * attempt) if attempt > 0 else temperature
             
-            # Call basic chat
-            text = chat_text(messages, cfg, temperature=curr_temp)
+            # Call basic chat (which now handles TokenMeter)
+            # Pass kwargs down to chat_text
+            text = chat_text(messages, cfg, temperature=curr_temp, **kwargs)
             
             # Attempt extract
             return extract_json_from_text(text)

@@ -9,6 +9,7 @@ import glob
 import shutil
 import nbformat
 import numpy as np
+import time
 from copy import deepcopy
 from datetime import datetime
 
@@ -16,7 +17,8 @@ from datetime import datetime
 # [ARCH UPGRADE] Import Centralized Utilities
 # =============================================================================
 from config_loader import load_full_config
-from llm_utils import chat_json, resolve_llm_config
+# [UPDATED] Import TokenMeter here
+from llm_utils import chat_json, resolve_llm_config, TokenMeter
 
 # [UPDATED] Import decoupled execution and error handling functions
 from executor_engine import run_notebook_pure, attempt_fix_notebook, dump_error_log
@@ -278,10 +280,6 @@ def _get_paths(cfg: dict) -> dict:
 def find_best_phase2_trial(cfg, explicit_path=None):
     """
     Finds the source trial directory.
-    Supports robust detection:
-    1. Explicit Path (Argument or Config)
-    2. Explicit Path (Robust check if path IS the run dir)
-    3. Auto-detection in 'prompt' subdirectory
     """
     # 1. Check argument explicit path
     if explicit_path:
@@ -297,9 +295,7 @@ def find_best_phase2_trial(cfg, explicit_path=None):
     paths = _get_paths(cfg)
     cfg_explicit = paths.get("explicit_source_path")
     
-    # [ROBUSTNESS] Also check execution_dir/generate_execution_dir in case it was injected there
     if not cfg_explicit:
-        # If run_cellscientist injected the full run path here, we should use it
         candidates = [paths.get("generate_execution_dir"), paths.get("execution_dir")]
         for c in candidates:
             if c and os.path.exists(os.path.join(c, "metrics.json")):
@@ -316,7 +312,6 @@ def find_best_phase2_trial(cfg, explicit_path=None):
     gen_root = paths.get("generate_execution_root") or paths.get("generate_execution_dir") or paths.get("generate_execution") \
                or os.path.join("results", cfg.get("dataset_name", "dataset"), "generate_execution")
     
-    # Check if gen_root itself IS the run dir (edge case)
     if os.path.exists(os.path.join(gen_root, "metrics.json")):
         return gen_root
 
@@ -594,6 +589,7 @@ def execute_and_recover(nb_path, workdir, cfg, mutable_indices=None, extra_env=N
     """
     Manages the Execution -> Error Reporting -> Fix Loop lifecycle.
     Accepts mutable_indices (locks) and extra_env (paths).
+    Note: LLM calls inside attempt_fix_notebook will also be metered by TokenMeter.
     """
     timeout = (cfg.get("exec", {}) or {}).get("timeout_seconds", 3600)
     max_fixes = (cfg.get("exec", {}) or {}).get("max_fix_rounds", 1)
@@ -726,7 +722,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
         except Exception as e:
             print(f"[WARN] Failed to load history state: {e}")
 
-    # Task-Graph State (Decompose / Route / Update)
+    # Task-Graph State
     task_graph_state_path = os.path.join(workspace_dir, "task_graph_state.json")
     if os.path.exists(task_graph_state_path):
         try:
@@ -749,9 +745,16 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
     print(f"       🎯 Target: {target_metric} ({direction})")
     print(f"       🏁 Original Baseline: {baseline_display}")
     print(f"       🥇 Current Best:      {best_score_so_far:.4f}")
+    
+    # [TELEM] Reset Meter Global
+    TokenMeter.get_and_reset()
 
     try:
         for i in range(1, max_iters + 1):
+            # [TELEM] Reset Meter for this iteration
+            TokenMeter.get_and_reset()
+            iter_started = time.time()
+
             nb = nbformat.read(best_nb_path, as_version=4)
             mutable_indices = identify_mutable_cells(nb, cfg)
             if not mutable_indices:
@@ -847,6 +850,11 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                 mutable_indices=mutable_indices,
                 extra_env=exec_env
             )
+            
+            # [TELEM] Capture stats for this iteration
+            usage_stats = TokenMeter.get_and_reset()
+            usage_stats["duration_sec"] = time.time() - iter_started
+            print(f"[COST] Iteration {i}: {usage_stats['total_tokens']} tokens | {usage_stats['total_latency_sec']:.2f}s LLM time")
 
             try:
                 iter_metrics_path = os.path.join(workspace_dir, f"metrics_iter_{i}.json")
@@ -920,7 +928,8 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                     "status": status,
                     "score": candidate_score,
                     "tasks": [t.get("id") for t in suggestion.get("active_tasks", [])],
-                    "task_names": [t.get("name") for t in suggestion.get("active_tasks", [])]
+                    "task_names": [t.get("name") for t in suggestion.get("active_tasks", [])],
+                    "usage": usage_stats # [TELEM] Save cost data
                 })
 
                 # Save history immediately
@@ -968,6 +977,10 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
 
             except Exception as e:
                 print(f"[ERROR] Logic Error after execution: {e}")
+                
+                # [TELEM] Recover usage even on error
+                usage_stats = TokenMeter.get_and_reset()
+                
                 history_summary.append({
                     "iter": i,
                     "strategy": strategy_tag,
@@ -976,7 +989,8 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                     "critique": "Execution Logic Crash",
                     "status": "CRASH",
                     "score": -999,
-                    "reflection": "Code crashed before metrics could be read."
+                    "reflection": "Code crashed before metrics could be read.",
+                    "usage": usage_stats # [TELEM]
                 })
                 try:
                     with open(history_state_path, "w", encoding="utf-8") as f:
