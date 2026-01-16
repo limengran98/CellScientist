@@ -32,7 +32,7 @@ python cellscientist_phase_3.py --config review_feedback_config.json
 
 ### 1\. LLM Settings (`llm`)
 
-  * **`provider`**: Selects the active provider configuration (e.g., `yizhan`).
+  * **`provider`**: Selects the active provider configuration.
   * **`timeout`**: Recommended **300s+** to accommodate "Thinking" process models (e.g., Claude-3.5, Gemini-Pro).
   * **`model`**: Use high-reasoning capability models for code critique.
 

@@ -275,7 +275,7 @@ def _resolve_llm_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
         if base_url_env and os.environ.get(base_url_env):
             base_url = os.environ.get(base_url_env)
         else:
-            base_url = os.environ.get("OPENAI_BASE_URL") or "https://vip.yi-zhan.top/v1"
+            base_url = os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com"
 
     if not model:
         model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")

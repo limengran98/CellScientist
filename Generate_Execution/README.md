@@ -50,7 +50,7 @@ Use subcommands to isolate specific stages of the pipeline:
 
 ### 1\. LLM Settings (`llm`)
 
-  * **`base_url`**: **Critical**. Must be set to your proxy address (e.g., `https://vip.yi-zhan.top/v1`) to avoid "Network Unreachable" errors.
+  * **`base_url`**: **Critical**. Must be set to your proxy address to avoid "Network Unreachable" errors.
   * **`api_key`**: Your API key. If left empty, it defaults to the environment variable `OPENAI_API_KEY`.
   * **`model`**: Strong reasoning models are recommended (e.g., `gpt-4o`, `gemini-3-pro`).
 

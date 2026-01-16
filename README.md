@@ -48,29 +48,12 @@ CellScientist/
 * **run_cellscientist.py** – The master script that validates configurations and executes Phase 1, 2, and 3 sequentially in isolated environments.
 
 
-## Data
-
-### Cell Morphology
-
-- **[cpg0016 & cpg0003]** (Cell Painting Gallery)  
-  - **Registry**: [AWS Open Data Registry – Cell Painting Gallery](https://registry.opendata.aws/cellpainting-gallery/)
-  - **cpg0016**: Contains compound perturbation profiles from the JUMP-CP project.   🔗 [Browse on S3](https://cellpainting-gallery.s3.amazonaws.com/index.html#cpg0016-jump-assembled/source_all/workspace/profiles_assembled/COMPOUND/v1.0/)
-  - **cpg0003**: Includes the Rosetta dataset with two key subsets:  🔗 [Browse on S3](https://cellpainting-gallery.s3.amazonaws.com/index.html#cpg0003-rosetta/broad/workspace/preprocessed_data/)
-    - `CDRP-BBBC047-Bray`  
-    - `CDRPBIO-BBBC036-Bray`  
-
-> 💡 The preprocessed Cell Morphology dataset used in this paper is also publicly available on Hugging Face:  
-> 📦 [**CellScientist Dataset** @ HuggingFace](https://huggingface.co/datasets/Boom5426/CellScientist)
-
-
-
-
 
 ## ⚙️ Experiment Settings & Environment
 
 ### Hardware & Software Infrastructure
 
-Experiments are conducted on high-performance nodes tailored for graph learning.
+Experiments are conducted on high-performance nodes tailored.
 
 * **CPU:** Dual Intel Xeon Platinum 8336C @ 2.30GHz
 * **GPU:** NVIDIA RTX 5880 Ada Generation (48GB VRAM)

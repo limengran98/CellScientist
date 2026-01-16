@@ -69,7 +69,7 @@ def resolve_llm_config(llm_cfg: dict) -> dict:
         if base_url_env_name and os.environ.get(base_url_env_name):
             base_url = os.environ.get(base_url_env_name)
         else:
-            base_url = os.environ.get("OPENAI_BASE_URL") or "https://vip.yi-zhan.top/v1"
+            base_url = os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com"
             
     if base_url and base_url.startswith("[") and base_url.endswith(")"):
         base_url = re.sub(r"\[(.*?)\]\((.*?)\)", r"\2", base_url)

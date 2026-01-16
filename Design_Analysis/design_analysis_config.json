@@ -25,10 +25,10 @@
           "cuda_device_id": 1
         },
         "llm": {
-          "provider": "yizhan",
+          "provider": "default",
           "model": "gemini-3-pro-all",
-          "base_url": "https://vip.yi-zhan.top/v1",
-          "api_key": "sk-00fKNXuFU5uFWIgC31666619E0044b78B64fB614904aCd9d",
+          "base_url": "https://api.openai.com",
+          "api_key": "",
           "temperature": 0.5,
           "max_tokens": 20480,
           "top_p": 1,
