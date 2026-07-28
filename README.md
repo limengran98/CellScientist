@@ -6,10 +6,6 @@ typed component addresses, deterministic atomic realization, persistent history,
 and two method audits. It supports the four BBBC036/BBBC047 task settings:
 plate- and SMILES-grouped splits for each dataset.
 
-The repository intentionally excludes historical experiments, result files,
-baseline and ablation controllers, external comparison code, credentials, and
-private service endpoints.
-
 ## Install
 
 ```bash
