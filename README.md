@@ -1,134 +1,75 @@
 # CellScientist
 
-CellScientist is an autonomous AI agent framework designed for Virtual Cell Modeling (VCM). It employs a Dual-Space Bilevel Optimization strategy to align symbolic scientific hypotheses with computational code implementation.
+This is the clean public implementation accompanying **CellScientist**. It
+contains the final discrepancy-conditioned controller, protected task contract,
+typed component addresses, deterministic atomic realization, persistent history,
+and two method audits. It supports the four BBBC036/BBBC047 task settings:
+plate- and SMILES-grouped splits for each dataset.
 
-The system operates through a structured Task Hypergraph, performing evolutionary optimization to discover robust biological models.
+The repository intentionally excludes historical experiments, result files,
+baseline and ablation controllers, external comparison code, credentials, and
+private service endpoints.
 
-## 🛠️ Installation
+## Install
 
 ```bash
-conda create --name CellScientist python=3.11.14
-conda activate CellScientist
-cd CellScientist
-pip install torch==2.0.1+cu118 torchvision==0.15.2+cu118 torchaudio==2.0.2+cu118 -f [https://download.pytorch.org/whl/cu118/torch_stable.html](https://download.pytorch.org/whl/cu118/torch_stable.html)
-pip install torch-scatter torch-sparse torch-cluster torch-spline-conv -f [https://data.pyg.org/whl/torch-2.0.1+cu118.html](https://data.pyg.org/whl/torch-2.0.1+cu118.html)
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-
 ```
 
-## 📂 Project Structure
-
-```
-CellScientist/
-├── Design_Analysis/          # [Phase 1] Exploration & Hypergraph Initialization
-│   ├── cellscientist_phase_1.py
-│   └── design_analysis_config.json
-│
-├── Generate_Execution/       # [Phase 2] Top-Down Instantiation & Code Generation
-│   ├── cellscientist_phase_2.py
-│   └── generate_execution_config.json
-│
-├── Review_Feedback/          # [Phase 3] Bottom-Up Refinement
-│   ├── cellscientist_phase_3.py
-│   ├── review_feedback_config.json
-│   └── CodeEvo/              # Evolution History & Artifacts
-│
-├── pipeline_config.json      # ⭐ Unified pipeline-level configuration (recommended)
-├── run_cellscientist.py      # 🚀 Unified pipeline runner
-├── requirements.txt
-└── README.md
-
-```
-
-* **Design_Analysis/** – handles design and analytical logic
-* **Generate_Execution/** – manages generation and execution processes
-* **Review_Feedback/** – reviews and iteratives optimization process
-* **llm_providers.json** – defines available LLM configurations
-* **requirements.txt** – Python dependencies
-* **run_cellscientist.py** – The master script that validates configurations and executes Phase 1, 2, and 3 sequentially in isolated environments.
-
-
-
-## ⚙️ Experiment Settings & Environment
-
-### Hardware & Software Infrastructure
-
-Experiments are conducted on high-performance nodes tailored.
-
-* **CPU:** Dual Intel Xeon Platinum 8336C @ 2.30GHz
-* **GPU:** NVIDIA RTX 5880 Ada Generation (48GB VRAM)
-* **Memory:** 512 GB DDR4 ECC
-* **Software:** Python 3.11.14, PyTorch 2.0.1+cu118, PyG 2.3.0, CUDA 11.8
-
-### Hyperparameters (Key Configurations)
-
-The Dual-Space Bilevel Optimization is controlled via hierarchical configs:
-
-* **LLM Engine:** Gemini 3 Pro (Temp: 0.5 - 0.7)
-* **Design Phase:** 4 parallel hypothesis branches; Max 3 self-correction fix rounds.
-* **Execution Phase:** Global timeout 100h; Step timeout 5h; Max 5 debugging rounds.
-* **Review Phase:** Max 10 optimization iterations; Optimized via Pearson Correlation Coefficient (PCC).
-
-### Cost Efficiency
-
-CellScientist minimizes cost through a **Contextual Memory** mechanism that reduces token load by ~60% in later iterations.
-
-* **Average Run (3-5 iterations):** $1.00 - $2.00 USD
-* **Complex Run (10 iterations):** < $5.00 USD
-
-## 🚀 Usage
-
-### Method I: The Unified Pipeline
+Set the locations of your local BBBC HDF5 files and an OpenAI-compatible LLM
+endpoint. No credential or endpoint is stored in this repository.
 
 ```bash
-python run_cellscientist.py
-
+export CELLSCIENTIST_DATA_ROOT=/path/to/bbbc_hdf5
+export CELLSCIENTIST_API_BASE=https://your-openai-compatible-endpoint/v1
+export CELLSCIENTIST_API_KEY=your_key
 ```
 
-* Reads pipeline_config.json (if present)
-* Automatically merges shared parameters into each phase config
-* Ensures consistent dataset, paths, GPU, and LLM settings across all phases
+The required data layout and HDF5 schema are documented in
+[`data/README.md`](data/README.md).
 
-### Method II: Manual Phase Execution
+## Reproduce the BBBC exploration
 
-You can also run individual phases manually if you need to debug a specific step.
-
-**Phase 1: Design & Analysis**
+The release uses folds 1--3 for fitting, deterministically partitions fold 4
+into group-disjoint feedback and selection subsets, and keeps fold 5 untouched
+for final reporting. The configuration registers the five exploration seeds
+before execution. A lock records the code and data hashes used in the run.
 
 ```bash
-cd Design_Analysis
-python cellscientist_phase_1.py design_analysis_config.json
-
+./scripts/run_exploration.sh
 ```
 
-**Phase 2: Generation & Execution**
+For a single task/seed, after creating the lock:
 
 ```bash
-cd Generate_Execution
-python cellscientist_phase_2.py --config generate_execution_config.json run --use-idea
-
+python -m cellscientist run \
+  --config configs/bbbc036_047_formal.json \
+  --lock configs/bbbc036_047_formal.lock.json \
+  --task BBBC036_smiles \
+  --seed 11
 ```
 
-**Phase 3: Review & Optimization**
+On a CUDA machine, set `JOBS` to the number of task/seed processes appropriate
+for available GPU memory. The released configuration is CUDA fail-closed: it
+will not silently replace the registered backend with CPU execution.
+
+## Run method audits
 
 ```bash
-cd Review_Feedback
-python cellscientist_phase_3.py --config review_feedback_config.json
-
+./scripts/run_audits.sh
 ```
 
-## 📊 Outputs
+`lca-audit` evaluates registered protected-field, interface, output, runtime,
+and repair-budget checks. `routing-audit` evaluates typed discrepancy routing
+and local repair on 15 registered held-out component faults. Supplying the LLM
+environment variables exercises the constrained LLM route; otherwise the audit
+uses its registered deterministic top-ranked route and records that mode.
 
-All experiment artifacts are automatically organized in `../results/<dataset_name>/`:
+## Scope
 
-* **`pipeline_summary.json`**: The global scoreboard containing success rates, budget usage, and performance metrics across all phases.
-* **`logs/<timestamp>/`**:
-* Contains detailed execution logs (`phase1.log`, `phase2.log`, `phase3.log`) for full traceability.
-* **`advanced_metrics/`**: Analysis of mechanism diversity and code complexity.
-
-
-* **`design_analysis/`**: Generated scientific hypotheses and initial data artifacts.
-* **`generate_execution/`**: Source code instantiation, execution logs, and intermediate notebooks.
-* **`review_feedback/`**: Final optimized model, evolutionary history artifacts, and optimization process logs.
-* Optimization history (`optimization_history.md`, `optimization_tree.txt`).
-* **`notebook_best.ipynb`**: The final, best-performing model code validated by the system.
+The public code is a method release, not a benchmark bundle. It does not
+redistribute BBBC data, trained artifacts, numerical result files, private
+endpoints, or any comparator implementation. The paper and final rebuttal
+snapshot are preserved one directory above this source tree.

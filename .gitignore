@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.venv/
+data/*.h5
+outputs/
+audit_outputs/
+*.lock.json
+.env
