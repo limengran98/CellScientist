@@ -66,10 +66,3 @@ and repair-budget checks. `routing-audit` evaluates typed discrepancy routing
 and local repair on 15 registered held-out component faults. Supplying the LLM
 environment variables exercises the constrained LLM route; otherwise the audit
 uses its registered deterministic top-ranked route and records that mode.
-
-## Scope
-
-The public code is a method release, not a benchmark bundle. It does not
-redistribute BBBC data, trained artifacts, numerical result files, private
-endpoints, or any comparator implementation. The paper and final rebuttal
-snapshot are preserved one directory above this source tree.
