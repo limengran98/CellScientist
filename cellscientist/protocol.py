@@ -39,7 +39,7 @@ def load_config(path: Path) -> Dict[str, Any]:
             continue
         if not data_root:
             raise ContractError(
-                f"Set {data_root_env} to the directory containing the BBBC HDF5 files"
+                f"Set {data_root_env} to the directory containing the task HDF5 files"
             )
         task["path"] = str(Path(data_root) / raw_path)
     validate_config(value)
@@ -58,12 +58,20 @@ def validate_config(config: Mapping[str, Any]) -> None:
             raise ContractError(f"Dataset does not exist: {path}")
         if raw["split"] not in {"plate", "smiles"}:
             raise ContractError(f"Unsupported split: {raw['split']}")
+        expected_group = "plate_id" if raw["split"] == "plate" else "smiles"
+        if raw.get("group_key") != expected_group:
+            raise ContractError(f"The {raw['split']} split uses group_key={expected_group}")
+    task_ids = [f"{raw['dataset']}_{raw['split']}" for raw in tasks]
+    if len(task_ids) != len(set(task_ids)):
+        raise ContractError("Task IDs must be unique within a configuration")
     budget = int(config.get("search", {}).get("budget", 0))
     if budget < 1:
         raise ContractError("search.budget must be positive")
     checkpoints = config["search"].get("budget_checkpoints", [])
     if not checkpoints or max(int(x) for x in checkpoints) > budget:
         raise ContractError("budget checkpoints must be nonempty and within budget")
+    if any(int(x) < 1 for x in checkpoints):
+        raise ContractError("budget checkpoints must be positive")
     train_folds = {int(value) for value in config["data"].get("train_folds", [])}
     feedback_fold = int(config["data"]["feedback_fold"])
     test_fold = int(config["data"]["test_fold"])
@@ -110,9 +118,7 @@ def build_lock(config_path: Path, root: Path) -> Dict[str, Any]:
         raise ContractError("Only a formal config may be locked")
     if config.get("llm", {}).get("selection_status") != "frozen":
         raise ContractError(
-            "Formal LLM selection is still provisional. Complete the "
-            "development-only model comparison and set "
-            "llm.selection_status=frozen before creating the lock."
+            "Set llm.selection_status=frozen after choosing the run configuration."
         )
     datasets: Dict[str, Dict[str, Any]] = {}
     for spec in task_specs(config):
@@ -154,6 +160,6 @@ def verify_lock(config_path: Path, lock_path: Path, root: Path) -> Dict[str, Any
     observed = build_lock(config_path, root)
     if canonical_json(expected) != canonical_json(observed):
         raise ContractError(
-            "Formal protocol lock mismatch. Code, config, runtime, or data changed."
+            "Formal protocol lock mismatch. Code, config, or data changed."
         )
     return expected

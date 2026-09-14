@@ -18,6 +18,7 @@ A protocol-constrained workflow that links design choices, local revisions and v
   <a href="#quick-start"><b>Quick start</b></a> ·
   <a href="#data"><b>Data</b></a> ·
   <a href="#exploration"><b>Run exploration</b></a> ·
+  <a href="#extension"><b>Extend</b></a> ·
   <a href="#method"><b>Method</b></a> ·
   <a href="#outputs"><b>Inspect outputs</b></a> ·
   <a href="#citation"><b>Cite</b></a>
@@ -30,10 +31,10 @@ of cellular perturbation-response models. A fixed task contract protects data
 partitions and evaluation semantics, while a persistent history records which
 components changed, why they changed and how each candidate performed.
 
-The public implementation provides the **CellScientist controller for four
-BBBC036/BBBC047 task settings**, a finite executable candidate space,
-reproducibility locks and two operational audits. It produces both a
-validation-selected candidate and an inspectable account of its development.
+The **BBBC036/BBBC047 protocol** runs CellScientist across plate and SMILES
+splits with a shared candidate language, paired seeds and fixed evaluation
+budgets. Configuration locks, component audits and recorded trajectories make
+each run inspectable and provide a starting point for new models and datasets.
 
 <p align="center">
   <a href="docs/assets/refinement-trajectory.pdf"><img src="docs/assets/refinement-trajectory.png" alt="BBBC047 manuscript case study: successive FiLM and reference-conditioned model revisions include both improvements and regressions; Ref-RGAF is retained with the highest reported validation PCC in the illustrated trajectory." width="920"></a>
@@ -41,10 +42,10 @@ validation-selected candidate and an inspectable account of its development.
   <sub>From the manuscript: the BBBC047 model-revision trajectory · <a href="docs/assets/refinement-trajectory.pdf">Vector figure ↗</a></sub>
 </p>
 
-The case study illustrates why the retained candidate need not be the last
-attempt. Its annotations record working diagnostics during the broader
-architecture search. The runnable release below uses the constrained candidate
-space described in [Method](#method).
+The manuscript case study follows successive architecture revisions and retains
+the strongest validation result. The [controlled BBBC workflow](#method) makes
+revision decisions comparable through typed component addresses and a shared
+candidate language.
 
 <a id="quick-start"></a>
 
@@ -57,7 +58,7 @@ git clone https://github.com/limengran98/CellScientist.git
 cd CellScientist
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -e .
+python -m pip install -e ".[data]"
 python -m cellscientist --help
 ```
 
@@ -66,8 +67,8 @@ On Windows PowerShell, activate the environment with
 
 ### Start with the self-contained audits
 
-These registered checks use synthetic contract and component-fault cases;
-they require **no dataset download, model training or LLM credentials**.
+These self-contained checks run synthetic contract and component-fault cases
+on the CPU:
 
 ```bash
 python -m cellscientist lca-audit --output audit_outputs/lca_audit.json
@@ -79,9 +80,9 @@ python -m cellscientist routing-audit --output audit_outputs/routing_audit.json
 | **LCA** | Protected fields, interfaces, outputs, runtime failures and repair budgets | Case-level decisions and summary counts |
 | **Routing** | Localization and local repair of 15 registered faults across five component addresses | Per-case routing, repair outcomes and the routing mode used |
 
-Without an LLM configuration, `routing-audit` uses the registered deterministic
-top-ranked route. To exercise constrained LLM selection after setting up the
-data and endpoint below, pass `--config configs/bbbc036_047_formal.json`.
+The default routing audit evaluates the deterministic top-ranked route.
+Pass `--config configs/bbbc036_047_formal.json` to evaluate LLM routing using
+your configured endpoint. Both modes record the routing mode in the output.
 
 <a id="data"></a>
 
@@ -91,20 +92,26 @@ data and endpoint below, pass `--config configs/bbbc036_047_formal.json`.
 
 The release contains six preprocessed HDF5 files under
 [`Cell_Morphology_data/`](https://huggingface.co/datasets/Boom5426/CellScientist/tree/main/Cell_Morphology_data).
-The registered code configuration uses the four BBBC files.
 
-| Dataset | Plate split | SMILES split | Current code configuration |
-| :--- | :--- | :--- | :--- |
-| **BBBC036** | `BBBC036_plate_split.h5` | `BBBC036_smiles_split.h5` | Both settings |
-| **BBBC047** | `BBBC047_plate_split.h5` | `BBBC047_smiles_split.h5` | Both settings |
-| **CPG0016** | `cpg0016_plate_split.h5` | `cpg0016_smiles_split.h5` | Data available; no registered task in this release |
+| Dataset | Plate split | SMILES split |
+| :--- | :--- | :--- |
+| **BBBC036** | `BBBC036_plate_split.h5` | `BBBC036_smiles_split.h5` |
+| **BBBC047** | `BBBC047_plate_split.h5` | `BBBC047_smiles_split.h5` |
+| **CPG0016** | `cpg0016_plate_split.h5` | `cpg0016_smiles_split.h5` |
 
-Download the four BBBC files and arrange them in the directory expected by the
-configuration. The download folder and the runtime data folder have different
-layouts:
+Download the BBBC protocol inputs and arrange their runtime paths automatically:
+
+```bash
+python scripts/download_data.py --root data/hdf5
+```
+
+The script uses the pinned Hugging Face revision and SHA-256 hashes in
+[`data/release_manifest.json`](data/release_manifest.json). Add `--list` to
+inspect the download plan; use `--datasets CPG0016` to select CPG0016.
+Verified files are reused on subsequent runs. The BBBC layout is:
 
 ```text
-/path/to/bbbc_hdf5/
+data/hdf5/
 ├── BBBC036/
 │   ├── BBBC036_plate_split.h5
 │   └── BBBC036_smiles_split.h5
@@ -113,7 +120,7 @@ layouts:
     └── BBBC047_smiles_split.h5
 ```
 
-Each runtime file must contain a `combined` HDF5 group with `morphology_pre`,
+Each runtime file uses a `combined` HDF5 group with `morphology_pre`,
 `morphology_post`, `dose`, `smiles`, `plate_id` and `split_id` datasets.
 `split_id` assigns folds 1–5. The [`inspect` command](#exploration) validates
 the schema and reports partition sizes and group separation.
@@ -121,18 +128,24 @@ See [the input specification](data/README.md) for details.
 
 <a id="exploration"></a>
 
-## Run a BBBC exploration
+## Reproduce the BBBC workflow
 
-The registered configuration requires **CUDA-enabled PyTorch** and an
-OpenAI-compatible chat-completions endpoint. It selects
-`gemini-3-pro-preview` in [`configs/bbbc036_047_formal.json`](configs/bbbc036_047_formal.json).
-The endpoint must serve that configured model. Backend or model changes define
-a different run configuration and require a new lock.
+The paper uses **Gemini 3 Pro** as its default LLM backbone and
+**Qwen2.5-0.5B-Instruct** for the open-weight reproduction of the controlled audit.
+The [BBBC configuration](configs/bbbc036_047_formal.json) selects
+`gemini-3-pro-preview` and the `torch_cuda` predictor backend.
+
+**Other LLM APIs are supported through the OpenAI-compatible Chat Completions
+interface.** Set the endpoint and its served model ID to use a hosted provider,
+a gateway or a local model server. The [LLM guide](docs/llm_backends.md) gives
+Qwen and custom-model configurations, optional local authentication and request
+parameter settings. Predictor fitting supports `torch_cuda`, `torch_cpu` and
+`sklearn` backends.
 
 ### 1. Set your data and endpoint
 
 ```bash
-export CELLSCIENTIST_DATA_ROOT=/path/to/bbbc_hdf5
+export CELLSCIENTIST_DATA_ROOT="$PWD/data/hdf5"
 export CELLSCIENTIST_API_BASE=https://your-openai-compatible-endpoint/v1
 export CELLSCIENTIST_API_KEY=your_key
 ```
@@ -141,28 +154,28 @@ export CELLSCIENTIST_API_KEY=your_key
 <summary><b>Windows PowerShell equivalents</b></summary>
 
 ```powershell
-$env:CELLSCIENTIST_DATA_ROOT = "C:\data\bbbc_hdf5"
+$env:CELLSCIENTIST_DATA_ROOT = (Resolve-Path "data/hdf5").Path
 $env:CELLSCIENTIST_API_BASE = "https://your-openai-compatible-endpoint/v1"
 $env:CELLSCIENTIST_API_KEY = "your_key"
 ```
 
 </details>
 
-Credentials are read from environment variables. The repository contains no
-endpoint credentials.
+Endpoint credentials are read from the configured environment variable.
 
 ### 2. Inspect the inputs and freeze the run
 
 ```bash
-python -m cellscientist preflight --config configs/bbbc036_047_formal.json
+python -m cellscientist preflight --config configs/bbbc036_047_formal.json --check-llm
 python -m cellscientist inspect --config configs/bbbc036_047_formal.json
 python -m cellscientist freeze --config configs/bbbc036_047_formal.json --lock configs/bbbc036_047_formal.lock.json
 ```
 
-`preflight` reports PyTorch and CUDA availability; the registered exploration
-stops if its CUDA backend is unavailable. Add `--check-llm` to `preflight` for
-an endpoint health request. `freeze` records the resolved configuration,
-source hashes and data-file hashes; formal execution verifies this lock.
+`preflight` checks the selected compute backend and LLM settings;
+`--check-llm` sends a small request to validate the endpoint's response.
+`inspect` checks the HDF5 inputs and protected partitions. `freeze` records
+the resolved configuration, source hashes and data-file hashes; formal runs
+verify the lock before execution.
 
 ### 3. Run one task and seed
 
@@ -196,7 +209,7 @@ equivalent setting from `JOBS`, which defaults to `1`.
 
 </details>
 
-### Keep the evaluation roles explicit
+### Evaluation protocol
 
 | Data partition | Role |
 | :--- | :--- |
@@ -207,8 +220,8 @@ equivalent setting from `JOBS`, which defaults to `1`.
 
 Fold 4 is deterministically divided into group-disjoint feedback and selection
 subsets using the task's plate or SMILES groups. The registered retention rule
-maximizes the mean feedback and selection **global PCC**. Reporting uses
-fold 5, which does not guide candidate proposals or selection.
+maximizes the mean feedback and selection **global PCC**. Fold 5 provides
+held-out reporting after the search and retention decisions.
 
 <a id="method"></a>
 
@@ -239,10 +252,28 @@ input conditioning, direct or delta targets, input and output projection
 dimensions, and regularization strength. The LLM selects from permitted
 address–candidate pairs; deterministic code realizes the proposed local change.
 
-The release exposes this constrained CellScientist controller and its two
-audits. The manuscript also studies broader task-specific architecture searches
-and additional response spaces; those experiments have separate protocols and
-are not all exposed by this command-line interface.
+<a id="extension"></a>
+
+## Extend to another model or dataset
+
+Create a named run configuration while preserving the base protocol:
+
+```bash
+python scripts/configure_run.py --name my_llm --model your-served-model-id --output configs/my_llm.json
+```
+
+Set `CELLSCIENTIST_API_BASE` and `CELLSCIENTIST_API_KEY` for that endpoint, then
+use `configs/my_llm.json` in the same `preflight → inspect → freeze → run`
+sequence. The helper creates separate result and cache paths for the new run.
+Add `--local-api` for an API that accepts requests without a key, or
+`--backend torch_cpu` / `--backend sklearn` for CPU fitting.
+
+| Extension | Starting point |
+| :--- | :--- |
+| Change the LLM or API endpoint | [LLM backends and examples](docs/llm_backends.md) |
+| Add a dataset and define its split groups | [Input schema](data/README.md) and [extension guide](docs/extending.md) |
+| Add a candidate option or component address | [Candidate and routing contracts](docs/extending.md#candidate-language-and-routing) |
+| Reproduce and compare runs | [Run records and verification](docs/reproducibility.md) |
 
 <a id="outputs"></a>
 
@@ -277,16 +308,24 @@ print("Evaluated candidates:", result["evaluated_candidates"])
 `trajectory` records successive candidates and feedback;
 `hrt` records the protected task state and component history;
 `budget_checkpoints` reports retained candidates at the registered budgets.
-Keep these records and the lock together when comparing runs.
+Keep these records and the lock together when comparing runs. The
+[reproducibility guide](docs/reproducibility.md) explains provenance,
+checkpoint selection, environment capture and the regression suite:
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 <details>
 <summary><b>Repository map</b></summary>
 
 ```text
 cellscientist/   Controller, candidate space, evaluator, provenance and audits
-configs/        Registered BBBC036/BBBC047 protocol
-data/           Runtime HDF5 schema and input layout
-scripts/        Exploration and audit wrappers
+configs/        BBBC036/BBBC047 protocol and named run configurations
+data/           HDF5 schema and pinned download manifest
+scripts/        Data download, configuration, exploration and audit tools
+tests/          API, data, lock and end-to-end regression checks
+docs/           Reproduction, LLM and extension guides
 docs/assets/    Manuscript trajectory figure for this README
 ```
 

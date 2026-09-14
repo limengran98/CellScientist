@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from importlib.metadata import PackageNotFoundError, version
 import json
 import os
 import platform
@@ -114,6 +115,12 @@ def _runtime_snapshot() -> Dict[str, Any]:
         "platform": platform.platform(),
         "pid": os.getpid(),
     }
+    snapshot["packages"] = {}
+    for name in ("numpy", "scipy", "scikit-learn", "h5py", "joblib", "torch"):
+        try:
+            snapshot["packages"][name] = version(name)
+        except PackageNotFoundError:
+            snapshot["packages"][name] = "unavailable"
     try:
         import sklearn
 
@@ -172,16 +179,8 @@ class ControlledRun:
         self.model_seed = int(config["model"]["model_seed_offset"]) + self.seed
         self.train_mean = _train_target_mean(data)
         self.llm_policy = OpenAICompatiblePolicy(config["llm"])
-        if (
-            controller_name == "cellscientist"
-            and self.llm_policy.enabled
-            and bool(config["llm"].get("require_credential", False))
-            and not os.environ.get(str(config["llm"]["api_key_env"]))
-        ):
-            raise ContractError(
-                "Formal LLM execution requires credential environment variable "
-                f"{config['llm']['api_key_env']}"
-            )
+        if self.llm_policy.enabled:
+            self.llm_policy.validate_connection()
         self.raw_llm_rows: List[Dict[str, Any]] = []
         self.failures: List[Dict[str, Any]] = []
 
@@ -678,7 +677,7 @@ def run_one(
     verified_lock: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     if controller != "cellscientist":
-        raise ContractError("This public release contains only the CellScientist controller")
+        raise ContractError(f"Unsupported controller: {controller}")
     config = load_config(config_path)
     lock: Optional[Mapping[str, Any]] = None
     if config["mode"] == "formal":
@@ -735,18 +734,19 @@ def run_one(
         "runtime": _runtime_snapshot(),
     }
     atomic_write_json(output_dir / "run_manifest.json", manifest)
-    run = ControlledRun(
-        root=root,
-        config=config,
-        protocol_hash=protocol_hash,
-        data=data,
-        controller_name=controller,
-        initialization=initialization,
-        seed=seed,
-        output_dir=output_dir,
-        source_bundle_sha256=source_bundle_sha256,
-    )
+    run = None
     try:
+        run = ControlledRun(
+            root=root,
+            config=config,
+            protocol_hash=protocol_hash,
+            data=data,
+            controller_name=controller,
+            initialization=initialization,
+            seed=seed,
+            output_dir=output_dir,
+            source_bundle_sha256=source_bundle_sha256,
+        )
         result = run.execute()
     except Exception as exc:
         failure = {
@@ -757,6 +757,8 @@ def run_one(
             "traceback": traceback.format_exc(),
         }
         atomic_write_json(output_dir / "run_failure.json", failure)
+        if run is not None and run.raw_llm_rows:
+            write_jsonl(output_dir / "llm_trace.jsonl", run.raw_llm_rows)
         raise
     if run.raw_llm_rows:
         write_jsonl(output_dir / "llm_trace.jsonl", run.raw_llm_rows)

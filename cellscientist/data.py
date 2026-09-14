@@ -113,12 +113,16 @@ def load_task_data(
         morphology_pre = np.asarray(group["morphology_pre"], dtype=np.float32)
         morphology_post = np.asarray(group["morphology_post"], dtype=np.float32)
         dose = np.asarray(group["dose"], dtype=np.float32)
+        if dose.ndim == 2 and dose.shape[1] == 1:
+            dose = dose[:, 0]
         smiles = _decode_strings(np.asarray(group["smiles"]))
         plate_id = _decode_strings(np.asarray(group["plate_id"]))
         split_id = np.asarray(group["split_id"], dtype=np.int64)
 
     if morphology_pre.shape != morphology_post.shape:
         raise ContractError("Pre/post morphology shapes differ")
+    if morphology_pre.ndim != 2 or not all(morphology_pre.shape):
+        raise ContractError("Morphology arrays must have shape (rows, features) with nonzero dimensions")
     n_samples = morphology_pre.shape[0]
     for name, values in {
         "dose": dose,
@@ -128,6 +132,8 @@ def load_task_data(
     }.items():
         if len(values) != n_samples:
             raise ContractError(f"{name} length does not match morphology rows")
+        if values.ndim != 1:
+            raise ContractError(f"{name} must be a one-dimensional array")
 
     train_folds = np.asarray(data_config["train_folds"], dtype=np.int64)
     feedback_fold = int(data_config["feedback_fold"])
@@ -135,6 +141,11 @@ def load_task_data(
     train = np.flatnonzero(np.isin(split_id, train_folds))
     fold4 = np.flatnonzero(split_id == feedback_fold)
     test = np.flatnonzero(split_id == test_fold)
+    expected_folds = set(train_folds.tolist()) | {feedback_fold, test_fold}
+    if set(np.unique(split_id).tolist()).difference(expected_folds):
+        raise ContractError("split_id contains folds outside the configured partition contract")
+    if train.size == 0 or test.size == 0:
+        raise ContractError("Training and test partitions must each contain samples")
     split_groups = plate_id if spec.group_key == "plate_id" else smiles
     feedback, selection = _stable_group_split(
         fold4,

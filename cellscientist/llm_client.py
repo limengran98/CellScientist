@@ -60,15 +60,36 @@ class OpenAICompatiblePolicy:
     def model(self) -> str:
         return str(self.config.get("model", "unknown"))
 
+    @property
+    def credential_required(self) -> bool:
+        return bool(self.config.get("require_credential", True))
+
+    @property
+    def credential_present(self) -> bool:
+        return bool(os.environ.get(str(self.config.get("api_key_env", ""))))
+
+    @property
+    def base_url(self) -> str:
+        variable = str(self.config.get("base_url_env", ""))
+        return (os.environ.get(variable, "") or str(self.config.get("base_url", ""))).rstrip("/")
+
+    def validate_connection(self) -> None:
+        if self.credential_required and not self.credential_present:
+            raise ContractError(
+                f"Missing credential environment variable: {self.config.get('api_key_env', '')}"
+            )
+        if not self.base_url:
+            raise ContractError("Set llm.base_url or the configured llm.base_url_env variable")
+        if not str(self.config.get("model", "")).strip():
+            raise ContractError("Set llm.model to the model ID served by your endpoint")
+
     def _chat(self, prompt: str) -> tuple[str, Dict[str, int]]:
         self.last_call_trace = []
         self.last_response_text = None
         self.last_usage = None
         self.last_validation_error = None
-        key_name = str(self.config["api_key_env"])
-        key = os.environ.get(key_name)
-        if not key:
-            raise ContractError(f"Missing credential environment variable: {key_name}")
+        self.validate_connection()
+        key = os.environ.get(str(self.config.get("api_key_env", "")))
         payload = {
             "model": str(self.config["model"]),
             "messages": [
@@ -81,26 +102,24 @@ class OpenAICompatiblePolicy:
                 },
                 {"role": "user", "content": prompt},
             ],
-            "temperature": float(self.config.get("temperature", 0.0)),
-            "max_tokens": int(self.config.get("max_tokens", 1200)),
             "stream": False,
         }
+        temperature = self.config.get("temperature", 0.0)
+        if temperature is not None:
+            payload["temperature"] = float(temperature)
+        token_parameter = self.config.get("max_tokens_parameter", "max_tokens")
+        if token_parameter not in {"max_tokens", "max_completion_tokens"}:
+            raise ContractError("llm.max_tokens_parameter must be max_tokens or max_completion_tokens")
+        payload[token_parameter] = int(self.config.get("max_tokens", 1200))
         body = json.dumps(payload).encode("utf-8")
-        endpoint_env = str(self.config.get("base_url_env", ""))
-        base_url = os.environ.get(endpoint_env) if endpoint_env else None
-        base_url = base_url or str(self.config.get("base_url", ""))
-        if not base_url:
-            raise ContractError(
-                "Missing LLM endpoint; set the configured base_url_env variable"
-            )
+        headers = {"Content-Type": "application/json"}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
         request = urllib.request.Request(
-            base_url.rstrip("/") + "/chat/completions",
+            self.base_url + "/chat/completions",
             data=body,
             method="POST",
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
         )
         last_error: Optional[Exception] = None
         max_attempts = int(self.config.get("max_attempts", 3))
@@ -142,11 +161,13 @@ class OpenAICompatiblePolicy:
                 text = value["choices"][0]["message"]["content"]
                 if not isinstance(text, str) or not text.strip():
                     raise ContractError("LLM returned empty content")
-                raw_usage = value.get("usage", {})
+                raw_usage = value.get("usage") or {}
+                if not isinstance(raw_usage, Mapping):
+                    raise ContractError("LLM usage must be a JSON object when supplied")
                 usage = {
-                    "prompt_tokens": int(raw_usage.get("prompt_tokens", 0)),
-                    "completion_tokens": int(raw_usage.get("completion_tokens", 0)),
-                    "total_tokens": int(raw_usage.get("total_tokens", 0)),
+                    "prompt_tokens": int(raw_usage.get("prompt_tokens") or 0),
+                    "completion_tokens": int(raw_usage.get("completion_tokens") or 0),
+                    "total_tokens": int(raw_usage.get("total_tokens") or 0),
                 }
                 cleaned = text.strip()
                 self.last_response_text = cleaned
@@ -177,6 +198,7 @@ class OpenAICompatiblePolicy:
                 KeyError,
                 IndexError,
                 TypeError,
+                ValueError,
                 json.JSONDecodeError,
                 ContractError,
             ) as exc:

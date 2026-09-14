@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 from typing import List, Optional
 
@@ -15,6 +14,7 @@ from .llm_client import OpenAICompatiblePolicy
 from .protocol import load_config, task_specs, write_lock
 from .routing_audit import run_routing_audit
 from .runner import run_matrix, run_one
+from .schemas import ContractError
 
 
 def _root() -> Path:
@@ -84,9 +84,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     if args.command == "preflight":
         config = load_config(args.config)
+        policy = OpenAICompatiblePolicy(config["llm"])
+        backend = str(config["model"].get("backend", "sklearn"))
+        errors = []
         result = {
-            "llm_enabled": bool(config["llm"].get("enabled", False)),
-            "llm_credential_present": bool(os.environ.get(config["llm"]["api_key_env"])),
+            "backend": backend,
+            "llm_model": policy.model,
+            "llm_enabled": policy.enabled,
+            "llm_credential_required": policy.credential_required,
+            "llm_credential_present": policy.credential_present,
         }
         try:
             import torch
@@ -100,16 +106,28 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
         except ImportError:
             result.update({"torch": "unavailable", "cuda_available": False, "cuda_device_count": 0})
-        if args.check_llm:
-            policy = OpenAICompatiblePolicy(config["llm"])
-            decision = policy.choose(
-                '{"candidate_id":"health","address":"conditioning"}',
-                ["health"],
-                ["conditioning"],
-            )
-            result["llm_health"] = {"response_sha256": decision.response_sha256}
+        if backend.startswith("torch_") and result["torch"] == "unavailable":
+            errors.append("Install PyTorch for the selected backend")
+        elif backend == "torch_cuda" and not result["cuda_available"]:
+            errors.append("The selected torch_cuda backend needs a visible CUDA device")
+        if policy.enabled:
+            try:
+                policy.validate_connection()
+                if args.check_llm:
+                    decision = policy.choose(
+                        'Return {"candidate_id":"health","address":"conditioning"}',
+                        ["health"],
+                        ["conditioning"],
+                    )
+                    result["llm_health"] = {"response_sha256": decision.response_sha256}
+            except ContractError as exc:
+                errors.append(str(exc))
+        elif args.check_llm:
+            errors.append("Enable llm.enabled to check the LLM endpoint")
+        result["errors"] = errors
+        result["ready"] = not errors
         print(json.dumps(result, indent=2, ensure_ascii=False))
-        return 0
+        return 0 if result["ready"] else 1
     if args.command == "freeze":
         print(json.dumps(write_lock(args.config, args.lock, root), indent=2, ensure_ascii=False))
         return 0
@@ -141,12 +159,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.command == "routing-audit":
         policy = None
         if args.config is not None:
-            llm_config = load_config(args.config)["llm"]
-            key_present = bool(os.environ.get(str(llm_config["api_key_env"])))
-            endpoint_env = str(llm_config.get("base_url_env", ""))
-            endpoint_present = bool(os.environ.get(endpoint_env)) if endpoint_env else bool(llm_config.get("base_url"))
-            if bool(llm_config.get("enabled", False)) and key_present and endpoint_present:
+            llm_config = json.loads(args.config.read_text(encoding="utf-8"))["llm"]
+            if bool(llm_config.get("enabled", False)):
                 policy = OpenAICompatiblePolicy(llm_config)
+                policy.validate_connection()
         value = run_routing_audit(args.seed, policy)
     else:
         value = run_lca_audit()

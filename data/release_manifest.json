@@ -1,0 +1,48 @@
+{
+  "repo_id": "Boom5426/CellScientist",
+  "revision": "4171f94a78695243f69a8e209a9006383d7c1a94",
+  "files": [
+    {
+      "dataset": "BBBC036",
+      "hub_path": "Cell_Morphology_data/BBBC036_plate_split.h5",
+      "runtime_path": "BBBC036/BBBC036_plate_split.h5",
+      "size_bytes": 94140923,
+      "sha256": "9243811700cc799e4615e96e8b383c892e9258b6214b31085fbe4c7d0ced1bbe"
+    },
+    {
+      "dataset": "BBBC036",
+      "hub_path": "Cell_Morphology_data/BBBC036_smiles_split.h5",
+      "runtime_path": "BBBC036/BBBC036_smiles_split.h5",
+      "size_bytes": 114288824,
+      "sha256": "0f219448c2c07e8efa8b73992fe4cf27e51f27820c259232c3b17ec575a00557"
+    },
+    {
+      "dataset": "BBBC047",
+      "hub_path": "Cell_Morphology_data/BBBC047_plate_split.h5",
+      "runtime_path": "BBBC047/BBBC047_plate_split.h5",
+      "size_bytes": 341482876,
+      "sha256": "2443566a5c7d2b05b951a50d3906b692767c70580d8906c96b87916c2a682169"
+    },
+    {
+      "dataset": "BBBC047",
+      "hub_path": "Cell_Morphology_data/BBBC047_smiles_split.h5",
+      "runtime_path": "BBBC047/BBBC047_smiles_split.h5",
+      "size_bytes": 424864595,
+      "sha256": "00a06689fbdbad8edd5115824105e495dbd6fff02a7970f03708b8d25029a9ee"
+    },
+    {
+      "dataset": "CPG0016",
+      "hub_path": "Cell_Morphology_data/cpg0016_plate_split.h5",
+      "runtime_path": "CPG0016/cpg0016_plate_split.h5",
+      "size_bytes": 4755296459,
+      "sha256": "6679d04e7a1793ee2d0135e9c1caf19b2d7d1422b6e3ee648e393f9d96867b6a"
+    },
+    {
+      "dataset": "CPG0016",
+      "hub_path": "Cell_Morphology_data/cpg0016_smiles_split.h5",
+      "runtime_path": "CPG0016/cpg0016_smiles_split.h5",
+      "size_bytes": 5905213484,
+      "sha256": "7289017622db11cd51021bd38accfc4565377eab66c9c315482a326f35841c8e"
+    }
+  ]
+}

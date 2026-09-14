@@ -16,5 +16,8 @@ dependencies = [
   "torch>=2.1",
 ]
 
+[project.optional-dependencies]
+data = ["huggingface_hub>=0.27,<2"]
+
 [tool.setuptools]
 packages = ["cellscientist"]
