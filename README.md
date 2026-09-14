@@ -3,7 +3,7 @@
 <div align="center">
 
 <h1>CellScientist</h1>
-<h3>Auditable model revision for cellular perturbation prediction</h3>
+<h3>Model Revision by Diagnostic Routing for Morphological Perturbation Prediction</h3>
 
 <p><b>Turn execution feedback into traceable model improvements.</b><br>
 A protocol-constrained workflow that links design choices, local revisions and validation outcomes.</p>
@@ -15,6 +15,8 @@ A protocol-constrained workflow that links design choices, local revisions and v
 </p>
 
 <p>
+  <a href="https://cellscientist-research.phuonganh49123.chatgpt.site"><b>Project page</b></a> ·
+  <a href="https://cellscientist-research.phuonganh49123.chatgpt.site/assets/CellScientist.pdf"><b>Paper</b></a> ·
   <a href="#quick-start"><b>Quick start</b></a> ·
   <a href="#data"><b>Data</b></a> ·
   <a href="#exploration"><b>Run exploration</b></a> ·
@@ -327,6 +329,7 @@ scripts/        Data download, configuration, exploration and audit tools
 tests/          API, data, lock and end-to-end regression checks
 docs/           Reproduction, LLM and extension guides
 docs/assets/    Manuscript trajectory figure for this README
+project-page/   Public research page, interactive charts, figures and preprint
 ```
 
 Useful entry points: [CLI](cellscientist/cli.py) ·
@@ -341,8 +344,23 @@ Useful entry points: [CLI](cellscientist/cli.py) ·
 
 ## Citation, license and support
 
-CellScientist accompanies **CellScientist: From Execution Feedback to Auditable
-Model-Revision Trajectories for Cellular Perturbation Prediction**.
+CellScientist accompanies **CellScientist: Model Revision by Diagnostic Routing for Morphological Perturbation Prediction**.
+Read the [paper](https://cellscientist-research.phuonganh49123.chatgpt.site/assets/CellScientist.pdf), explore the
+[project page](https://cellscientist-research.phuonganh49123.chatgpt.site), or preview its [source](project-page/README.md).
+
+```bibtex
+@misc{li2026cellscientist,
+  title = {CellScientist: Model Revision by Diagnostic Routing
+           for Morphological Perturbation Prediction},
+  author = {Li, Mengran and Li, Bo and Wang, Jiaying and
+            Xing, Wenbin and Zhang, Chengyang and Wu, Jinlin and
+            Lei, Zhen and Luo, Jiebo and Li, Stan Z. and Zang, Zelin},
+  year = {2026},
+  howpublished = {Preprint},
+  url = {https://github.com/limengran98/CellScientist}
+}
+```
+
 For software use, cite this repository and record the exact commit and run
 configuration. The following entry identifies the current software release:
 

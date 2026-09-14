@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#132d48">
+  <meta name="description" content="CellScientist: Model Revision by Diagnostic Routing for Morphological Perturbation Prediction. Explore the method, research figures, results, code, and data.">
+  <title>CellScientist: Model Revision by Diagnostic Routing for Morphological Perturbation Prediction</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23132d48'/%3E%3Ccircle cx='32' cy='32' r='21' fill='none' stroke='%237abdd6' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='9' fill='%23c1db77'/%3E%3Ccircle cx='19' cy='20' r='3' fill='%237abdd6'/%3E%3Ccircle cx='45' cy='39' r='3' fill='%237abdd6'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="nav-wrap">
+      <a class="brand" href="#top" aria-label="CellScientist home"><span class="brand-icon" aria-hidden="true">C<span></span></span>CellScientist</a>
+      <nav aria-label="Main navigation"><a href="#method">Method</a><a href="#results">Results</a><a href="#resources">Resources</a><a class="nav-code" href="https://github.com/limengran98/CellScientist" target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span></a></nav>
+    </div>
+  </header>
+  <main id="main">
+    <section class="hero section-shell" id="top">
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow">CELLULAR PHENOTYPES · MODEL DEVELOPMENT</p>
+          <h1>CellScientist<span class="title-period">.</span></h1>
+          <h2>Model Revision by<br><em>Diagnostic Routing</em><br>for Morphological Perturbation Prediction</h2>
+          <p class="hero-description">Turn execution and validation feedback into a decision about <strong>what to change next.</strong></p>
+          <div class="hero-actions">
+            <a class="button primary" href="assets/CellScientist.pdf" target="_blank" rel="noopener">Read the paper <span aria-hidden="true">↗</span></a>
+            <a class="button" href="https://github.com/limengran98/CellScientist" target="_blank" rel="noopener noreferrer">Code <span aria-hidden="true">↗</span></a>
+            <a class="button" href="https://huggingface.co/datasets/Boom5426/CellScientist" target="_blank" rel="noopener noreferrer">Data <span aria-hidden="true">↗</span></a>
+          </div>
+        </div>
+        <figure class="hero-figure">
+          <div class="figure-topline"><span>FROM FEEDBACK TO A BETTER CANDIDATE</span><span class="figure-number">FIG. 01</span></div>
+          <button class="image-button" data-zoom="assets/Figure1.webp" data-caption="BBBC047 model-revision trajectory. Values are search-used validation PCC; annotations are working diagnostics recorded during search." aria-label="Enlarge core model-revision trajectory"><img src="assets/Figure1.webp" width="2441" height="1339" alt="The BBBC047 trajectory includes improvements and regressions, retaining Ref-RGAF at validation PCC 0.4368." fetchpriority="high"><span class="zoom-label" aria-hidden="true">Expand figure ↗</span></button>
+          <figcaption><strong>Progress has a history.</strong> The retained model follows both improvements and regressions. This case reports search-used validation PCC.</figcaption>
+        </figure>
+      </div>
+      <div class="authors">
+        <p><a href="https://openreview.net/profile?id=~Mengran_Li1" target="_blank" rel="noopener">Mengran Li<sup>1,2,*</sup></a><a href="https://openreview.net/profile?id=~Bo_Li51" target="_blank" rel="noopener">Bo Li<sup>3,*</sup></a><a href="https://openreview.net/profile?id=~Jiaying_Wang9" target="_blank" rel="noopener">Jiaying Wang<sup>2</sup></a><a href="https://openreview.net/profile?id=~Wenbin_Xing1" target="_blank" rel="noopener">Wenbin Xing<sup>2</sup></a><a href="https://openreview.net/profile?id=~Chengyang_Zhang1" target="_blank" rel="noopener">Chengyang Zhang<sup>4</sup></a><a href="https://openreview.net/profile?id=~Jinlin_Wu1" target="_blank" rel="noopener">Jinlin Wu<sup>1</sup></a><a href="https://openreview.net/profile?id=~Zhen_Lei2" target="_blank" rel="noopener">Zhen Lei<sup>1</sup></a><a href="https://openreview.net/profile?id=~Jiebo_Luo1" target="_blank" rel="noopener">Jiebo Luo<sup>1</sup></a><a href="https://openreview.net/profile?id=~Stan_Z._Li2" target="_blank" rel="noopener">Stan Z. Li<sup>5</sup></a><a href="https://openreview.net/profile?id=~Zelin_Zang2" target="_blank" rel="noopener">Zelin Zang<sup>1,†</sup></a></p>
+        <details class="affiliations"><summary><span>* Equal contribution · † Corresponding author</span><span>Affiliations +</span></summary><ol><li>Centre for Artificial Intelligence and Robotics, Hong Kong Institute of Science &amp; Innovation, Chinese Academy of Sciences</li><li>Sun Yat-sen University</li><li>University of Macau</li><li>Sichuan University</li><li>Westlake University</li></ol></details>
+      </div>
+    </section>
+    <section class="overview section-shell" id="method">
+      <div class="section-heading"><p class="eyebrow">01 / THE IDEA</p><h2>A score tells you how well.<br><span>Diagnostics guide what comes next.</span></h2></div>
+      <div class="intro-columns"><p>Predicting how a chemical perturbation changes cellular morphology connects molecular interventions to measurable phenotypes. A useful model must coordinate chemical representation, dose, cellular context, and response modeling.</p><p>A disappointing score leaves a design decision unresolved. CellScientist connects diagnostics and earlier attempts to local model revisions, keeping the prediction task and evaluation protocol consistent throughout the search.</p></div>
+      <figure class="wide-figure"><button class="image-button" data-zoom="assets/Figure0.webp" data-caption="Coupled model-design choices, local revisions informed by validation feedback, and the complete revision trajectory." aria-label="Enlarge conceptual overview"><img src="assets/Figure0.webp" width="2667" height="1024" alt="CellScientist connects a structured coupled design space to local revision and a complete recorded trajectory." loading="lazy"><span class="zoom-label" aria-hidden="true">Expand figure ↗</span></button><figcaption>Every edit belongs to a design state. Every outcome becomes evidence for the next decision.</figcaption></figure>
+    </section>
+    <section class="method-detail section-shell">
+      <div class="mechanism-steps">
+        <article><span class="step-index">01</span><p class="step-acronym">HRT</p><h3>Keep the evidence.</h3><p>History-Aware Revision Tracking connects design states to earlier attempts, including failures and regressions.</p></article>
+        <article><span class="step-index">02</span><p class="step-acronym">LCA</p><h3>Make the edit executable.</h3><p>Limited-Change Application checks candidate eligibility and applies bounded repair before evaluation.</p></article>
+        <article><span class="step-index">03</span><p class="step-acronym">PDR</p><h3>Choose where to revise.</h3><p>Performance-Discrepancy Refinement maps observed discrepancies to model components for local revision.</p></article>
+      </div>
+      <figure class="system-figure"><div class="figure-topline"><span>THE COMPLETE WORKFLOW</span><span class="figure-number">FIG. 03</span></div><button class="image-button" data-zoom="assets/Figure2.webp" data-caption="The task contract fixes prediction and evaluation semantics. Candidate proposals pass eligibility checks; validation diagnostics and recorded history guide the next local revision." aria-label="Enlarge full CellScientist workflow"><img src="assets/Figure2.webp" width="3819" height="1063" alt="Full CellScientist framework linking the task contract, LLM proposals, eligibility checks, validation diagnostics, revision targets and recorded outcomes." loading="lazy"><span class="zoom-label" aria-hidden="true">Expand figure ↗</span></button><figcaption>From a model-design state to an executable candidate, and from its outcome to the next edit.</figcaption></figure>
+    </section>
+    <section class="results-section" id="results">
+      <div class="section-shell">
+        <div class="section-heading"><p class="eyebrow">02 / CONTROLLED EVIDENCE</p><h2>Better revisions.<br><span>Fewer candidate evaluations.</span></h2></div>
+        <p class="section-intro">A matched comparison isolates the revision policy within a shared 768-candidate language. Four task/split settings, five paired seeds, and a reporting fold held out from search.</p>
+        <div class="result-controls"><span>Candidate-evaluation budget</span><div class="segmented" role="group" aria-label="Candidate-evaluation budget"><button type="button" data-budget="3" aria-pressed="false">3 evaluations</button><button type="button" data-budget="5" aria-pressed="true">5 evaluations</button><button type="button" data-budget="10" aria-pressed="false">10 evaluations</button></div></div>
+        <div class="results-lab">
+          <div class="effect-panel"><p class="mini-label">CELLSCIENTIST − RANDOM ROUTING</p><div class="effect-value" id="effect-value">+0.0373</div><p class="effect-unit">mean held-out PCC advantage</p><div class="effect-ci"><span>95% confidence interval</span><strong id="effect-ci">[0.0292, 0.0454]</strong></div><p id="effect-note">A larger mean advantage appears at small evaluation budgets, where each revision has more influence on the search.</p><p class="effect-source">Paired-setting t-interval across four settings · Table 3</p></div>
+          <div class="bar-panel"><div class="chart-heading"><h3>Held-out prediction quality</h3><span>Global PCC ↑</span></div><div class="chart-legend"><span><i class="legend-full"></i>CellScientist</span><span><i class="legend-random"></i>Random routing</span></div><div id="budget-chart" class="budget-chart" role="img" aria-label="Held-out PCC comparison after five candidate evaluations"><div class="chart-group"><div class="chart-group-title">BBBC036 <span>Plate split</span></div><div class="bar-row full" title="CellScientist: 0.2674 ± 0.0003"><div class="bar-track"><span class="bar-fill" style="--value:66.85%"></span><span class="bar-whisker" style="--lower:66.77499999999999%;--range:0.1500000000000199%"></span></div><span class="bar-value">0.2674</span></div><div class="bar-row random" title="Random routing: 0.2277 ± 0.0502"><div class="bar-track"><span class="bar-fill" style="--value:56.925000000000004%"></span><span class="bar-whisker" style="--lower:44.375%;--range:25.10000000000001%"></span></div><span class="bar-value">0.2277</span></div></div><div class="chart-group"><div class="chart-group-title">BBBC036 <span>SMILES split</span></div><div class="bar-row full" title="CellScientist: 0.2346 ± 0.0009"><div class="bar-track"><span class="bar-fill" style="--value:58.650000000000006%"></span><span class="bar-whisker" style="--lower:58.425%;--range:0.45000000000000284%"></span></div><span class="bar-value">0.2346</span></div><div class="bar-row random" title="Random routing: 0.2049 ± 0.0417"><div class="bar-track"><span class="bar-fill" style="--value:51.225%"></span><span class="bar-whisker" style="--lower:40.800000000000004%;--range:20.849999999999987%"></span></div><span class="bar-value">0.2049</span></div></div><div class="chart-group"><div class="chart-group-title">BBBC047 <span>Plate split</span></div><div class="bar-row full" title="CellScientist: 0.3457 ± 0.0004"><div class="bar-track"><span class="bar-fill" style="--value:86.425%"></span><span class="bar-whisker" style="--lower:86.325%;--range:0.19999999999998863%"></span></div><span class="bar-value">0.3457</span></div><div class="bar-row random" title="Random routing: 0.3066 ± 0.0514"><div class="bar-track"><span class="bar-fill" style="--value:76.64999999999999%"></span><span class="bar-whisker" style="--lower:63.79999999999999%;--range:25.699999999999996%"></span></div><span class="bar-value">0.3066</span></div></div><div class="chart-group"><div class="chart-group-title">BBBC047 <span>SMILES split</span></div><div class="bar-row full" title="CellScientist: 0.3614 ± 0.0003"><div class="bar-track"><span class="bar-fill" style="--value:90.35%"></span><span class="bar-whisker" style="--lower:90.27499999999999%;--range:0.15000000000000568%"></span></div><span class="bar-value">0.3614</span></div><div class="bar-row random" title="Random routing: 0.3207 ± 0.0582"><div class="bar-track"><span class="bar-fill" style="--value:80.175%"></span><span class="bar-whisker" style="--lower:65.62499999999999%;--range:29.100000000000023%"></span></div><span class="bar-value">0.3207</span></div></div></div><div class="chart-scale"><span>0.00</span><span>0.10</span><span>0.20</span><span>0.30</span><span>0.40</span></div><p class="chart-footnote">Bar length: five-seed mean. Whiskers: ±1 sample standard deviation.</p></div>
+        </div>
+        <p class="result-boundary">The budget counts evaluated candidates, including the shared initial candidate. At ten evaluations, the mean advantage narrows and its confidence interval includes zero.</p>
+        <details class="data-table-details"><summary>View all five policies and exact values <span aria-hidden="true">+</span></summary><div class="table-scroll"><table><caption>Held-out global PCC, mean ± sample standard deviation over five paired seeds. <span id="table-budget">Budget: 5 evaluations.</span></caption><thead><tr><th scope="col">Task / split</th><th scope="col">Fixed initial model</th><th scope="col">Flat retry</th><th scope="col">Random routing</th><th scope="col">AIDE-style</th><th scope="col">CellScientist</th></tr></thead><tbody id="results-table-body"><tr><th scope="row">BBBC036 / Plate</th><td>0.1664 ± 0.0005</td><td>0.2073 ± 0.0056</td><td>0.2277 ± 0.0502</td><td>0.2477 ± 0.0294</td><td>0.2674 ± 0.0003</td></tr><tr><th scope="row">BBBC036 / SMILES</th><td>0.1547 ± 0.0005</td><td>0.1882 ± 0.0129</td><td>0.2049 ± 0.0417</td><td>0.2231 ± 0.0169</td><td>0.2346 ± 0.0009</td></tr><tr><th scope="row">BBBC047 / Plate</th><td>0.2442 ± 0.0008</td><td>0.2630 ± 0.0130</td><td>0.3066 ± 0.0514</td><td>0.3153 ± 0.0399</td><td>0.3457 ± 0.0004</td></tr><tr><th scope="row">BBBC047 / SMILES</th><td>0.2504 ± 0.0004</td><td>0.2916 ± 0.0003</td><td>0.3207 ± 0.0582</td><td>0.3371 ± 0.0417</td><td>0.3614 ± 0.0003</td></tr></tbody></table></div><a class="text-link" href="assets/results.json" download>Download chart data (JSON) ↗</a></details>
+        <div class="live-status sr-only" id="chart-status" aria-live="polite"></div>
+        <noscript><p>JavaScript is disabled. The default five-evaluation comparison is shown; all results are available in the paper and downloadable chart data.</p></noscript>
+      </div>
+    </section>
+    <section class="evidence-gallery section-shell" id="figures">
+      <div class="gallery-header"><div class="section-heading"><p class="eyebrow">03 / MODELS &amp; TRAJECTORIES</p><h2>See the predictions.<br><span>Follow the decisions.</span></h2></div><div class="segmented dataset-switch" role="group" aria-label="Dataset for manuscript figures"><button type="button" data-dataset="BBBC036" aria-pressed="false">BBBC036</button><button type="button" data-dataset="BBBC047" aria-pressed="true">BBBC047</button></div></div>
+      <p class="section-intro">Selected-model benchmarks and open search trajectories show how the workflow develops task-specific predictors. BBBC036, BBBC047, and CPG0016 form the morphology benchmark suite; transcriptomic and temporal tasks extend the evaluation.</p>
+      <div class="gallery-grid">
+        <figure><div class="figure-topline"><span>FOLD-LEVEL PREDICTOR COMPARISON</span><span class="dataset-label">BBBC047</span></div><button class="image-button" id="distribution-zoom" data-zoom="assets/Figure3_BBBC047.webp" data-caption="BBBC047: five-fold R² distributions for CS-model and fixed baselines. Statistical annotations are reproduced from the manuscript." aria-label="Enlarge fold-level prediction comparison"><img id="distribution-image" src="assets/Figure3_BBBC047.webp" width="1304" height="916" alt="BBBC047 five-fold R-squared distributions comparing CS-model, RealMLP, RF-TD, and TabR." loading="lazy"><span class="zoom-label" aria-hidden="true">Expand figure ↗</span></button><figcaption><strong>Prediction quality across folds.</strong> R² distributions compare CS-model with fixed reference predictors; annotations follow the paper.</figcaption></figure>
+        <figure><div class="figure-topline"><span>OPEN MODEL-REVISION TRAJECTORY</span><span class="dataset-label">BBBC047</span></div><button class="image-button" id="trajectory-zoom" data-zoom="assets/Figure4_BBBC047.webp" data-caption="BBBC047: validation PCC across open-workflow iterations, with individual candidates and the retained best-so-far trajectory. These validation scores informed search." aria-label="Enlarge open search trajectory"><img id="trajectory-image" src="assets/Figure4_BBBC047.webp" width="1269" height="974" alt="BBBC047 candidate validation PCC and best-so-far scores across ten model-revision iterations." loading="lazy"><span class="zoom-label" aria-hidden="true">Expand figure ↗</span></button><figcaption><strong>Improvements, regressions, and retention.</strong> The best-so-far curve preserves a useful candidate even when a later experiment underperforms.</figcaption></figure>
+      </div>
+      <p class="gallery-note">The BBBC047 trajectory reports validation scores used during search. The controlled comparison above uses a separate held-out reporting fold.</p>
+    </section>
+    <section class="audit-section section-shell">
+      <div class="audit-heading"><p class="eyebrow">04 / INSIDE THE WORKFLOW</p><h2>Inspect the components,<br>as well as the final score.</h2><p>Registered component audits examine what history, candidate checks, and localized repair contribute to the workflow.</p></div>
+      <div class="audit-grid">
+        <article><span class="audit-number">0<span>%</span></span><h3>Repeated proposals with HRT</h3><p>170 unique proposals in 170 evaluated steps. Without persistent history: 82 unique proposals in 180 steps.</p><span class="audit-scope">20 matched controlled runs</span></article>
+        <article><span class="audit-number">40<span>/40</span></span><h3>Registered violations handled</h3><p>LCA repairs 15 cases and blocks 25 others. All 20 valid controls are accepted.</p><span class="audit-scope">60 registered contract cases</span></article>
+        <article><span class="audit-number">15<span>/15</span></span><h3>Held-out faults repaired</h3><p>Structured PDR repairs all registered held-out faults in one round on average, with no unrelated edits.</p><span class="audit-scope">15 faults across five component addresses</span></article>
+      </div>
+    </section>
+    <section class="resources-section" id="resources"><div class="section-shell">
+      <div class="section-heading"><p class="eyebrow">05 / CODE, DATA &amp; PAPER</p><h2>Reproduce the workflow.<br><span>Build on the revision process.</span></h2></div>
+      <div class="resource-grid"><div class="code-panel"><div class="code-topline"><span>START FROM THE REPOSITORY</span><button class="copy-button" data-copy="quickstart">Copy</button></div><pre><code id="quickstart">git clone https://github.com/limengran98/CellScientist.git
+cd CellScientist
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[data]"
+python -m cellscientist --help</code></pre><a href="https://github.com/limengran98/CellScientist#quick-start" target="_blank" rel="noopener noreferrer">Full setup, including Windows instructions ↗</a></div><div class="resource-links"><a href="https://github.com/limengran98/CellScientist" target="_blank" rel="noopener noreferrer"><span class="resource-kicker">GITHUB</span><strong>Code &amp; reproducibility guides</strong><span>Configurations, audits, recorded outputs, and extension points.</span><b aria-hidden="true">↗</b></a><a href="https://huggingface.co/datasets/Boom5426/CellScientist" target="_blank" rel="noopener noreferrer"><span class="resource-kicker">HUGGING FACE</span><strong>CellScientist data</strong><span>Preprocessed morphology benchmarks and documented inputs.</span><b aria-hidden="true">↗</b></a><a href="assets/CellScientist.pdf" target="_blank" rel="noopener"><span class="resource-kicker">MANUSCRIPT</span><strong>Read the complete paper</strong><span>Method, experimental protocols, full results, and appendices.</span><b aria-hidden="true">↗</b></a></div></div>
+      <p class="llm-note">The paper uses Gemini 3 Pro, with Qwen2.5-0.5B-Instruct for the open-weight controlled audit. Other LLM APIs can be connected through the OpenAI-compatible interface. <a href="https://github.com/limengran98/CellScientist/blob/main/docs/llm_backends.md" target="_blank" rel="noopener noreferrer">LLM configuration guide ↗</a></p>
+      <div class="citation-block"><div><p class="eyebrow">CITATION</p><h3>Reference this work</h3></div><div class="citation-code"><div class="code-topline"><span>BIBTEX</span><button class="copy-button" data-copy="citation">Copy citation</button></div><pre><code id="citation">@misc{li2026cellscientist,
+  title = {CellScientist: Model Revision by Diagnostic Routing
+           for Morphological Perturbation Prediction},
+  author = {Li, Mengran and Li, Bo and Wang, Jiaying and
+            Xing, Wenbin and Zhang, Chengyang and Wu, Jinlin and
+            Lei, Zhen and Luo, Jiebo and Li, Stan Z. and Zang, Zelin},
+  year = {2026},
+  howpublished = {Preprint},
+  url = {https://github.com/limengran98/CellScientist}
+}</code></pre></div></div>
+      <p class="copy-status" id="copy-status" role="status"></p>
+    </div></section>
+  </main>
+  <footer class="site-footer section-shell"><a class="brand" href="#top">CellScientist</a><p>Model revision by diagnostic routing.</p><a href="https://github.com/limengran98/CellScientist" target="_blank" rel="noopener noreferrer">View on GitHub ↗</a></footer>
+  <dialog id="figure-dialog" aria-labelledby="figure-caption"><div class="dialog-toolbar"><span>CellScientist / Research figure</span><button class="icon-button" id="close-figure" aria-label="Close figure">Close ×</button></div><img id="expanded-figure" alt=""><p id="figure-caption"></p></dialog>
+</body>
+</html>
