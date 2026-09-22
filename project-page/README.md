@@ -1,6 +1,6 @@
 # CellScientist project page
 
-[Visit the project page](https://cellscientist-research.phuonganh49123.chatgpt.site) · [Read the paper](https://cellscientist-research.phuonganh49123.chatgpt.site/assets/CellScientist.pdf) · [Download the data](https://huggingface.co/datasets/Boom5426/CellScientist)
+[Visit the project page](https://limengran98.github.io/CellScientist) · [Read the paper](https://limengran98.github.io/CellScientist/assets/CellScientist.pdf) · [Download the data](https://huggingface.co/datasets/Boom5426/CellScientist)
 
 Source for the research page accompanying **CellScientist: Model Revision by Diagnostic Routing for Morphological Perturbation Prediction**. It includes seven manuscript figures, interactive budget comparisons, component audits, author affiliations and the named-author preprint.
 
@@ -33,4 +33,13 @@ python project-page/prepare-static.py
 
 The chart reports five-seed held-out global PCC from manuscript Table 3. Per-policy whiskers are sample standard deviations; the aggregate CellScientist-minus-Random effect uses a separate paired-setting 95% t-interval. The BBBC047 open-workflow trajectory reports validation scores used during model search. Keep these evaluation roles and the PDF consistent when updating results.
 
-The public page is hosted on Sites. This directory contains the corresponding static source; publish an updated `dist/` through the existing Site after reviewing changes. GitHub commits and Site publication are separate release steps. Use relative asset paths so local previews and hosted copies render consistently.
+## GitHub Pages deployment
+
+The public project page is hosted at https://limengran98.github.io/CellScientist/.
+Changes pushed to `main` under `project-page/` are automatically published by
+[`Deploy project page`](../.github/workflows/project-page.yml). The workflow
+uploads `dist/` directly; no package installation or build service is needed.
+It can also be run manually from the repository's Actions tab.
+
+Keep asset and data paths relative so local previews and the repository URL
+work identically. The paper download is `dist/assets/CellScientist.pdf`.

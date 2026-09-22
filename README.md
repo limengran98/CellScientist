@@ -15,8 +15,8 @@ A protocol-constrained workflow that links design choices, local revisions and v
 </p>
 
 <p>
-  <a href="https://cellscientist-research.phuonganh49123.chatgpt.site"><b>Project page</b></a> ·
-  <a href="https://cellscientist-research.phuonganh49123.chatgpt.site/assets/CellScientist.pdf"><b>Paper</b></a> ·
+  <a href="https://limengran98.github.io/CellScientist"><b>Project page</b></a> ·
+  <a href="https://limengran98.github.io/CellScientist/assets/CellScientist.pdf"><b>Paper</b></a> ·
   <a href="#quick-start"><b>Quick start</b></a> ·
   <a href="#data"><b>Data</b></a> ·
   <a href="#exploration"><b>Run exploration</b></a> ·
@@ -345,8 +345,8 @@ Useful entry points: [CLI](cellscientist/cli.py) ·
 ## Citation, license and support
 
 CellScientist accompanies **CellScientist: Model Revision by Diagnostic Routing for Morphological Perturbation Prediction**.
-Read the [paper](https://cellscientist-research.phuonganh49123.chatgpt.site/assets/CellScientist.pdf), explore the
-[project page](https://cellscientist-research.phuonganh49123.chatgpt.site), or preview its [source](project-page/README.md).
+Read the [paper](https://limengran98.github.io/CellScientist/assets/CellScientist.pdf), explore the
+[project page](https://limengran98.github.io/CellScientist), or preview its [source](project-page/README.md).
 
 ```bibtex
 @misc{li2026cellscientist,
