@@ -3,7 +3,7 @@
 <div align="center">
 
 <h1>CellScientist</h1>
-<h3>Model Revision by Diagnostic Routing for Morphological Perturbation Prediction</h3>
+<h3>From Execution Feedback to Auditable Model-Revision Trajectories for Cellular Perturbation Prediction</h3>
 
 <p><b>Turn execution feedback into traceable model improvements.</b><br>
 A protocol-constrained workflow that links design choices, local revisions and validation outcomes.</p>
@@ -16,7 +16,7 @@ A protocol-constrained workflow that links design choices, local revisions and v
 
 <p>
   <a href="https://limengran98.github.io/CellScientist"><b>Project page</b></a> ·
-  <a href="https://limengran98.github.io/CellScientist/assets/CellScientist.pdf"><b>Paper</b></a> ·
+  <a href="https://arxiv.org/abs/2605.07335"><b>Paper</b></a> ·
   <a href="#quick-start"><b>Quick start</b></a> ·
   <a href="#data"><b>Data</b></a> ·
   <a href="#exploration"><b>Run exploration</b></a> ·
@@ -344,20 +344,19 @@ Useful entry points: [CLI](cellscientist/cli.py) ·
 
 ## Citation, license and support
 
-CellScientist accompanies **CellScientist: Model Revision by Diagnostic Routing for Morphological Perturbation Prediction**.
-Read the [paper](https://limengran98.github.io/CellScientist/assets/CellScientist.pdf), explore the
+CellScientist accompanies **CellScientist: From Execution Feedback to Auditable Model-Revision Trajectories for Cellular Perturbation Prediction**.
+Read the [arXiv preprint](https://arxiv.org/abs/2605.07335), explore the
 [project page](https://limengran98.github.io/CellScientist), or preview its [source](project-page/README.md).
 
 ```bibtex
 @misc{li2026cellscientist,
-  title = {CellScientist: Model Revision by Diagnostic Routing
-           for Morphological Perturbation Prediction},
-  author = {Li, Mengran and Li, Bo and Wang, Jiaying and
-            Xing, Wenbin and Zhang, Chengyang and Wu, Jinlin and
-            Lei, Zhen and Luo, Jiebo and Li, Stan Z. and Zang, Zelin},
+  title = {CellScientist: From Execution Feedback to Auditable Model-Revision Trajectories for Cellular Perturbation Prediction},
+  author = {Li, Mengran and Li, Bo and Wang, Jiaying and Xing, Wenbin and Zhang, Chengyang and Wu, Jinlin and Lei, Zhen and Luo, Jiebo and Li, Stan Z. and Zang, Zelin},
   year = {2026},
-  howpublished = {Preprint},
-  url = {https://github.com/limengran98/CellScientist}
+  eprint = {2605.07335},
+  archivePrefix = {arXiv},
+  primaryClass = {cs.LG},
+  url = {https://arxiv.org/abs/2605.07335}
 }
 ```
 
